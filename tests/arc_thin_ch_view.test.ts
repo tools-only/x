@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 import { buildObservationSection, computeGridDelta, currentStateBlock, gridPng, renderRecentHistory, summarizeGridTransitions,
-  validateActionSequence } from '../demo/arc_thin_ch_view.ts';
+  validateActionSequence, gridFactsText } from '../demo/arc_thin_ch_view.ts';
 
 const golden = JSON.parse(readFileSync(new URL('./fixtures/ch_golden.json', import.meta.url), 'utf8'));
 
@@ -31,6 +31,12 @@ test('CURRENT STATE matches CH: action meanings, ACTION6 asks for x and y, the g
   // CH never lists RESET (its harness plays it); here it is the agent's action.
   assert.equal(currentStateBlock('NOT_FINISHED', levels, actions, grid),
     text.replace('available actions: \n', 'available actions: \n  RESET: Start or restart a game. Must be called first when NOT_PLAYED or after GAME_OVER to play again.\n'));
+});
+
+test('grid facts provide compact per-color counts and extents without implying object segmentation', () => {
+  assert.equal(gridFactsText([[0, 9, 9], [1, 1, 0]]),
+    '## GRID FACTS\nPer-color cell counts and extents (one extent may contain disconnected cells): 0:n2,x0-2,y0-1; 1:n2,x0-1,y1-1; 9:n2,x1-2,y0-0');
+  assert.equal(gridFactsText(undefined), '');
 });
 
 test('step records keep CH grid_change and grid_delta; the PNG has CH palette pixels', () => {

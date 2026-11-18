@@ -87,6 +87,9 @@
 - 真实运行诊断（`runs/su15-selfroot-optimized-20261119-completions`）：AZ `qwen3.8-27b`，native SelfRoot，61 个 bridge 动作、0 个已完成关卡；session 记录 219 次 provider 请求、约 3.45M input / 483k output tokens。SelfRoot ledger 记录两次已关闭 evolution review，最近一次关闭后又有 21 个动作。运行在第 61 个动作后被开发 Agent 手动中断；`summary.json` 是中断前快照，不能作为自然终态或任务效果证据。中断缘由是误读了旧 self-loop 的 `evo_pass=false` 统计字段；随后核查确认它不代表 SelfRoot review 关闭。
 - 这次核查修复了 SelfRoot interval fallback 的生命周期边界：闭合的旧 review 不应永久阻止后续 30-action review。`queueActionIntervalReview` 现在从最近一次已关闭 pass 之后计数；活动 review 或未关闭的 pass 仍阻止重复入队。`tests/self_root_arc.test.ts` 覆盖跨请求恢复、pass 后重新计数。真实 run 在手动中断时尚未到最近一次 pass 后 30 个动作，因此没有观察到该 fallback 的真实触发；该行为仍需新 run 验证。
 - 修复后验证：`node --experimental-transform-types --test --test-concurrency=1 tests/self_root_arc.test.ts` 通过（2 项）；`git diff --check` 通过；新目录 `runs/arc-selfroot-foundation-20261119j` 的生产 Pi/bridge/mock ARC SDK/scripted provider smoke 通过（3 动作、8 provider 请求、0 provider error）。Smoke 未触达 30-action fallback，也不证明真实模型行为或 ARC 关卡效果。
+- 第二次真实样本（`runs/su15-selfroot-optimized-20261119-restart1`）：native SelfRoot/CH 观测，5 个 bridge 动作、0 关；session 中 32 次 provider 请求（约 428k input / 84k output tokens）、23 次 Python 调用，按决策为 3/2/11/7，23 段 Python 源码互不重复。调用均扫描当前网格或比较相邻状态，且主要发生在两个没有环境动作的决策轮中；观测本身已带 CH 网格、动作差分和图像。该样本由开发 Agent 在第 5 个动作后中断，属于效率诊断，不是自然终态，也没有证明这些分析无价值。由于 ARC 不可回退，下一次新 run 只作为另一个在线样本，不能声称严格 A/B 因果对照。
+- 针对可从原始棋盘直接确定、又在本样本中反复逐格扫描的事实，增加一个短动态 `GRID FACTS` 面板：按颜色给出格数与坐标范围，并明确范围可能覆盖断开的格子；不识别对象、不推断运动或目标。它只补充观测事实，不添加 Agent 行为指示。连通块、shape signature、运动卡片等仍属于 Agent 自己构造的派生能力，遵循待办 A 的 adapter 边界。下一真实样本检查这些基础查询是否减少，同时审计 Python 总开销、动作进展和关卡结果；若面板只增加 token 而未替代探测，应撤回。
+- 面板验证：`node --experimental-transform-types --test --test-concurrency=1 tests/arc_thin_ch_view.test.ts tests/arc_thin_ch_observation.test.ts` 通过（14 项）；生产 Pi/bridge/mock ARC SDK/scripted provider smoke `runs/arc-selfroot-foundation-20261119k` 通过（3 动作、3 决策、0 provider error）。Smoke 未验证真实模型是否利用面板、Python 是否下降或关卡收益。
 
 ## 7. 实验协议与交付边界
 

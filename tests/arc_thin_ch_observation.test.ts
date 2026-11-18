@@ -119,6 +119,7 @@ test('a decision shows the game as CH does, after this harness\'s own sections; 
     const current = section(text, '## CURRENT STATE');
     assert.match(current, /available actions: \n {2}ACTION1: \(1, W, Up\)\.\n {2}ACTION2: \(2, S, Down\)\./);
     assert.match(current, /Grid current_state_frame \(8x8\) \[hex 0-f = color 0-15\]:\n00000000\n00000000\n09000000/);
+    assert.match(text, /## GRID FACTS\nPer-color cell counts and extents \(one extent may contain disconnected cells\): 0:n63,x0-7,y0-7; 9:n1,x1-1,y2-2/);
     assert.doesNotMatch(text, /TOOL RESULTS FROM PREVIOUS TURN|## TURN|PREVIOUS CONVERSATION STOPPED|RECENT ACTIONS/);
     assert.equal(head(messages).content.filter((b: any) => b.type === 'image').length, 1, 'the PNG of each grid rendered as text');
     assert.match(h.system(), /A Task decision ends at an acting call/);

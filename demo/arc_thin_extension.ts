@@ -38,7 +38,7 @@ import { gitTool } from "./arc_thin_git.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
 	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
-	validateActionSequence, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
+	validateActionSequence, gridFactsText, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
 import { Binder, componentKind } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
@@ -1670,6 +1670,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		blocks.push(observation
 			? currentStateBlock(String(observation.state ?? "UNKNOWN"), Number(observation.levels_completed ?? 0), availableActions(observation), grid)
 			: "## CURRENT STATE\n(unavailable — do not act on remembered grids)");
+		const gridFacts = gridFactsText(grid);
+		if (gridFacts) blocks.push(gridFacts);
 		const rendered = [...shown, ...(grid?.length ? [{ label: CURRENT_STATE_GRID_LABEL, grid }] : [])];
 		const images = imageInputEnabled || ctx.model?.input?.includes("image") ? rendered.map((g) => gridImage(g.grid)) : [];
 		return { text: blocks.join("\n\n"), images, labels: rendered.map((g) => g.label) };

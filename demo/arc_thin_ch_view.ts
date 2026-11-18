@@ -312,6 +312,24 @@ export function currentStateBlock(state: string, levelsCompleted: number, action
     `current grid (latest_frame.frame[-1]):\n${frameText}`;
 }
 
+/** Compact, non-semantic facts that can answer common whole-grid scans without constructing a Python probe. */
+export function gridFactsText(grid: Grid | undefined): string {
+  if (!grid?.length) return "";
+  const facts = new Map<number, { count: number; left: number; right: number; top: number; bottom: number }>();
+  for (let y = 0; y < grid.length; y += 1) for (let x = 0; x < grid[y].length; x += 1) {
+    const color = Number(grid[y][x]);
+    const fact = facts.get(color);
+    if (fact) {
+      fact.count += 1;
+      fact.left = Math.min(fact.left, x); fact.right = Math.max(fact.right, x);
+      fact.top = Math.min(fact.top, y); fact.bottom = Math.max(fact.bottom, y);
+    } else facts.set(color, { count: 1, left: x, right: x, top: y, bottom: y });
+  }
+  const summary = [...facts].sort((a, b) => a[0] - b[0]).map(([color, f]) =>
+    `${color}:n${f.count},x${f.left}-${f.right},y${f.top}-${f.bottom}`).join("; ");
+  return `## GRID FACTS\nPer-color cell counts and extents (one extent may contain disconnected cells): ${summary}`;
+}
+
 // ---------------------------------------------------------------------------------------------------- history
 
 /** trajectory.StepRecord, as far as RECENT HISTORY reads it. */
