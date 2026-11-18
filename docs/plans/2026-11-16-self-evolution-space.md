@@ -1,5 +1,21 @@
 # 2026-11-16 自进化空间：三个关节的作者，以及 subagent 的开启
 
+## 2026-11-18 Agent 拥有任务时间跨度与双交付目标
+
+- **失败与命题**：M11 第 7 次请求写出整套约 45 KB deck，三轮 sweep 之间主要只有约 280 字符的小修。实际 brief 与初始消息缺失用户此前追加的视觉设计及商用 harness 目标；T0 自拟 acceptance 只覆盖页数、引用、渲染与交付。用户本轮明确授权 Agent 设计并随时修改多阶段流程，持续定义/试用/沿用/修订/退役组件，与 slides 一起形成商用产品级 harness，并要求“充分发挥你作为一名视觉传达设计师的能力，创造广告级别的极高质量slides”。命题是补足实际生效目标与时间跨度说明，为任务内深度迭代提供正确目标与权限认识；不以增加轮数作为质量奖励。
+- **实现与成本**：两家银行 production_brief 原文追加最新要求，既有冻结/哈希路径会将它们带入各 episode。META 固定字段明确授权预算内时间跨度、可修改流程、组件生命周期和双交付目标；阶段是 Agent 的选择，不设新固定流水线。T0 入口要求完整 brief 的两项交付目标进入自拟 goal/acceptance；runner 初始消息指向两项产物。修正 seed prompt 中“没有宿主反思入口”的过时说明，使其与反馈/恢复/兜底 pass 一致。没有新增 runtime 阶段、交付 gate、worker 或付费实验。
+- **生命周期与负例**：Agent 决定阶段、投入、定义、试用、保留、修订和退役；runtime 沿用既有热修改、激活、流程转移及证据记录。第一份完整产物视为候选，何时最终交付由 Agent 依据用户质量要求与授权资源判断。预算仍限定时间跨度；不能用组件数量、数值匹配或无告警代表广告级或商用产品级。若真实模型仍一次生成后立即交付，或只修改组件而缺乏后续实质试用，则行为命题不成立。
+- **验证**：实际固定 Pi CLI/PPT extension、脚本 provider，非付费自主实验。扩展的 `tests/test_ppt_effect_intent_pi.py` 在 META 与非 META 下 2/2 通过：真实 provider 输入包含时间跨度、产品质量及生命周期说明，读取到新增广告级 brief，组件修改后可在同一 root 增设 reinspect 阶段，尚未 complete。首次诊断 fixture 把 brief 放在 root/data，而工具使用 root/workspace/data；修正 fixture 路径后通过。证据 `runs/ppt-task-horizon-wiring-20261118-r2/`。原任务族冻结/哈希检查另行运行，保留顺序和完整性约束。
+- **决定与下一步**：功能与局部 Pi 接线通过；普通真实 provider 能否自主形成深入多阶段流程、广告级 slides、产品级 harness 和净收益仍未验证。此前因 provider 两次静默停止的付费任务未重启；下一真实运行需核对首次候选前的探索、修改后同任务实质试用、返工与最终双交付证据，而不能仅统计 pass 或组件数量。
+
+## 2026-11-18 PPT 效果声明减负
+
+- **真实失败与窄命题**：M11 中 prompt/skill 三次修改因 predicate 参数被拒。provider schema 仅提供 `{type:object}`，执行端却要求 metric/direction/segment；自然语言 expected_effect 还会开启缺少数值判据的窗口。补齐 schema，并仅在 PPT 显式提供 predicate 时开窗，应消除定性改动的数值验证负担。
+- **实现与成本**：PPT adapter 选择 explicit_predicate；expected_effect 仍随修改事实记录，改动在下一请求激活。两份 seed prompt 和 provider schema 说明定性意图与可选数值比较；共享 descriptor 补齐参数枚举、结构和示例，PPT component 的注册 envelope 复用 normalizeOperation 校验。通用 core 默认行为保留。本次没有新增 turn、worker、必填字段或 gate，未调整七焦点上限。
+- **生命周期与负例**：Agent 决定修改和后续使用，runtime 保留回执；定性价值由 Agent 根据任务反馈判断、修订或撤下。有效 predicate 仍应开窗；定性修改必须激活并可供后续请求使用。组件数和数值提升不表示视觉或商用质量，单次接线不证明净收益。
+- **限界验证**：实际固定版本 Pi CLI + PPT extension + 脚本 provider，未使用付费 provider。`tests/test_ppt_effect_intent_pi.py` 1/1 通过；产物 `runs/ppt-effect-intent-wiring-20261118/`，4 个请求，确认 memory 修改、后续读取、intent 留痕、零窗口和模型可见 schema。`node --experimental-transform-types --test tests/self_root_evo_mechanisms.test.ts` 9/9，通过显式 predicate 开窗及通用旧规则回归；最初 strip-only 模式因既有 TypeScript parameter property 不支持而失败，改用 transform 模式后通过。
+- **证据与下一步**：功能正确及本次局部 Pi 接线通过；真实 provider 自主采用、完整 PPT 交付与净收益未验证。此前因 provider 静默两次停止的付费任务未重启。下一可证伪检查是同配置真实 PPT 中参数拒绝是否减少、定性修改是否实际用于后续任务；JPM 与商用质量目标仍未完成。
+
 设计稿。**不改代码、不跑 provider。** 本稿只回答一个问题：M3c 之后，自进化为什么仍然浅，以及最小的改法是什么。章节按 `docs/templates/meta-harness-change.md` 组织（问题与命题 / 设计与成本 / 运行前实验协议 / 实现与验证 / 交付决定）。
 
 ---
@@ -646,6 +662,80 @@ M3c 的位置：K1 成立，K2/K3 不成立——而且当时没有任何窗口�
 - 采用口径（回执表述）：pass 内经工具回执落地的自变更 + 被后续任务请求消费。负例 (a) 重述为"七 pass 零工具调用"，(c) 重述为"工具结构拒绝占多数"；(b)(d) 不变。预算不变：轮 1 ≤3 + 连扫 7 = ≤10/场合；pass 请求沿 optional 语义，预算不足记 `budget_skip` 跳过不停机。
 - F 清单影响：F5 整体不迁；F4 缩为按 focus 的 digest/地址渲染；F3 框架句原文迁移不变；F7 检测串保留（pass 头仍写 "Specialist evolution context:"），脚本步从信封改走现有 fixture 的工具调用脚本；F8 重写为工具脚本版（七 pass 顺序/回执/清单刷新断言保留，轮 1 脚本化 decide_exit 步照加）。
 - M10 单因素重述不变（轮 2 实现：agent 驱动入口问题评审 → 固定七专家连扫），形态注记改为"无信封、pass 内直接热修、宿主只开场合与渲染材料"。
+
+**实现记录（2026-11-17，`evo-loop-implementation` / `17a1b2a1`）**
+
+- 机会与命题：M9c 的模型运行在自进化场合前被 provider `terminated` 中止，未验证任何 pass 行为；实现依据是本节用户定稿，而不是把 M9c 当成七 turn 的行为证据。保留第一轮（归纳，最多 3 个请求），第二轮按 Prompt → Context → Skill → Tool → Subagent → Memory → Loop 固定运行七个独立焦点 turn，每 turn 一个 provider 请求上限。每次响应边界记录 turn 结算，允许反射工具提交变更；纯文本/无改动合法记为 `no_change`，所有写入沿现有授权、版本与下一请求边界激活路径。
+- 减少的负担：不要求 Agent 在宽泛能力评审里自行切出七类对象；不增加子模型、信封解析器、并行落地器、工具 schema 或额外管理 Agent。焦点说明与该 kind 的活动条目经 request-scoped self view 提供；round 2 不将七种焦点写入稳定 system prefix，不重复携带完整轨迹。
+- 实现位置：`demo/self_root.ts`（七焦点顺序、逐 turn 限一请求、结算事实、焦点条目、Subagent 库存、总上限 10）；`demo/ppt_demo_extension.ts`（更新 pass 说明，将专家帧保留在易变 self-view）。
+- 证据状态：代码已修改；功能正确、真实 runner 全链路、自主采用、净收益均未验证。本次未启动 provider；M9c 仍按用户要求保持暂停。M10 真实运行需按本计划重新声明并获授权的预算，且应通过日志核对七个焦点顺序、每轮工具回执/合法 no-change、后续任务请求是否实际消费变更及成本。
+
+### M10 静默流超时修订（2026-11-17）
+
+- **真实失败**：新版 PPT run `runs/evo-m10-glm53f-sevenpass-20261117/session` 在五个任务前置请求后进入 deck 生成，provider 回复只留下 25–106 个字符的开头文本，随后 `stopReason=error`、`errorMessage=terminated`、reported usage 为 0。请求 6–11 的派发间隔约 257/265/273/296/315 秒，与当前 `httpIdleTimeoutMs=240000` 加 Pi 的 5/10/20/40/60 秒重试退避吻合；现有记录证明每次生成流约四分钟没有新数据，但不能判定静默发生在模型生成、provider 网关还是传输层。
+- **窄命题**：把 HTTP 无数据超时从 240 秒降至 90 秒、最多尝试数从 6 降至 4 后，持续静默的单次生成应在约 6 分 35 秒内收敛；正常持续产出数据的长流不受空闲超时影响。四次尝试保留此前观测到的约 35 秒共享网关 429 恢复窗口。
+- **移除的负担**：不再为每个静默流连续等待四分钟并重复至六轮。运行预算、模型/provider、任务内容和七 turn pass 语义均不变。
+- **实现**：`src/autoresearch_pi/evo_ppt.py::local_settings` 的 `httpIdleTimeoutMs=90000`、`retry.maxRetries=4`；仍由现有 `provider_error` 收束并写 summary。
+- **停止条件**：持续静默依设置上限终止；出现新的 provider error 不绕过或切换模型，保留原始停止证据。
+- **修订后真实路径**：同一冻结任务族用剩余授权运行 1,800 秒/45 次请求上限（含预检）。实际派发 44 次任务请求，summary 总计 45 次（含预检），1,225.8 秒，无 `auto_retry_start`/`terminated`；Bank of America 15 页 deck 已正式交付，JPMorgan 的 `deck-jpm.html` 已生成但预算在最终交付前耗尽，runner 按授权停止（`budget_or_integrity_stop`）。因此实证支持“正常长输出未受 90 秒静默阈值阻断”，未实证触发 90 秒静默负例的收敛上限，也未完成双集任务。
+- **自进化证据**：`.harness/live-self.json` 记录 request 12 的 episode-boundary 场合，轮 1 在 request 14 由 Agent 收束；requests 15–21 依序完成 Prompt → Context → Skill → Tool → Subagent → Memory → Loop 七个独立 turn，七 turn 均 `no_change`，sweep outcome `complete`。request 44 又因 stagnation 开启一个新场合，但在预算硬停时 `review_unresolved`。因此七 turn 全链路在真实 provider 运行中已达；本次没有组件变更/自主采用或净收益证据。未运行测试。
+
+### M10 七焦点 turn 的行动规则初稿（2026-11-17；2026-11-18 superseded）
+
+- **真实机会**：上一轮 7 个焦点 turn 均以普通文本收束、没有当轮 `reflect_*` 调用。但 Context turn 在文本里已识别出 `material.txt` 因 16,000 字符结果上限被多次读取的问题；主任务 sweep 后才经 `reflect_orchestration` 将 `policy.context` 提至 50,000，之后 JPMorgan 材料一次读完。这说明焦点判断已有可操作候选，转换到修改接口却留给后续任务 turn。
+- **窄命题**：当某一焦点的证据支持具体改进时，明确要求 Agent 在该焦点的单次响应中调用其对应反射接口；证据不支持改动时仍允许显式 `no_change` 并说明依据。若真实 run 仍出现明确候选只留在 prose，命题被推翻。
+- **减负与成本**：移除“建议之后再落地”的父任务往返；不增 provider 请求上限（仍每焦点一个请求）、触发点、工具 schema、强制改动配额或常驻 system 内容。唯一新增文本是临时七焦点 view 上的动作规则与各 focus 的接口名。
+- **实现**：`demo/self_root.ts` 的 `META_PASS_ROUND2_LINE` 要求当轮分析并使用接口，提供有证据的 `no_change` 出口；`META_PASS_SPECIALISTS` 将 Prompt/Skill/Tool/Subagent/Memory 映射到 `reflect_component`，Context（`policy.context`）与 Loop 映射到 `reflect_orchestration`，并由每次焦点 frame 显示。既有单请求 turn 结算与结构、预算、版本验证不变。
+- **验证与边界**：本次按用户授权修改代码与记录；未运行测试，也未重启 provider（M10 56 次请求预算已耗尽）。代码/提示改变的功能正确性尚未实证，下一项可证伪检查是新授权真实 run 中统计各焦点的工具提交、成功/拒绝、`no_change` 理由及下一普通任务请求是否消费改动；不据此宣称自主采用或净收益已提升。
+
+### M10 七焦点改为自进化执行 turn（2026-11-18）
+
+- **真实问题**：上一版仍让每焦点只发一个 provider 请求。新 run 中七焦点确实给出候选，但多数以 prose 结束；Context 的结果上限改动要等 sweep 后由任务 Agent 再做。故当轮执行能力受单请求上限影响，不能只把同一条规则改得更强硬。
+- **命题**：每个焦点作为一个有界执行 turn：若首个响应已完成反射写入，则立即结算；若是分析/取证而未作判断，保留同一焦点再给一次请求执行热修改，或显式结束为有依据的 `no_change`。第二请求仍无变更也未声明 `no_change` 时记 `execution_incomplete`，不伪装成合法无改动。
+- **预算与减负**：轮 2 从最多 7 请求调整为最多 14 请求，单焦点最多 2；round 1 仍最多 3，场合上限从 10 改为 17。增加成本上限最多 7 请求/场合，换取 Agent 在焦点内从分析到反射修改的连续路径；保留相同七种焦点、现有权限/预算/结构校验和下一请求激活语义，不加工具/schema。
+- **实现**：`demo/self_root.ts` 按请求阶段渲染执行指令；成功反射或解析到 `no_change:` 即关闭焦点；分析-only 响应保留 focus，第二次 provider request 直接呈现执行续轮；触及两次上限仍无动作则记 unresolved/incomplete。`demo/ppt_demo_extension.ts` 在 assistant `message_end` 中识别显式 `no_change`，使 turn boundary 能及时结算。焦点接口映射继续使用实际 schema：Prompt/Skill/Tool/Subagent/Memory → `reflect_component`，Context/Loop → `reflect_orchestration`。
+- **验证边界**：只完成代码与本记录修订；未运行测试。M10 既有 56 次 provider 请求授权已耗尽，未启动新模型；该执行 turn 的状态转换、热修改和 no_change 识别待新的真实 provider 预算验证。目标先验证每个焦点可达执行/合法 no_change 两种收束，之后再衡量改动采用与净收益。
+
+### M10 自进化触发移入任务执行中（2026-11-18）
+
+- **真实机会**：当前 `metaPassDue()` 将 `task_episode_closed` 作为直接触发；PPT 适配器在一集交付后才写这个事实。因此变化只能供下一集使用，无法回到产生该经验的任务里继续修改、复核或交付，和 Self-Harness 的任务内生效目标不符。
+- **窄命题**：把主要触发改为当前任务的中间 render/feedback 回执；当回执产生时尚无 `unit_delivered` 或 `task_episode_closed`，宿主在下一个请求边界暂停当前步骤，完成限界 pass，并恢复同一任务步骤。若任务持续运行但未产生该反馈，则每 12 个 execute 请求提供稳定兜底；交付 stall 仍可触发恢复；episode close 不再单独触发。这样在尚未完成任务时激活的版本可被该任务的后续请求消费。
+- **成本与负例**：执行 pass 的请求预算仍按前项规则最多 17 次；进化现在可能占用任务中途的时间与 token，并且多个中间 render 可能分别形成候选检查点，兜底最多每 12 个 execute 请求检查一次。负例包括 render 与最终交付在同一工具链中完成而无可插入请求边界，以及修改虽在任务内激活但没有后续语义使用。观察窗口为下一次获批的真实运行，核对触发相对交付的 ledger 顺序、恢复步骤、后续请求 revision 和实际组件消费。
+- **实现**：`demo/self_root.ts::metaPassDue()` 从 episode-close 改为 `render_action_receipt`，并排除该反馈之后已经记录的交付；固定请求兜底按最近 pass/任务开始以来的 execute 请求计数，不受 artifact 写入频率影响。策略与 PPT runtime 说明改为“当前任务暂停、pass 完后从同一步恢复”。其余七焦点顺序、修改接口和执行回合预算不变。
+- **运行复核与实际缺陷**：按用户“重启任务”以新工作树版本启动两家银行任务。首次预检成功后 Pi 扩展启动失败，诊断到 `META_PASS_ROUND_CAPS` 在 `META_PASS_SPECIALISTS` 声明前求值，触发 `Cannot access 'META_PASS_SPECIALISTS' before initialization`；通过把依赖常量移到专家表之后修复，并在无 provider 请求的本地 Pi RPC 启动中确认扩展正常加载。修复后新的独立 run 进入 Agent 循环，但请求 6、7、8 连续 `stopReason=error` / `errorMessage=terminated`；请求 6–8 在开始 deck 写作后分别于 99、105、104 秒结束，派发间隔扣除退避后与 `httpIdleTimeoutMs=90000` 相符。直接根因是客户端在 stream 静默 90 秒后中止；材料读取请求均在 5–9 秒内结束，deck 写作请求内容约 77k 字符。只凭记录无法区分模型思考静默与 provider/网关传输静默。发出的第 9 个请求由人工停止，用量未知并按 reserve 计入。两次预检和该 run 合计 11 次请求，记录估算约 $0.135，实际账单未知。
+- **本次窄修订**：起初空闲超时改为 300 秒，Pi 自动重试从 4 次降为 1 次（一次原请求加一次重试）。首个正确启用 META 的真实 run 用 300 秒 turn-idle 期限观测到单次真实静默并被宿主终止；依照这条负例，provider 与 turn-idle 上限继续调为 600 秒，仍受 3,600 秒总期限约束。
+- **验证边界**：新 run 未创建 artifact、未触发任务内进化 pass，故无法验证 render 检查点、12 请求兜底、同任务恢复或后续 revision 消费。未运行测试；`docs/harness-design-principles.md` 在当前 `evo-loop-implementation` checkout 中不存在，已按主工作区文件读取其“任务执行期间自主调整 harness”定义，未改动该主工作区的未跟踪文档。任务内触发、自主采用与净收益仍待 provider 阻塞解除后的真实运行确认。
+
+- **恢复轮新发现（2026-11-18）**：首个 45 请求/1,800 秒恢复 run 使用 `arm B`，但 `run()` 构造 Pi 子进程环境时未转发 `EVO_META=1`。driver 仍依据父进程环境追加 META 任务句，造成“提示声称 META、runtime `mech.meta=false`”；实际进入普通 booked-facts review，而非 `metaPassDue()` 专用七焦点 sweep。普通 review 曾创建并随后使用 `patch_file`，但两份 deck 都未交付，不能当作目标达成。已修复子进程 env 传递。
+- **正确启用后的真实 run**：新的双案例 run 已确认 `meta_t0_delivered` 与 `meta_t0_design`，但请求 6 在 300 秒内未产生任何 Pi 事件；`PiKernel` 抛出 `PiTurnIdleTimeout` 并留下 1 笔缺失 usage，run 在 351.8 秒、7 次总请求时停止，未交付任何 unit、未打开进化 pass。随后依真实负例将 provider 与 turn idle 上限都调至 600 秒并重跑；BoA 15 页 deck 在三次 render feedback pass 后交付，receipt 无渲染告警，10/10 单元 literal 与 citation probe 全通过。三个 pass 共 21 个 specialist turn：13 个成功热修改，8 个以 `execution_incomplete` 结束（未达到有效修改或明确 `no_change`），因此“每个 turn 都完成了执行决策”仍未达到；产生的 prompt、skill、tool、memory、subagent 组件随同 revision 保存在交付包中，`figure_gate` 在修改后被调用 3 次。之后运行器切换至 JPM；修改后的组件地址出现在 JPM provider inputs，但 request 73 再次连续 600 秒没有 Pi 事件，出现同一 `PiTurnIdleTimeout`，JPM 未交付。整个 run 74 次总请求（含预检）、3,427,572 tokens、保守费用估算 $0.536、1 次用量未结算，实际账单未知。由于同类“Pi turn 长时间无事件”已两次挡住完成，依项目 `AGENTS.md` 停止继续叠加新机制/重试，待用户决定下一步；provider 是否在后台计算或网关卡住，证据无法区分。
+
+### Runtime-first hot-edit 与精确回执（2026-11-18）
+
+- **真实问题与窄命题**：M11/M12 记录显示改动后提供方输入曾按全 active registry 标记组件；prompt/memory/skill index 暴露被报作 `used_later`，工具仅按名字成功也会归因到任意同名版本；另外 sweep 即使有未完成 turn 仍写 `complete`。命题：runtime 在真实请求装配时精确记当前 prompt、筛选后的 memory、skill index 和工具 schema 的组件版本/hash；对工具/subagent 仅从同版本实际成功执行回执记录执行，对 prompt/memory/skill 保留 semantic use 为 unknown。焦点内成功热改或明确 `no_change` 立即结算；仅当第 2 请求实际读取 self 材料或反射被拒时，允许第 3 个修复请求；扫尾摘要如实报告未完成数。
+- **减负与成本**：Agent 不新增字段、schema、证明或核对步骤；runtime 复用既有反射/ledger 和 `provider_input`，仅增加紧凑版本回执，工具在调用起点固定执行版本。单次 pass 的 round-2 上限由最多 14 次请求增至最多 21 次（最坏 +7；第 3 次仅按上述 runtime 观察条件开放），反射成功和显式 no_change 仍提前关闭。Semantic use 不由 runtime 猜测，prompt/memory/skill 的语义影响继续未知。
+- **实现**：`demo/ppt_demo_extension.ts` 记录实际请求中的 prompt/memory/skill-index/tool-schema 暴露，skill body read 单独记账；工具/subagent 记录调用起始版本/hash及成功或失败。`demo/self_root.ts` 将提交激活、暴露、成功执行分开计数；移除文本暴露和名字匹配作为 `used_later` 依据，数值窗口也仅接受变更版本对应的成功执行。回顾视图不再把反射本身算作使用。焦点上限和界面文字体现条件第三请求；最终 sweep 记录 incomplete turn 数。没有扩展到正在结束的 M12；没有付费 provider 重跑。
+- **验证**：功能正确性：`node --experimental-transform-types --test --test-concurrency=1 tests/self_root_meta.test.ts` 16/16 通过，覆盖合并反射提交的激活关联、版本/hash 匹配、暴露不等于执行、失败和同名旧版本不计成功，以及 conditional third request 和 incomplete sweep 摘要。全链路接线：`python -m pytest tests/test_ppt_effect_intent_pi.py -q` 2/2 通过，真实 Pi CLI + 扩展、scripted provider；包含 next-request skill index/body、filtered memory、工具 v2 schema、版本化成功调用和失败工具回执。该 scripted provider 是 wiring evidence，不是自主行为证据。旧的 `tests/self_root_meta_pass.test.ts` 仍有 7/9 项因 fixture 使用已废弃的 episode-close 触发和旧 exit schema 而失败；它不是本次验收套件，不能报告为全套通过。
+- **证据层级与下一检查**：功能正确与本地 Pi/extension 链路通过；自主采用、semantic use（除可观察的执行本身）、任务质量影响和净收益未验证。M12 在请求 8 因 600 秒无事件终止，未触发 render/pass；不重启付费运行。下一次获批 provider run 可核对真实工具 schema 热更新、筛选 memory、失败版本不误记和 sweep 不完整结果；在此之前不称为 adoption 或优化收益。
+
+### 工具暴露与 Skill 渐进披露对齐（2026-11-18）
+
+- **问题与命题**：请求组装曾将步骤 `bindings` 中的 tool 直接加入 provider schema，而执行仍通过 SelfRoot surface、授权和步骤动作白名单校验，产生“看得到但执行被拒”的可能。命题是 provider schema 只从当前 SelfRoot surface 生成，并将 Skill 摘要、准确版本读取入口及当前步骤绑定提示一起放入既有 skills context section。
+- **实现**：`ppt_demo_extension.ts` 不再从 bindings 扩大 tool schema；`evo.surface()` 是披露依据，office 子动作折叠为 Pi `office` 工具。Skill 索引逐条含功能描述、精确版本读取调用；绑定到当前步骤的 Skill 增加简短适用提示。缺少描述的组件明确标记摘要缺失，避免伪造用途。`skill_index` 暴露记录同步匹配新格式。
+- **验证**：`python -m pytest tests/test_ppt_effect_intent_pi.py -q` 通过（2/2），通过 Pi CLI、扩展和脚本 provider 检查真实请求装配及 skill 读回/工具 schema 接线。该结果证明接线，不证明真实模型会注意索引或自主采用。真实 provider 采用率与净收益未验证。
+
+### Pi 长静默流的超时竞速修复（2026-11-18）
+
+- **真实问题**：M13 retry1 的 Pi 事件在 provider 响应启动后不再有任何事件；provider dispatch 共 5 笔、最后一笔有 response id 但没有结束记录。运行在约 600 秒静默后以 `PiTurnIdleTimeout` 退出。该 runner 的 `httpIdleTimeoutMs` 与 `PiKernel.wait_for_agent_events(idle_timeout=600)` 同为 600 秒，底层 HTTP idle abort 和外层 kill 竞速，导致可解释的 provider 流错误及 Pi 内部 retry 机会可能被外层关闭抢先吞掉。该请求在 response header/stream 已建立后静默，证据指向长时间无响应 body bytes；不能区分模型思考静默和网关传输静默。
+- **窄命题与减负**：若 HTTP 流静默，3 分钟内先由 Pi 的 HTTP 层失败并交付错误事件，外层 10 分钟 watchdog 保持接收窗口；请求总时限 5 分钟，沿用已有最多一次 agent retry。这样失败应更早、有明确层级并允许既有恢复，不新增 Agent 决策/表单。反证：provider 错误仍未在 Pi idle watchdog 前出现，或 retry 后同样无进展/完成率下降。
+- **实现与边界**：`evo_ppt.py` 将 `httpIdleTimeoutMs` 设为 180 秒，`retry.provider.timeoutMs` 设为 300 秒，`PiKernel` 外层 turn idle 仍为 600 秒；provider retry仍为0，避免 SDK 对带副作用任务做不透明重放；保留既有一次 agent retry、总时限和请求上限。只调整 PPT runner 生效的 Pi settings。
+- **评价**：以本次 BoA 真 provider run 作为一次有界真实路径核查，原 M13 两次尝试总授权为150请求/3600秒，已用7请求/约727秒；本次最多143请求/2872秒。记录 provider 错误是否先到、retry 是否可观察、artifact/pass 是否前进，以及最终状态和成本。单次结果只能确认故障处理路径，不能证明普遍自主采用或任务收益；如果重现静默且仍无错误事件，则停止本 run、从实际请求/response 与进程轨迹继续定位，不再增加相同盲重试。
+
+### reflect_orchestration edit/replace 与可修复校验回执（2026-11-18）
+
+- **真实问题**：PPT 流程添加 `build -> review` 时，provider-visible `orchestration` schema 要求完整定义，导致局部修改被误当成不完整替换；另一个 `orchestration_patch` 参数名增加第二套格式，串行化嵌套参数会触发泛化的 “must be object” 且不提供可操作修复信息。无效 step 引用也只报告通用错误。
+- **窄命题与减负**：把 Agent 写入统一为 `orchestration:{mode:"edit"|"replace",...}`。edit 只提供按精确 ID upsert 的 `steps_by_id`/`transitions_by_id`，省去复制和重发未修改定义；replace 明确要求完整五个集合。若 scripted Pi 路径不能证明对象解码、编辑合并、schema 和拒绝修复信息真实贯通，则不通过接线验收。此命题不预测真实 provider 一定采用编辑接口或提升任务质量。
+- **实现**：provider schema 和工具描述不再暴露 `orchestration_patch`。在 Agent 输入边界对 `orchestration`/`policy` 单层解码 JSON 字符串；拒绝无法解码、双重编码、数组和非 object，错误指出正确结构。edit 将按 ID 新增/浅合并到当前 candidate，完整 replace 在提交前校验五个数组。转换引用缺失 step 时回执含字段路径、有效 step ID、当前/候选 revision、候选未激活和可直接照做的修正。meta、固定 prompt、运行中 loop 提示与 definition self-view 使用同一示例格式。直接 host transaction 的历史完整对象仍按 replace 解释；Agent-visible `normalizeOperation` 必须显式声明 mode。
+- **有界评价**：功能负例检查无效 JSON、双编码、旧字段、replace 缺集合及未知 step；接线样例使用实际 Pi CLI、PPT extension 与 scripted provider，验证一次 JSON 字符串解码、replace 激活、ID 编辑保留旧 step、provider schema 的 mode 与 patch 移除。此 fixture 只证明功能和链路 reachability；没有真实 provider 自主采用、语义收益或净收益证据，不启动付费 run。
 
 
 

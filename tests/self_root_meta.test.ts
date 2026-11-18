@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SelfRoot, FLOOR, PROTOCOL, META_STRATEGY, hash } from '../demo/self_root.ts';
+import { SelfRoot, FLOOR, PROTOCOL, META_STRATEGY, hash, normalizeOperation, providerOperationSchema } from '../demo/self_root.ts';
 
 // EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism plus fixed host-given
 // fields; the T0 design turn fills only the task side (orchestration.contract). Offline checks cover the fixed
@@ -21,6 +21,45 @@ const taskSide = { task_goal: 'Deliver the artifact this run must produce', task
 const design = { ...seed, contract: taskSide };
 const fields = readFileSync(new URL('../demo/prompts/self_root_meta_fields.md', import.meta.url), 'utf8');
 const recordableTool = async (_path: string, _source: string) => ({ kind: 'tool', name: 'deck_check', description: 'fixture', enabled: true, program: true });
+
+test('reflect_orchestration uses one explicit edit/replace field and decodes one JSON object layer', async () => {
+  const schema = providerOperationSchema('orchestration', undefined, seed);
+  assert.ok(!('orchestration_patch' in schema.properties));
+  assert.deepEqual(schema.properties.orchestration.properties.mode.enum, ['edit','replace']);
+  assert.match(schema.properties.orchestration.description, /unchanged.*retained|omitted current item/i);
+  const payload = { mode: 'edit', transitions_by_id: { build_to_review: { from: 'build', to: 'review' } } };
+  assert.deepEqual(normalizeOperation('orchestration', { orchestration: JSON.stringify(payload) }).orchestration, payload);
+  assert.throws(() => normalizeOperation('orchestration', { orchestration: JSON.stringify(JSON.stringify(payload)) }), /must decode to an object/);
+  assert.throws(() => normalizeOperation('orchestration', { orchestration_patch: {} }), (error: any) => {
+    assert.match(error.surface.correction, /orchestration_patch has been removed/);
+    assert.match(error.surface.correction, /steps_by_id/);
+    return true;
+  });
+});
+
+test('orchestration edit upserts by exact ID and rejected step references return repair context without activation', async () => {
+  const s = make(); await tick(s);
+  const edit = normalizeOperation('orchestration', { orchestration: {
+    mode: 'edit', steps_by_id: { review: { role: 'agent' } },
+    transitions_by_id: { build_to_review: { from: 'work', to: 'review', on: { type: 'action', action: 'office.render' }, requires: [{ type: 'office.render' }] } },
+  } });
+  await s.transaction(edit); await tick(s);
+  assert.ok(s.current.orchestration.steps.some((step: any) => step.id === 'review'));
+  assert.ok(s.current.orchestration.steps.some((step: any) => step.id === 'work'));
+  assert.equal(s.current.orchestration.transitions.find((row: any) => row.id === 'build_to_review').to, 'review');
+  const activeRevision = s.revision;
+  await assert.rejects(s.transaction({ orchestration: { mode: 'edit', transitions_by_id: {
+    build_to_review: { to: 'missing_step' },
+  } } }), (error: any) => {
+    assert.equal(error.surface.current_revision, activeRevision);
+    assert.deepEqual(error.surface.valid_step_ids, ['work','review']);
+    assert.deepEqual(error.surface.transaction, { status: 'rejected_not_activated', current_revision: activeRevision, candidate_revision: activeRevision, response_chain: 'aborted' });
+    assert.match(error.surface.correction, /valid step IDs \[work, review\]/);
+    return true;
+  });
+  assert.equal(s.revision, activeRevision);
+  assert.equal(s.current.orchestration.transitions.find((row: any) => row.id === 'build_to_review').to, 'review');
+});
 
 test('META fixed fields: the static prompt file is host-given, task-free and ordered; the board starts empty', async () => {
   // The fixed fields stay in a prompt file that enters the stable prefix unchanged: editing the agent's harness
@@ -103,22 +142,43 @@ test('META contract: the design record keeps the task side when a later orchestr
   assert.match(s.metaBoard(), /TASK GOAL: Deliver the artifact/, 'the declared task side stays visible');
 });
 
-test('META board: a tool change activates with a later request and counts as used only when the tool runs', async () => {
+test('META board: activation, versioned exposure and successful execution are separate facts', async () => {
   const s = make({ meta: true }, {}, recordableTool); await tick(s);
   await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
   await s.transaction({ baseRevision: s.revision, components: [{ op: 'define', kind: 'tool', name: 'deck_check', source: '# program: on\n# fixture tool' }] }); await tick(s);
   let acc = s.metaAcceptance();
   assert.equal(acc.changes, 1, 'the post-design activation is one change');
-  assert.equal(acc.activated, 0, 'no later request has run yet');
-  assert.equal(acc.used_later, 0);
-  s.fact('provider_input', { component_addresses: ['tool.deck_check'] });
+  assert.equal(acc.activated, 1, 'a committed activation is recorded separately from later exposure');
+  assert.equal(acc.exposed, 0);
+  assert.equal(acc.successful_execution, 0);
+  const change = all(s).filter((r: any) => r.type === 'reflection_activated' && r.value.parent === undefined).at(-1).value;
+  const component = change.component_bindings[0];
+  s.fact('provider_input', { component_delivery: [{ ...component, surface: 'tool_schema' }] });
   acc = s.metaAcceptance();
-  assert.equal(acc.activated, 1, 'a later provider request ran after the write');
-  assert.equal(acc.used_later, 0, 'being visible in the request is not running the tool');
-  s.fact('event', { type: 'tool_succeeded', facts: { tool: 'deck_check' } });
+  assert.equal(acc.exposed, 1, 'the matching version and hash were on a provider request');
+  assert.equal(acc.successful_execution, 0, 'schema exposure is not execution');
+  s.fact('component_execution', { ...component, outcome: 'failure' });
+  assert.equal(s.metaAcceptance().successful_execution, 0, 'failed execution is not use');
+  s.fact('component_execution', { ...component, version: component.version - 1, outcome: 'success' });
+  assert.equal(s.metaAcceptance().successful_execution, 0, 'a later same-name version is not credited');
+  s.fact('component_execution', { ...component, outcome: 'success' });
   acc = s.metaAcceptance();
-  assert.equal(acc.used_later, 1, 'the tool ran in a later task action');
-  assert.match(s.metaBoard(), /changes 1 \/ activated 1 \/ used_later 1/);
+  assert.equal(acc.successful_execution, 1, 'only the changed version successful execution is credited');
+  assert.equal(acc.semantic_use, 'unknown', 'the runtime does not infer semantic use');
+  assert.match(s.metaBoard(), /changes 1 \/ activated 1 \/ exposed 1 \/ successful_execution 1 \/ semantic_use unknown/);
+});
+
+test('META board: a committed merged reflection activates each successful intent in the same response', async () => {
+  const s = make({ meta: true }); await tick(s);
+  await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
+  const a = { kind: 'tool', name: 'tool_a', version: 1, hash: 'hash-a' };
+  const b = { kind: 'tool', name: 'tool_b', version: 1, hash: 'hash-b' };
+  s.fact('reflection_activated', { revision: 3, addresses: ['components.tool.tool_a'], component_bindings: [a] });
+  s.fact('reflection_activated', { revision: 3, addresses: ['components.tool.tool_a', 'components.tool.tool_b'], component_bindings: [a, b] });
+  s.fact('reflection_activated', { parent: 2, revision: 3, addresses: ['components.tool.tool_a', 'components.tool.tool_b'], component_bindings: [a, b] });
+  const acceptance = s.metaAcceptance();
+  assert.equal(acceptance.changes, 2);
+  assert.equal(acceptance.activated, 2, 'the aggregate commit covers both intent address sets and exact bindings');
 });
 
 test('META board flow: compact during the task, expanded at a segment boundary, settled once at task end', async () => {
@@ -139,9 +199,32 @@ test('META board flow: compact during the task, expanded at a segment boundary, 
   s.fact('request_record', { request: s.request });
   assert.ok(!s.metaBoard().includes('SEGMENT BOUNDARY'), 'one request later the compact line returns');
   s.taskEnd('delivered');
-  assert.match(s.metaBoard(), /SESSION CLOSED - self-change counters settled once: changes 0 \/ activated 0 \/ used_later 0/);
+  assert.match(s.metaBoard(), /SESSION CLOSED - self-change facts settled once: changes 0 \/ activated 0 \/ exposed 0 \/ successful_execution 0 \/ semantic_use unknown/);
   const inventory = all(s).filter((r: any) => r.type === 'meta_harness_inventory');
-  assert.deepEqual(inventory[0].value.self_changes, { changes: 0, activated: 0, used_later: 0, last_change: null, contract: taskSide });
+  assert.deepEqual(inventory[0].value.self_changes, { changes: 0, activated: 0, exposed: 0, successful_execution: 0, semantic_use: 'unknown', last_change: null, contract: taskSide });
+});
+
+test('META focus: a source read permits one repair request and an incomplete sweep is recorded honestly', async () => {
+  const s = make({ meta: true }); await tick(s);
+  await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
+  s.fact('render_action_receipt', { action_ref: 'render:1' }); await tick(s);
+  assert.ok(s.review, 'an in-task feedback receipt opens the pass');
+  s.exit({ result: { reason: 'recorded facts reviewed', entry_question_responses: ['none', 'none', 'none'] } }); await tick(s);
+  assert.ok(s.review && s.isMetaSpecialistTurn, 'the specialist sweep follows induction');
+  s.reviewRequests = 2;
+  s.fact('provider_input', { pin: { mode: 'reflect' } });
+  s.fact('tool_result', { tool: 'read_self_component', is_error: false });
+  await tick(s);
+  assert.ok(s.review && s.isMetaSpecialistTurn, 'a real source read on request 2 keeps the same focus open');
+  s.reviewRequests = 3; s.fact('provider_input', { pin: { mode: 'reflect' } }); await tick(s);
+  assert.equal(all(s).find((r: any) => r.type === 'meta_specialist_turn_closed')?.value.outcome, 'execution_incomplete');
+  for (let i = 1; i < 7; i++) {
+    s.reviewRequests = 2; s.fact('provider_input', { pin: { mode: 'reflect' } }); await tick(s);
+  }
+  const sweep = all(s).findLast((r: any) => r.type === 'meta_specialist_sweep_closed');
+  assert.equal(sweep.value.outcome, 'incomplete');
+  assert.equal(sweep.value.completed_turns, 7);
+  assert.equal(sweep.value.incomplete_turns, 7);
 });
 
 test('META replaces the other mechanisms and leaves an agent-declared entrance schema untouched', async () => {
@@ -170,7 +253,8 @@ test('META T2: task end books the harness inventory once; before_session_end nev
   assert.equal(inventory[0].value.components.length, 1);
   assert.ok(inventory[0].value.design, 'the inventory cites the design record');
   assert.equal(inventory[0].value.self_changes.changes, 1, 'the prompt change is counted, the design activation is not');
-  assert.equal(inventory[0].value.self_changes.activated, 0, 'no request ran after the change');
+  assert.equal(inventory[0].value.self_changes.activated, 1, 'the committed write is activated independent of later exposure');
+  assert.equal(inventory[0].value.self_changes.exposed, 0, 'no later request exposed the changed prompt');
   await s.event('before_session_end', 'session:1', {});
   assert.equal(count(s, 'meta_harness_inventory'), 1);
   const off = make(); await tick(off); off.taskEnd('delivered');
@@ -289,8 +373,8 @@ test('META resident prompt: no host-opened review entrance and the fixed fields 
   assert.ok(!meta.includes('the host opens evolution reviews at work boundaries'));
   assert.ok(!meta.includes('FIXED REVIEW ENTRANCE'));
   assert.ok(!meta.includes('The host opens a validation window only for a declared effect'));
-  assert.ok(meta.includes('No host-opened review entrance exists in this run'));
-  assert.ok(meta.includes('SELF-STATE MATERIAL') && meta.includes('TASK GOAL') && meta.includes('self-change counters'));
+  assert.ok(meta.includes('META mechanically delivers boundary events'), 'the static prompt describes the current runtime routing');
+  assert.ok(meta.includes('SELF-STATE MATERIAL') && meta.includes('TASK GOAL') && meta.includes('recorded self-change facts'));
   assert.ok(base.includes('FIXED REVIEW ENTRANCE'), 'the B-arm prompt still describes the entrance its own arm opens');
 });
 

@@ -17,6 +17,8 @@ const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], e
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide', 'decide_exit', 'decide_validation'];
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
+  /** Some task adapters record qualitative effects without opening numeric comparison windows. */
+  validationWindows?: 'declared_effect' | 'explicit_predicate';
   processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
   /** Adapter-declared task episode horizon: the 1-based active episode and total count; null (or a total of 1) hides the fact line. */
   taskEpisodes?: () => { active: number; total: number } | null;
@@ -109,7 +111,7 @@ export const WINDOW_RULES = {
   baseline: 'every metric of the last segment_summary at or before activation (baseline_last) and the per-metric mean over all segment_summaries at or before activation (baseline_mean); process and outcome metrics alike',
   segment: 'the work between two counted boundaries; each boundary follows the configured number of execute-mode requests containing a task action, and submit_unit with work since the previous counted boundary also counts',
   due: 'the first counted boundary after activation with later use in a comparable work phase; at terminal task closure an open window becomes due_unverified',
-  later_use: 'a recorded use of a changed tool/component, or an execute request whose phase matches the declared comparable phase; a request alone is insufficient',
+  later_use: 'a later successful execution receipt for the exact changed component version; prompt or memory exposure does not count',
   observed: 'every metric of the segment_summary of the due boundary; differences against baseline_last and baseline_mean, no direction or verdict',
   verification: 'predicate evaluation requires matching work phase, metric present in the declared comparison segment and a recorded later use; otherwise unresolved and retained as an open review obligation',
 };
@@ -143,44 +145,56 @@ export function entranceAskBlock(layer: boolean): string {
  * objects, the orchestration contract and the self-change counters - is rendered by metaBoard() in the
  * self view. Every string here names mechanism, facts or boundaries only; task content reaches the agent through the
  * runner's task prompt and through its own orchestration contract. */
-export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The self-evolution mechanism is host-given and is not redesigned here; the task side - task goal, task acceptance and this task\'s run plan - is yours and lives in your orchestration contract. The runtime books facts - repeats, costs, effects, inventory and recurrence - without ranking, diagnosis or recommendation, and opens no review of its own: at three recorded run boundaries - an episode closes, a delivery transition stalls, or long execution adds no artifact - it opens one evolution pass outside the task turn (user decision 2026-11-17). Your orchestration decides when task segments run and when you look at the harness. Judgment stays with you.';
-/** META pass (user decision 2026-11-17): the evolution judgment runs in one host-opened pass at a recorded run
- * boundary, not as a resident rule inside the task turn. The pass says what exists; what it changes is the agent's. */
-export const META_PASS_STRATEGY = 'EVOLUTION PASS. This request runs outside the task turn: the task step is suspended and the view carries the run\'s recorded facts from the window named in the pass facts. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads any component\'s source and its retained revisions; reflect_component and reflect_orchestration write components, policy and orchestration, and each write activates at the next request boundary, before the next provider request, with no separate assembly step. Judgment stays with you: act on the recorded facts, or close the pass with decide_exit - a judged no-change is a valid closure; decide_exit may carry result.carry, a list of free-text notes (open questions, unfinished investigations, retained understanding) stored and rendered verbatim at the next pass entry. The host presents facts without ranking, diagnosis, recommendation or forced order. The pass runs as two bounded rounds - induction, then capability - each closing through decide_exit or at its request cap; the task resumes when the final round closes.';
+export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. While a task is still active, an intermediate render/feedback checkpoint, an unresolved delivery stall, or sustained execution without artifact progress can open a bounded self-evolution pass. The current task pauses for that pass and resumes at the same step; evolution is not deferred until one task ends so the next can use it. Judgment stays with you.';
+/** META pass: the host opens an in-task checkpoint; the Agent judges and applies any harness change. */
+export const META_PASS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at an intermediate progress/feedback checkpoint, not completed; after this bounded pass, resume the same task at the same step. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads a component\'s source and retained revisions; reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit. Round 2 is seven focused self-evolution execution turns: analyze the focus, then apply a justified change through its reflection interface. If analysis needs a second request, it stays on the same focus; a successful hot modification or an explicit evidence-based no_change closes that focus. Resume this task after the seventh focus so later task work can use the active harness.';
 /** Two rounds (user decision 2026-11-17): induction and capability inference never share a round. Round 1 closes
- * with the agent's own reading of the window; round 2 opens at the next request boundary with that closure rendered
- * at its entry and the entrance questions as its frame. Per-round request caps; the occasion total stays 8. */
-export const META_PASS_ROUND_CAPS = [3, 5] as const;
-export const META_PASS_REQUEST_CAP = META_PASS_ROUND_CAPS[0] + META_PASS_ROUND_CAPS[1];
+ * with the agent's own reading of the window; round 2 consists of seven sequential, focus-specific turns. */
 export const META_PASS_ROUND1_LINE = 'ROUND 1 OF 2 - INDUCTION: this round closes through decide_exit with your own reading of the window\'s recorded facts - recurrences, costs, losses, outcome paths; result.reason and result.carry are rendered verbatim at the round-2 entry. Round 2 opens at the next request boundary and asks a different question. Writes stay legal in every round.';
-export const META_PASS_ROUND2_LINE = 'ROUND 2 OF 2 - CAPABILITY: round 1 is closed; its reason and carry are rendered in this entry and its closure is readable at the named ledger ref. The entrance questions below are this round\'s frame; the task resumes when this round closes.';
+export const META_PASS_SPECIALISTS = [
+  { id: 'prompt', label: 'Prompt', description: 'Inspect prompt components, their exposure, use, outcomes, and the instructions actually visible in a failed request. Locate a missing goal, constraint, or observable completion criterion and make the smallest correction in the narrowest applicable prompt. If the instruction was visible, locate the failure in the relevant component or tool instead.', writeInterface: 'reflect_component(kind="prompt")' },
+  { id: 'context', label: 'Context', description: 'Inspect policy.context, recorded request composition, and the next decision. Trace a missing necessary fact through source, selection, assembly, and compaction. Keep decisive current facts visible and large supporting material reachable by exact reference; change only the policy responsible for the gap.', writeInterface: 'reflect_orchestration (policy.context)' },
+  { id: 'skill', label: 'Skill', description: 'Inspect skill exposure, index and body reads, use, and outcomes. Locate a failure in discovery, invocation, or execution. Check existing skills for overlap; describe when the procedure applies and when it does not, then give inputs, steps, observable outputs, and ordinary recovery.', writeInterface: 'reflect_component(kind="skill")' },
+  { id: 'tool', label: 'Tool', description: 'Inspect tool calls, rejected calls, and outcomes. Identify an operation or query that existing tools cannot express or verify. Define task-language inputs and a result that distinguishes execution from verification, with an evidence reference or actionable error.', writeInterface: 'reflect_component(kind="tool")' },
+  { id: 'subagent', label: 'Subagent', description: 'Inspect subagent calls, returned evidence, and the parent decision that followed. Define an independently answerable question, necessary input references, permitted work, and a stopping condition. Return a conclusion, evidence, and remaining uncertainty that the parent can act on.', writeInterface: 'reflect_component(kind="subagent")' },
+  { id: 'memory', label: 'Memory', description: 'Inspect memory exposure, later use, and outcomes. Separate observations, inferences, and counterexamples; give provenance, applicability, and a condition for revision or expiry. Keep unfinished task state in continuation state and revise an existing memory when its conclusion changes.', writeInterface: 'reflect_component(kind="memory")' },
+  { id: 'loop', label: 'Loop', description: 'Inspect orchestration, policy outside context, and recorded step transitions. Find a transition that wasted effort, delayed action, or stopped before completion evidence. Specify the observable trigger, next action, return point, and stopping condition; account for added requests and management turns.', writeInterface: 'reflect_orchestration' },
+] as const;
+export const META_PASS_SPECIALIST_REQUEST_CAP = 3;
+export const META_PASS_ROUND_CAPS = [3, META_PASS_SPECIALISTS.length * META_PASS_SPECIALIST_REQUEST_CAP] as const;
+export const META_PASS_REQUEST_CAP = META_PASS_ROUND_CAPS[0] + META_PASS_ROUND_CAPS[1];
+export const META_PASS_ROUND2_LINE = 'ROUND 2 OF 2 - SELF-EVOLUTION EXECUTION: round 1 is closed; its reason and carry are shown as recorded facts. This focus is an execution turn, not a report. Analyze the evidence and hot-modify through the listed reflection interface when it supports a concrete improvement; do not leave a justified change as prose. A successful reflection or explicit evidence-based no_change closes the focus immediately. If a second request is still reading evidence or repairing a rejected change, one conditional final request stays on this same focus. The next request then presents the next focus. Hard limit: three provider requests per focus.';
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
   const binding = { type: 'object', properties: { kind: { type: 'string', enum: ['prompt','skill','tool','memory','context'] }, name: { type: 'string' }, version: { type: 'integer', minimum: 1 } }, required: ['kind','name'], additionalProperties: false };
   const contract = { type: 'object', description: `Task-side contract written at the T0 design turn and rendered in the self view: task_goal, task_acceptance, and loop_policy.look_when - each trigger on one task-side event (${TASK_EVENTS.join(' | ')}), never a counter or a clock.`,
     properties: { task_goal: { type: 'string' }, task_acceptance: { type: 'string' }, loop_policy: { type: 'object' } }, required: ['task_goal','task_acceptance','loop_policy'], additionalProperties: false };
-  // A minimal real loop, not an empty shell: a transition turns when its receipt arrives, and the contract carries
-  // the task side the host does not supply.
-  const example = { revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [],
-    contract: { task_goal: 'The task artifact this run must deliver', task_acceptance: 'How this run verifies its own delivery',
-      loop_policy: { look_when: [{ on: 'segment_boundary', look: 'what the last segment recorded, with which task facts' }] } },
-    transitions: [{ id: 'again', from: 'work', on: { type: 'action', action: 'self.change' }, requires: [{ type: 'self.change' }], to: 'work' }] };
-  const definition = current ?? example;
-  return { type: 'object', properties: { revision: { type: 'integer' }, contract, roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } }, slots: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false } }, steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names (read, write, edit, office.render, ...) this step may call. Omit to allow every tool; protocol tools are never scoped by it.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['id','role'], additionalProperties: false } }, decisions: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false } }, transitions: { type: 'array', description: 'Each row: {id, from, on, requires, to}. on is {type:"action",action:"<an action receipt type this runtime records>"} or {type:"decision",id:"<decision id>"}; requires lists the receipts that must be cited for it to fire.', items: { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['id','from','on','requires','to'], additionalProperties: false } } }, required: ['roles','slots','steps','decisions','transitions'], additionalProperties: false, current: definition, example };
+  const step = { type: 'object', properties: { id: { type: 'string' }, role: { type: 'string' }, decision: { type: 'string' }, actions: { type: 'array', description: 'Permission scope for this step: tool names this step may call. Omit to allow every granted tool.', items: { type: 'string' } }, bindings: { type: 'array', items: binding } }, required: ['role'], additionalProperties: false };
+  const transition = { type: 'object', properties: { id: { type: 'string' }, from: { type: 'string' }, on: { type: 'object' }, requires: { type: 'array', items: receiptCondition }, to: { type: 'string' } }, required: ['from','to'], additionalProperties: false };
+  const role = { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false };
+  const slot = { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string', enum: ['json','text'] }, initial: {}, writers: { type: 'array', items: { type: 'string' } } }, required: ['id','type'], additionalProperties: false };
+  const decision = { type: 'object', properties: { id: { type: 'string' }, judge: { type: 'string' }, question: { type: 'string' }, evidence: { type: 'array', items: receiptCondition }, output, writes: { type: 'object' } }, required: ['id','judge','question','evidence','output'], additionalProperties: false };
+  const example = { mode: 'edit', transitions_by_id: { build_to_review: { from: 'build', to: 'review', on: { type: 'action', action: 'office.render' }, requires: [{ type: 'office.render' }] } } };
+  return { type: 'object', description: 'Use mode="edit" for ID-based upserts that retain every omitted current item; use mode="replace" only when sending the complete definition. For an edit, steps_by_id and transitions_by_id are maps keyed by the exact item ID. Example: {mode:"edit", transitions_by_id:{build_to_review:{from:"build",to:"review",on:{type:"action",action:"office.render"},requires:[{type:"office.render"}]}}}.',
+    properties: { mode: { type: 'string', enum: ['edit','replace'] }, contract,
+      steps_by_id: { type: 'object', description: 'Edit mode only: add/update steps by ID. Each value contains only fields to add/change; the map key supplies id.', additionalProperties: { ...step, required: [] } },
+      transitions_by_id: { type: 'object', description: 'Edit mode only: add/update transitions by ID. Each value contains only fields to add/change; the map key supplies id.', additionalProperties: { ...transition, required: [] } },
+      roles: { type: 'array', items: role }, slots: { type: 'array', items: slot },
+      steps: { type: 'array', items: { ...step, required: ['id','role'] } }, decisions: { type: 'array', items: decision },
+      transitions: { type: 'array', description: 'Each row: {id, from, on, requires, to}. on is {type:"action",action:"<recorded action receipt type>"} or {type:"decision",id:"<decision id>"}.', items: { ...transition, required: ['id','from','on','requires','to'] } } },
+    required: ['mode'], additionalProperties: false, current: current ?? null, example };
 }
 export function operationContract(kind: OperationKind) {
   const reason = { type: 'string', description: 'Optional interpretation in your own words.' };
+  const successPredicate = { type: 'object', description: 'Optional numeric comparison using an existing recorded metric. Example: {metric:"render.warnings_latest",direction:"decrease",segment:"last"}. Omit when no comparable metric exists; expected_effect can describe a qualitative intent.',
+    properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase','decrease'] }, segment: { type: 'string', enum: ['last','mean'] }, scope: { type: 'string' } }, required: ['metric','direction','segment'], additionalProperties: false };
   if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete.', properties: { reason }, required: [] as string[] };
   if (kind === 'validation') return { name: 'decide_validation', description: 'Read the due window; missing or provisional comparisons remain unresolved.', properties: { window: { type: 'string' } }, required: [] as string[] };
-  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','subagent','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' }, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
+  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','subagent','memory'] }, name: { type: 'string' }, source: { type: 'string' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: successPredicate, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
   const context = { type: 'object', properties: { order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all','latest','none'] }, history: { type: 'object' }, tool_results: { type: 'object' }, tool_args: { type: 'object' }, self_view: { type: 'object' }, prompt_layout: { type: 'object', properties: { volatile_tail: { type: 'string', enum: ['self_view','projection','both'] } }, additionalProperties: false } }, additionalProperties: false };
   const policy = { type: 'object', properties: { modes: { type: 'object' }, routes: { type: 'array' }, methods: { type: 'object' }, memory: { type: 'object' }, memory_strategy: { type: 'object' }, context, request: { type: 'object' }, review: { type: 'object' } }, additionalProperties: false };
-  const orchestrationPatch = { type: 'object', properties: {
-    roles: { type: 'array' }, slots: { type: 'array' }, steps: { type: 'array' }, decisions: { type: 'array' }, transitions: { type: 'array' },
-    steps_by_id: { type: 'object', additionalProperties: { type: 'object' } },
-  }, additionalProperties: false };
-  return { name: 'reflect_orchestration', description: 'Apply a current orchestration patch or replacement, an atomic typed policy merge patch, component changes, or restore. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), orchestration_patch: orchestrationPatch, policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, restore_scope: { type: 'array', items: { type: 'string' }, description: 'Addresses the restore is intended to revert; the host reports every other address the restore would also change.' }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: { type: 'object' }, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: [] as string[] };
+  return { name: 'reflect_orchestration', description: 'Apply orchestration edits/replacement, an atomic typed policy merge patch, component changes, or restore. For workflow edits use orchestration:{mode:"edit",steps_by_id:{...},transitions_by_id:{...}}; omitted IDs are retained. Use mode:"replace" only with all roles, slots, steps, decisions and transitions. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, restore_scope: { type: 'array', items: { type: 'string' }, description: 'Addresses the restore is intended to revert; the host reports every other address the restore would also change.' }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: successPredicate, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: [] as string[] };
 }
 
 /** Provider-visible JSON schema generated from the one descriptor. The Agent's own mode exit schema
@@ -198,9 +212,16 @@ export function providerOperationSchema(kind: OperationKind, modeExitSchema?: an
 /** Dispatch-side check against exactly the provider-visible schema plus the stated conditional semantics. */
 export function normalizeOperation(kind: OperationKind, args: any, modeExitSchema?: any, opts?: { layer?: boolean }) {
   const schema = providerOperationSchema(kind, modeExitSchema, undefined, opts);
-  const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+  let a = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
+  if (kind === 'orchestration') for (const field of ['orchestration', 'policy'] as const) if (typeof a[field] === 'string') {
+    try { a[field] = JSON.parse(a[field]); }
+    catch { throw operationError(`${field} is a JSON string but cannot be decoded`, kind, args, { invalid: [field], correction: `Send ${field} as a JSON object, not a quoted string. If you encode it in raw JSON, encode this object exactly once.` }); }
+    if (!a[field] || typeof a[field] !== 'object' || Array.isArray(a[field])) throw operationError(`${field} must decode to an object`, kind, args, { invalid: [field], correction: `Send one JSON object for ${field}; do not double-encode it or send an array.` });
+  }
+  if (kind === 'orchestration' && a.orchestration !== undefined) a.orchestration = normalizeOrchestrationInput(a.orchestration);
   const unknown = Object.keys(a).filter(k => a[k] !== undefined && !(k in schema.properties));
-  if (unknown.length) throw operationError(`${operationContract(kind).name}: unknown field(s) ${unknown.join(', ')}`, kind, a, { invalid: unknown });
+  if (unknown.length) throw operationError(`${operationContract(kind).name}: unknown field(s) ${unknown.join(', ')}`, kind, a, { invalid: unknown,
+    correction: kind === 'orchestration' && unknown.includes('orchestration_patch') ? 'orchestration_patch has been removed from the Agent interface. Use orchestration:{mode:"edit",steps_by_id:{...},transitions_by_id:{...}}; use mode:"replace" only for the complete definition.' : undefined });
   for (const key of schema.required) if (a[key] === undefined || a[key] === '') throw Error(`${operationContract(kind).name}: ${key} is required`);
   for (const [key, spec] of Object.entries<any>(schema.properties)) {
     const v = a[key]; if (v === undefined) continue;
@@ -211,7 +232,7 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
   if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string' && !(a.write === 'patch' && Array.isArray(a.patch) && a.patch.length)) throw Error('reflect_component: define/redefine needs source (or write:patch with a patch array)');
   if (kind === 'component' && a.patch !== undefined && (!Array.isArray(a.patch) || a.patch.some((p: any) => !p || typeof p.find !== 'string' || typeof p.replace !== 'string'))) throw operationError('patch must be an array of {find, replace} string pairs', kind, a, { invalid: ['patch'] });
   if (kind === 'component' && a.op === 'restore' && a.version === undefined) throw Error('reflect_component: restore needs version');
-  if (kind === 'orchestration' && !['policy', 'orchestration', 'orchestration_patch', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include orchestration, orchestration_patch, policy, components or restore', kind, a);
+  if (kind === 'orchestration' && !['policy', 'orchestration', 'components', 'restore'].some(k => a[k] !== undefined)) throw operationError('reflect_orchestration: include orchestration, policy, components or restore', kind, a);
   if (['component','orchestration'].includes(kind) && a.evidence_refs !== undefined && (!Array.isArray(a.evidence_refs) || a.evidence_refs.some((ref: any) => typeof ref !== 'string'))) throw operationError('evidence_refs must be an array of strings when supplied', kind, a, { invalid: ['evidence_refs'] });
   if (['component','orchestration'].includes(kind) && a.success_predicate !== undefined && (!a.success_predicate || typeof a.success_predicate.metric !== 'string' || !['increase','decrease'].includes(a.success_predicate.direction) || !['last','mean'].includes(a.success_predicate.segment))) throw operationError('success_predicate needs metric, direction (increase|decrease), and segment (last|mean)', kind, a, { invalid: ['success_predicate'] });
   const normalized = Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
@@ -221,12 +242,31 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
 function operationError(message: string, kind: OperationKind, input: any, surface: any = {}) {
   const error: any = new Error(message);
   error.surface = { operation: operationContract(kind).name, received: input, writable: surface.writable ?? {
-    policy: { meaning: 'typed orchestration and context policy patch', current: 'read_self(section="policy")', accepts: 'named policy fields validated atomically' }, orchestration: { meaning: 'complete executable orchestration definition', current: 'read_self(section="definition")', accepts: 'roles, slots, steps, decisions and transitions' },
+    policy: { meaning: 'typed orchestration and context policy patch', current: 'read_self(section="policy")', accepts: 'named policy fields validated atomically' }, orchestration: { meaning: 'ID-based edit or complete replacement', current: 'read_self(section="definition")', accepts: 'edit: mode + steps_by_id/transitions_by_id; replace: mode + roles, slots, steps, decisions, transitions' },
     components: { meaning: 'concrete Agent component content', current: 'read_self(section="self")' },
     restore: { meaning: 'restore a saved Agent revision', current: 'read_self(section="lineage")' },
-  }, invalid: surface.invalid ?? [], correction: surface.correction ?? 'Edit the named writable item and submit this operation again in the same turn.' };
+  }, invalid: surface.invalid ?? [], correction: surface.correction ?? 'Edit the named writable item and submit this operation again in the same turn.',
+  ...(surface.current_revision !== undefined ? { current_revision: surface.current_revision } : {}),
+  ...(surface.valid_step_ids !== undefined ? { valid_step_ids: surface.valid_step_ids } : {}),
+  ...(surface.transaction !== undefined ? { transaction: surface.transaction } : {}) };
   error.message = `${message}; correction_surface=${JSON.stringify(error.surface)}`;
   return error;
+}
+
+function normalizeOrchestrationInput(value: any) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw operationError('orchestration must be an object', 'orchestration', { orchestration: value }, { invalid: ['orchestration'], correction: 'Send orchestration as an object with mode:"edit" or mode:"replace"; do not quote/serialize the object.' });
+  if (typeof value.mode !== 'string' || !['edit','replace'].includes(value.mode)) throw operationError('orchestration.mode must be edit or replace', 'orchestration', { orchestration: value }, { invalid: ['orchestration.mode'], correction: 'Use {mode:"edit",steps_by_id:{...},transitions_by_id:{...}} for ID-based changes, or {mode:"replace",roles,slots,steps,decisions,transitions} for a complete definition.' });
+  if (value.mode === 'replace') {
+    const missing = ['roles','slots','steps','decisions','transitions'].filter(key => !Array.isArray(value[key]));
+    if (missing.length) throw operationError(`replace mode needs complete arrays: ${missing.join(', ')}`, 'orchestration', { orchestration: value }, { invalid: missing.map(key => `orchestration.${key}`), correction: 'Send all five arrays for replace, or switch to mode:"edit" and use steps_by_id/transitions_by_id to retain unchanged items.' });
+  }
+  if (value.mode === 'edit') {
+    const invalid = ['steps_by_id','transitions_by_id'].filter(key => value[key] !== undefined && (!value[key] || typeof value[key] !== 'object' || Array.isArray(value[key])));
+    if (invalid.length) throw operationError(`${invalid.join(' and ')} must be objects keyed by item ID`, 'orchestration', { orchestration: value }, { invalid, correction: 'Use object maps keyed by the exact step/transition IDs; each value is an object of fields to add or update.' });
+    const extra = Object.keys(value).filter(key => !['mode','contract','steps_by_id','transitions_by_id'].includes(key));
+    if (extra.length) throw operationError(`edit mode does not accept full-definition fields: ${extra.join(', ')}`, 'orchestration', { orchestration: value }, { invalid: extra, correction: 'In edit mode use steps_by_id/transitions_by_id maps (plus optional contract); use mode:"replace" to send complete arrays.' });
+  }
+  return value;
 }
 
 function normalizeOrchestration(value: any) {
@@ -248,22 +288,29 @@ function normalizeOrchestration(value: any) {
   }) : value.transitions;
   return { ...value, roles, slots, decisions, ...(transitions ? { transitions } : {}) };
 }
-function mergeOrchestrationPatch(current: any, patch: any) {
-  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw Error('orchestration_patch must be an object');
+function mergeOrchestrationEdit(current: any, edit: any) {
   const next = copy(current);
-  for (const key of ['roles', 'slots', 'steps', 'decisions', 'transitions']) {
-    if (patch[key] !== undefined) {
-      if (!Array.isArray(patch[key])) throw Error(`orchestration_patch.${key} must be an array`);
-      next[key] = patch[key];
+  for (const [field, target] of [['steps_by_id','steps'],['transitions_by_id','transitions']] as const) {
+    const entries = edit[field] ?? {};
+    const rows = [...(next[target] ?? [])];
+    const byId = new Map(rows.map((row: any, index: number) => [row.id, index]));
+    for (const [id, fields] of Object.entries<any>(entries)) {
+      if (!id.trim() || !fields || typeof fields !== 'object' || Array.isArray(fields)) throw operationError(`${field}.${id || '<empty>'} must contain an object for a non-empty ID`, 'orchestration', { orchestration: edit }, { invalid: [`orchestration.${field}.${id}`], correction: 'Use a non-empty exact ID as the map key and an object of fields as its value.' });
+      if (fields.id !== undefined && fields.id !== id) throw operationError(`${field}.${id}.id must match its map key`, 'orchestration', { orchestration: edit }, { invalid: [`orchestration.${field}.${id}.id`], correction: `Remove the nested id or set it to "${id}"; the map key is the canonical item ID.` });
+      const row = { ...fields, id };
+      const index = byId.get(id);
+      if (index === undefined) { byId.set(id, rows.length); rows.push(row); }
+      else rows[index] = { ...rows[index], ...row };
     }
+    next[target] = rows;
   }
-  if (patch.steps_by_id) {
-    if (!patch.steps_by_id || typeof patch.steps_by_id !== 'object' || Array.isArray(patch.steps_by_id)) throw Error('orchestration_patch.steps_by_id must be an object');
-    next.steps = next.steps.map((step: any) => patch.steps_by_id[step.id] ? { ...step, ...patch.steps_by_id[step.id] } : step);
-  }
-  // The task-side contract is one object: a patch replaces it whole, like a definition field, never field-merges.
-  if (patch.contract !== undefined) next.contract = patch.contract;
+  if (edit.contract !== undefined) next.contract = edit.contract;
   return next;
+}
+export function resolveOrchestrationInput(current: any, value: any) {
+  const normalized = normalizeOrchestrationInput(value);
+  const { mode, ...fields } = normalized;
+  return mode === 'edit' ? mergeOrchestrationEdit(current, fields) : normalizeOrchestration(fields);
 }
 
 /** Deterministic completion of mechanical orchestration intent. Omitted transition events and requires
@@ -536,7 +583,7 @@ export class SelfRoot extends LiveAgentSelf {
   private workRequests = 0;
   private heartbeatDue: number[] = [];
   private reviewRequests = 0;
-  private metaPassTrigger?: { reason: string; facts: any; window: [number, number] };
+  private metaPassTrigger?: { reason: string; facts: any; window: [number, number]; round?: number; specialistIndex?: number; prior?: any };
   private reviewedQualityRefs = new Set<string>();
   private reviewObjectState: any = null;
   private pendingDelivery?: { run: () => Promise<any> };
@@ -605,13 +652,13 @@ export class SelfRoot extends LiveAgentSelf {
     // Two rounds (user decision 2026-11-17): under META the questions belong to the capability round alone - the
     // induction round closes on the agent's own schema. Non-META arms keep the EVO_ASK gating unchanged.
     const metaRound = this.mech.meta && this.metaPassTrigger ? ((this.metaPassTrigger as any).round ?? 1) : null;
-    if (this.inEvolutionReview && (metaRound !== null ? metaRound === 2 : this.mech.ask)) {
+    if (this.inEvolutionReview && (metaRound !== null ? metaRound === 1 : this.mech.ask)) {
       schema.properties = { ...(schema.properties ?? {}), entry_question_responses: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'One response per entrance question, in order; "none" is a valid response.' } };
       schema.required = [...new Set([...(schema.required ?? []), 'entry_question_responses'])];
     }
     // META pass carry (user decision 2026-11-17): an optional field, never required - the pass may close with
     // nothing to carry. Stored verbatim on the close; the next pass entry renders it (clipped at render only).
-    if (this.mech.meta && this.metaPassTrigger && this.inEvolutionReview) {
+    if (this.mech.meta && this.metaPassTrigger && this.inEvolutionReview && (metaRound ?? 1) === 1) {
       schema.properties = { ...(schema.properties ?? {}), carry: { type: 'array', items: { type: 'string' }, description: 'Optional free-text notes for the next evolution pass, rendered verbatim at its entry: open questions, unfinished investigations, retained understanding.' } };
     }
     return schema;
@@ -693,11 +740,15 @@ export class SelfRoot extends LiveAgentSelf {
   reviewStrategy(entrance = false): string {
     if (this.mech.meta) {
       if (!this.inEvolutionReview) return META_STRATEGY;
-      // Two rounds (user decision 2026-11-17): round 1 carries the induction frame alone; round 2 carries the
-      // capability frame and the entrance questions. Resident during the bounded round only.
-      return ((this.metaPassTrigger as any)?.round ?? 1) === 2
-        ? `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(this.mech.l4)}`
-        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
+      const pass: any = this.metaPassTrigger;
+      if ((pass?.round ?? 1) === 1) return `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
+      const specialist = META_PASS_SPECIALISTS[pass?.specialistIndex ?? 0] ?? META_PASS_SPECIALISTS[0];
+      const phase = this.reviewRequests >= 2
+        ? this.reviewRequests >= 3
+          ? 'FINAL REPAIR REQUEST (request 3/3): finish the already identified edit or explicit no_change now. This is the last request for this focus.'
+          : 'EXECUTION CONTINUATION (request 2/3): apply the justified hot modification now, or explicitly finish with evidence-based no_change. A third request is available only if this response still needs a source read or repair.'
+        : 'EXECUTION TURN (request 1/3): analyze this focus and hot-modify now if evidence supports it; use explicit evidence-based no_change if it does not. A successful reflection or no_change closes immediately.';
+      return `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${phase}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
     }
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
@@ -709,17 +760,14 @@ export class SelfRoot extends LiveAgentSelf {
     const row = this.ledger.find(r => r.type === 'meta_t0_design');
     return ((this.current?.orchestration as any)?.contract ?? row?.value?.contract ?? null) as OrchestrationContract | null;
   }
-  /** Mechanical self-change bookkeeping - facts only, no acceptance semantics (user decision 2026-11-17 removed the
-   * host-given acceptance standard; the counters stay as recorded facts). changes: agent-initiated structural
-   * activations after the first task segment started. activated: a later provider request ran after the write.
-   * used_later: the changed object is visible in later task execution - a tool that ran, a text kind carried by the
-   * recorded live context injection, or an orchestration/policy applied to a later request. Existing receipts only. */
+  /** Runtime facts only: exposure is request delivery; successful_execution requires a same-version successful call.
+   * Neither exposure nor a skill body read proves semantic use of prompt, memory, or skill content. */
   metaAcceptance() {
     const start = this.ledger.findIndex(r => r.type === 'meta_t0_design');
-    if (start < 0) return { changes: 0, activated: 0, used_later: 0, last: null as { ref: string; revision: number | null; addresses: string[]; activated: boolean; used_later: boolean } | null };
+    if (start < 0) return { changes: 0, activated: 0, exposed: 0, successful_execution: 0, semantic_use: 'unknown', last: null as any };
     const rows = this.ledger.slice(start + 1);
-    let changes = 0, activated = 0, usedLater = 0;
-    let last: { ref: string; revision: number | null; addresses: string[]; activated: boolean; used_later: boolean } | null = null;
+    let changes = 0, activated = 0, exposed = 0, successfulExecution = 0;
+    let last: any = null;
     rows.forEach((row, i) => {
       // Each write books an intent row at reflect time and, at the boundary, an activation row carrying `parent`.
       // The change is the intent row; counting the activation too would count one change twice, and the design's own
@@ -727,24 +775,33 @@ export class SelfRoot extends LiveAgentSelf {
       if (row.type !== 'reflection_activated' || row.value?.parent !== undefined) return;
       changes++;
       const after = rows.slice(i + 1);
-      const isActivated = after.some(r => r.type === 'provider_input');
-      const isUsed = this.changeUsed(row.value?.addresses ?? [], after);
+      const bindings = row.value?.component_bindings ?? [];
+      const addresses = new Set(row.value?.addresses ?? []);
+      const isActivated = this.ledger.some(r => r.type === 'reflection_activated' && r.value?.parent !== undefined
+        && r.value?.revision === row.value?.revision && [...addresses].every((address: string) => (r.value?.addresses ?? []).includes(address))
+        && bindings.every((b: any) => (r.value?.component_bindings ?? []).some((x: any) => x.kind === b.kind && x.name === b.name && x.version === b.version && x.hash === b.hash)));
+      const exposureRefs = this.componentExposures(row.value, after);
+      const executions = this.successfulComponentExecutions(row.value, after);
       if (isActivated) activated++;
-      if (isUsed) usedLater++;
-      last = { ref: row.ref, revision: row.value?.revision ?? null, addresses: row.value?.addresses ?? [], activated: isActivated, used_later: isUsed };
+      if (exposureRefs.length) exposed++;
+      if (executions.length) successfulExecution++;
+      last = { ref: row.ref, revision: row.value?.revision ?? null, addresses: row.value?.addresses ?? [], activated: isActivated,
+        exposure_refs: exposureRefs, successful_execution_refs: executions, semantic_use: 'unknown' };
     });
-    return { changes, activated, used_later: usedLater, last };
+    return { changes, activated, exposed, successful_execution: successfulExecution, semantic_use: 'unknown', last };
   }
-  private changeUsed(addresses: string[], after: any[]) {
-    return addresses.some(address => {
-      const component = /^components\.(tool|prompt|skill|memory|subagent)\.(.+)$/.exec(address);
-      // Orchestration and policy are applied to every later request; that application is their use.
-      if (!component) return after.some(r => r.type === 'provider_input');
-      const [, kind, name] = component;
-      // A tool or a subagent is used when a later request calls it by name.
-      if (kind === 'tool' || kind === 'subagent') return after.some(r => r.type === 'event' && r.value?.type === 'tool_succeeded' && r.value?.facts?.tool === name);
-      return after.some(r => r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(`${kind}.${name}`));
-    });
+  private componentExposures(change: any, after: any[]) {
+    const addresses = (change?.addresses ?? []).map((a: string) => a.replace(/^components\./, ''));
+    const bindings = change?.component_bindings ?? [];
+    return after.filter(r => r.type === 'provider_input').flatMap(r => (r.value?.component_delivery ?? [])
+      .filter((d: any) => addresses.includes(`${d.kind}.${d.name}`) && bindings.some((b: any) => b.kind === d.kind && b.name === d.name && b.version === d.version && b.hash === d.hash))
+      .map(() => r.ref));
+  }
+  private successfulComponentExecutions(change: any, after: any[]) {
+    const addresses = (change?.addresses ?? []).map((a: string) => a.replace(/^components\./, ''));
+    const bindings = change?.component_bindings ?? [];
+    return after.filter(r => r.type === 'component_execution' && r.value?.outcome === 'success'
+      && addresses.includes(`${r.value.kind}.${r.value.name}`) && bindings.some((b: any) => b.kind === r.value.kind && b.name === r.value.name && b.version === r.value.version && b.hash === r.value.hash)).map(r => r.ref);
   }
   private metaPhase(): 'design' | 'task' | 'boundary' | 'settled' {
     if (this.metaT0Pending) return 'design';
@@ -752,26 +809,31 @@ export class SelfRoot extends LiveAgentSelf {
     const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
     return index('segment_summary') > index('request_record') ? 'boundary' : 'task';
   }
-  /** META pass trigger (user decision 2026-11-17): recorded run boundaries only, never a resident rule.
-   * An episode closed (the run's own level boundary), a delivery transition stalled, or this many execute requests
-   * landed since the last artifact write or activation. The pass window is every ledger row since the previous
-   * pass or review closed, so the pass reads what the run recorded, not the task conversation. */
+/** META pass trigger: prefer intermediate render feedback; keep a fixed execute-request cadence as a fallback.
+ * Delivery stalls can also trigger recovery. A completed episode is never itself a trigger. */
   metaPassDue() {
     if (!this.mech.meta || this.review || this.queue.length || this.metaT0Pending) return null;
     const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
-    const anchor = Math.max(index('review_closed'), index('meta_t0_design'));
+    const anchor = Math.max(index('review_closed'), index('meta_t0_design'), index('task_episode_started'), index('task_episode_closed'));
     if (anchor < 0) return null;
     const window: [number, number] = [anchor + 1, this.ledger.length - 1];
     const after = this.ledger.slice(window[0]);
-    const episode = after.findIndex(r => r.type === 'task_episode_closed');
-    if (episode >= 0) { const row = after[episode]; return { reason: 'episode_boundary', window,
-      facts: { trigger: 'episode_boundary', episode: row.value?.episode ?? null, id: row.value?.id ?? null, delivered_revision: row.value?.delivered_revision ?? null, window } }; }
+    const lastExecute = after.findLastIndex(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute');
+    const taskClosedAfterLastExecute = lastExecute >= 0 && after.slice(lastExecute + 1).some(r => r.type === 'unit_delivered' || r.type === 'task_episode_closed');
+    const feedback = after.findIndex((r, i) => r.type === 'render_action_receipt'
+      && !after.slice(i + 1).some(next => next.type === 'unit_delivered' || next.type === 'task_episode_closed'));
+    if (feedback >= 0) {
+      const row = after[feedback];
+      return { reason: 'task_feedback_checkpoint', window,
+        facts: { trigger: 'task_feedback_checkpoint', action_ref: row.value?.action_ref ?? row.ref, window } };
+    }
     const stall = after.findIndex(r => r.type === 'action_transition_stalled');
     if (stall >= 0) { const row = after[stall]; return { reason: 'delivery_stall', window,
       facts: { trigger: 'delivery_stall', action: row.value?.action ?? null, status: row.value?.status ?? null, window } }; }
-    const progress = Math.max(index('artifact_write'), index('reflection_activated'), window[0] - 1);
-    const stuck = this.ledger.slice(progress + 1).filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
-    if (stuck >= 12) return { reason: 'stagnation', window, facts: { trigger: 'stagnation', execute_requests_without_artifact_write: stuck, window } };
+    const executeRequests = after.filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
+    if (executeRequests >= 12 && !taskClosedAfterLastExecute)
+      return { reason: 'request_cadence_fallback', window,
+        facts: { trigger: 'request_cadence_fallback', execute_requests_since_last_evolution: executeRequests, interval: 12, window } };
     return null;
   }
   /** META pass evidence expansion (user decision 2026-11-17): one recorded ref resolved through the adapter.
@@ -879,7 +941,7 @@ export class SelfRoot extends LiveAgentSelf {
       'OPTIMIZABLE OBJECTS',
       `prompt - ${named('prompt')}; change with reflect_component(kind:"prompt"); read_self(section="self"); signals: ${obs.a2.thoughts.repeated.length} repeated reasoning head(s) across ${obs.a2.thoughts.blocks} recorded block(s)`,
       `context - policy.context (order: ${(this.policy.context?.order ?? []).join(', ')}; self view: ${this.policy.context?.prompt_layout?.volatile_tail ? 'tail' : 'system'}); change with reflect_orchestration({policy:{context}}); read_self(section="policy"); signals: ${obs.a1.unused.self_reads} read_self call(s)${obs.a4?.inventory.residency_chars != null ? `, residency ${obs.a4.inventory.residency_chars} chars/request` : ''}`,
-      `loop - orchestration revision ${this.current?.revision ?? 1}, active step '${this.step}'${step?.actions ? ` (action scope: ${step.actions.join(', ')})` : ` (action scope: every granted tool - no actions list)`}; a transition fires on on:{type:"action",action:"<${recordable || 'a recorded receipt type'}>"} or on:{type:"decision",id:"<decision>"}; change with reflect_orchestration({orchestration}); read_self(section="definition"); signals: ${rejectedCalls} refused call(s), ${stalledTransitions} stalled action transition(s)`,
+      `loop - orchestration revision ${this.current?.revision ?? 1}, active step '${this.step}'${step?.actions ? ` (action scope: ${step.actions.join(', ')})` : ` (action scope: every granted tool - no actions list)`}; a transition fires on on:{type:"action",action:"<${recordable || 'a recorded receipt type'}>"} or on:{type:"decision",id:"<decision>"}; edit with reflect_orchestration({orchestration:{mode:"edit",transitions_by_id:{<id>:{from:"<step>",to:"<step>",on:{type:"action",action:"<receipt>"},requires:[{type:"<receipt>"}]}}}}), or replace the full definition with mode:"replace"; read_self(section="definition"); signals: ${rejectedCalls} refused call(s), ${stalledTransitions} stalled action transition(s)`,
       `harness - ${components.length} components at self revision ${this.revision} (${named('tool')} tools; ${named('skill')} skills; ${named('memory')} memory; ${named('subagent')} subagents); any write above; read_self(section="self"); signals: ${obs.a1.repeated_inputs.length} identical-input call group(s), ${obs.a1.unused.tools_never_called.length} zero-call tool(s)`,
     ];
     const summary = this.ledger.filter(r => r.type === 'segment_summary').map(r => r.value);
@@ -898,9 +960,9 @@ export class SelfRoot extends LiveAgentSelf {
       return [`Deliverable: artifact at ${version}; ${written} artifact write(s) since the last change.`];
     })();
     const flow = phase === 'design'
-      ? `DESIGN TURN - the mechanism above is given. This turn designs this task's workflow: the steps this task runs in, which step delivers, what runs after delivery if anything, and when you look at your own harness. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration: orchestration.contract = ${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)}, plus steps and transitions; a transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is an optional permission scope over tool names, not over receipt types; a step with no actions list may call every granted tool.` : ''}`
+      ? `DESIGN TURN - the mechanism above is given. You own the task's time horizon within its authorized budget. Design a workflow that serves the full user brief, including any accompanying harness deliverable: choose useful batches, checkpoints, evidence, trials, reflection, rework, reinspection and final delivery; these are options, not a fixed sequence. You can revise this workflow at any point through reflect_orchestration. A first complete artifact is a candidate; give harness changes opportunities to affect substantive work and judge readiness from the user's quality requirements and actual feedback, not only component counts or an initial successful render. Reflect the full deliverable and harness objectives in TASK GOAL and TASK ACCEPTANCE. Fill TASK GOAL, TASK ACCEPTANCE and the workflow in one reflect_orchestration using orchestration:{mode:"replace",contract:${ORCHESTRATION_CONTRACT_FORM.slice('contract:'.length)},roles:[{id:"agent"}],slots:[],steps:[...],decisions:[],transitions:[...]}; replacement requires all five arrays. For a local change later, use mode:"edit" with steps_by_id/transitions_by_id maps, which retain omitted items. A transition fires on an action receipt or on a decision, and the run completes only at a transition whose to is "complete". Each look trigger binds one task-side event: ${TASK_EVENTS.join(', ')}; a counter or a clock alone is not a task event. The gate opens at that write, and the write puts the run in your first declared step.${recordable ? ` Action receipt types this runtime records: ${recordable}. A step's actions list is an optional permission scope over tool names, not over receipt types; a step with no actions list may call every granted tool.` : ''}`
       : phase === 'boundary'
-        ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, used_later ${acc.last.used_later ? 'yes' : 'no'}` : 'none'}.`,
+        ? [`SEGMENT BOUNDARY. Last change: ${acc.last ? `${acc.last.addresses.join(', ')} at revision ${acc.last.revision} - activated ${acc.last.activated ? 'yes' : 'no'}, exposed ${acc.last.exposure_refs.length > 0 ? 'yes' : 'no'}, successful_execution ${acc.last.successful_execution_refs.length > 0 ? 'yes' : 'no'}, semantic_use unknown` : 'none'}.`,
           `Last segment: ${numbers(summary.at(-1))}. Previous segment: ${numbers(summary.at(-2))}.`,
           ...boundaryDeliverable,
           // The full recorded-behavior block is pushed at the boundary (2026-11-16): repeats, rejections,
@@ -911,7 +973,7 @@ export class SelfRoot extends LiveAgentSelf {
           ...(look.length ? [`Your run plan for this event (segment_boundary): ${look.join(' | ')}`] : []),
           'Facts only; judgment stays with you.'].join('\n')
         : phase === 'settled'
-          ? `SESSION CLOSED - self-change counters settled once: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`
+          ? `SESSION CLOSED - self-change facts settled once: changes ${acc.changes} / activated ${acc.activated} / exposed ${acc.exposed} / successful_execution ${acc.successful_execution} / semantic_use unknown.`
           : `MECHANISM: every write activates at the next request boundary and its receipt returns here; this block expands at the next task-segment boundary.`;
     return [
       `TASK GOAL: ${contract?.task_goal ?? '(empty - this design turn fills it)'}`,
@@ -919,7 +981,7 @@ export class SelfRoot extends LiveAgentSelf {
       ...(() => { const horizon = this.options.taskEpisodes?.(); return horizon && horizon.total > 1 ? [
         `TASK EPISODES: ${horizon.active} of ${horizon.total}. A transition to "complete" closes the active episode; the next episode's frozen task sources then replace data/ in this same root and serial session; the run ends when the last episode completes. Closed episodes do not reopen.`] : []; })(),
       ...objects,
-      `SELF-CHANGE COUNTERS: changes ${acc.changes} / activated ${acc.activated} / used_later ${acc.used_later}.`,
+      `SELF-CHANGE FACTS: changes ${acc.changes} / activated ${acc.activated} / exposed ${acc.exposed} / successful_execution ${acc.successful_execution} / semantic_use unknown. Exposure is not semantic use; skill index exposure and skill body reads are separate facts.`,
       ...(live.length ? [`WINDOWS: ${live.map(w => `${w.id} on ${w.scope.join(', ')} - ${w.status}${w.expected_effect ? `; expected: ${w.expected_effect}` : '; expected effect not stated'}`).join(' | ')}`] : []),
       flow,
     ].join('\n');
@@ -1006,12 +1068,12 @@ export class SelfRoot extends LiveAgentSelf {
     }
   }
   /** All reflection tools in one model response share this pending chain. */
-  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
+  transaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
     const result = this.mutations.then(() => this.prepareTransaction(input));
     this.mutations = result.then(() => undefined, () => undefined);
     // EVO_META T0 gate: the first orchestration write - whatever it produced, a seed-equivalent rewrite included - is the
     // agent's design, and it opens the gate. Booked here so every adapter path (tool dispatch, restore) records it once.
-    if (input.orchestration === undefined && input.orchestration_patch === undefined && input.restore === undefined) return result;
+    if (input.orchestration === undefined && input.restore === undefined) return result;
     return result.then(value => { this.noteMetaDesign(value); return value; });
   }
   /** EVO_META T0: the gate's only state is this ledger row; a failed write never opens it, and neither does a write
@@ -1033,7 +1095,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
     this.chainFailed = true;
   }
-  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; orchestration_patch?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
+  private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
     try {
       if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
@@ -1108,13 +1170,33 @@ export class SelfRoot extends LiveAgentSelf {
         declareLayer(componentAddress(c.kind, c.name), c.evolution_layer);
         await candidate.reflectComponent(value); addresses.push(componentAddress(c.kind, c.name));
       }
-      if (input.orchestration !== undefined || input.orchestration_patch !== undefined || (input.restore !== undefined && (!restoreScope || restoreScope.has(componentAddress('orchestration', ''))))) {
+      if (input.orchestration !== undefined || (input.restore !== undefined && (!restoreScope || restoreScope.has(componentAddress('orchestration', ''))))) {
         this.assertWrite('orchestration');
-        if (input.restore !== undefined && input.orchestration === undefined && input.orchestration_patch === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push(componentAddress('orchestration', '')); }
-        if (input.orchestration !== undefined || input.orchestration_patch !== undefined) {
-          let definition = normalizeOrchestration(input.orchestration ?? mergeOrchestrationPatch(candidate.current.orchestration, input.orchestration_patch));
+        if (input.restore !== undefined && input.orchestration === undefined) { await candidate.reflectOrchestration({ baseRevision:candidate.revision, restore:input.restore, authorized:true }); addresses.push(componentAddress('orchestration', '')); }
+        if (input.orchestration !== undefined) {
+          // Internal callers historically pass a complete definition directly. The Agent-facing boundary
+          // requires an explicit mode; direct host callers retain replace semantics during this migration.
+          const submitted = input.orchestration?.mode === undefined && input.orchestration && typeof input.orchestration === 'object'
+            ? { mode: 'replace', ...input.orchestration }
+            : normalizeOrchestrationInput(input.orchestration);
+          const mode = submitted.mode;
+          let definition = resolveOrchestrationInput(candidate.current.orchestration, submitted);
           // Intent compiler: deterministic completion of mechanical wiring; ambiguity asks one concrete question.
           if (this.mech.compiler) { const completed = compileOrchestrationIntent(definition, this.knownActionTypes); definition = completed.definition; compiledEntries.push(...completed.compiled); }
+          const validStepIds = (definition.steps ?? []).map((step: any) => step?.id).filter((id: any) => typeof id === 'string');
+          for (const transition of definition.transitions ?? []) for (const field of ['from','to'] as const) {
+            const target = transition?.[field];
+            if (field === 'to' && target === 'complete') continue;
+            if (typeof target !== 'string' || !validStepIds.includes(target)) {
+              const itemId = String(transition?.id ?? '<missing id>');
+              const path = mode === 'edit' ? `orchestration.transitions_by_id.${itemId}.${field}` : `orchestration.transitions[${itemId}].${field}`;
+              const currentRevision = this.revision;
+              throw operationError(`transition "${itemId}" has ${field}=${JSON.stringify(target)} but that step does not exist`, 'orchestration', input, {
+                invalid: [path], correction: `Use one of valid step IDs [${validStepIds.join(', ')}] for ${field}${field === 'to' ? ' (or "complete" to finish)' : ''}, then resubmit. The candidate was not activated; the current definition is still active.`,
+                current_revision: currentRevision, valid_step_ids: validStepIds, transaction: { status: 'rejected_not_activated', current_revision: currentRevision, candidate_revision: candidate.revision, response_chain: 'aborted' },
+              });
+            }
+          }
           // EVO_META T0 gate (user decision 2026-11-16): the gate checks the orchestration's fixed contract object,
           // not the fact that something was submitted. TASK GOAL, TASK ACCEPTANCE and the run plan must be present;
           // the run plan's triggers bind task-side events, so a counter or a clock cannot open it. Shape only - the
@@ -1168,18 +1250,22 @@ export class SelfRoot extends LiveAgentSelf {
       // Effect return: evidence is what the agent cites; the full booked set is not auto-attached.
       const evidence_refs = this.mech.effect_return ? retained : [...new Set([...(evolution ? reviewFacts : []), ...retained])];
       // Effect return: a validation window opens only for a declared effect; an undeclared change activates without one.
-      const windowDue = !this.mech.effect_return || Boolean(requestedPredicate || input.expected_effect);
+      const windowDue = this.options.validationWindows === 'explicit_predicate'
+        ? Boolean(requestedPredicate) : !this.mech.effect_return || Boolean(requestedPredicate || input.expected_effect);
       this.pending = { candidate, policy, revision, addresses: [...(this.pending?.addresses ?? []), ...addresses], windows: [...(this.pending?.windows ?? []), ...(addresses.length && windowDue ? [{ addresses, expected_effect: input.expected_effect, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional', evidence_refs, review: this.review?.id ?? null }] : [])], source: input.restore,
         declaredLayers: { ...(this.pending?.declaredLayers ?? {}), ...declaredLayers },
         baseStateHash: this.pending?.baseStateHash ?? hash(this.baseSaved().snapshot) };
       return this.fact('reflection_activated', { revision, addresses, activation: 'before next provider request', review: this.review?.id ?? null,
+        component_bindings: candidate.active().filter((c: any) => addresses.includes(`components.${c.kind}.${c.name}`)).map((c: any) => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })),
         ...(compiledEntries.length ? { compiled: compiledEntries } : {}),
         ...(skippedUnchanged.length ? { unchanged_skipped: skippedUnchanged } : {}),
         ...(restoreScope ? { restore_scope: [...restoreScope], differs_not_restored: restoreNotRestored } : {}),
         ...(Object.keys(declaredLayers).length ? { declared_layers: declaredLayers } : {}),
         evidence_refs: { retained, discarded, auto_attached: evolution && !this.mech.effect_return ? reviewFacts : [] }, success_predicate, predicate_source: requestedPredicate ? 'agent' : 'provisional',
         ...(input.expected_effect ? { expected_effect: input.expected_effect } : {}),
-        ...(addresses.length ? { validation_window: windowDue ? 'opens at activation' : 'none; a window opens when the change declares expected_effect or success_predicate' } : {}) }).value;
+        ...(addresses.length ? { validation_window: windowDue ? 'opens at activation' : this.options.validationWindows === 'explicit_predicate'
+          ? 'none; expected_effect is recorded intent; quantitative validation requires an explicit success_predicate'
+          : 'none; a window opens when the change declares expected_effect or success_predicate' } : {}) }).value;
     } catch (e) {
       this.abortTransaction(e); throw e;
     }
@@ -1215,7 +1301,9 @@ export class SelfRoot extends LiveAgentSelf {
     // Evolution review observes evidence; task artifacts are not edited there (design §1).
     const tools = this.inEvolutionReview
       ? [...new Set([...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? [], ...this.policy.modes[this.currentMode].tools])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
-    return [...new Set([...this.protocolSurface(), ...tools.filter((t: string) => t !== 'agent_tools' && this.contract.capabilities.includes(t)),
+    const protocol = this.mech.meta && (this.metaPassTrigger as any)?.round === 2
+      ? this.protocolSurface().filter(t => t !== 'decide_exit') : this.protocolSurface();
+    return [...new Set([...protocol, ...tools.filter((t: string) => t !== 'agent_tools' && !(this.mech.meta && (this.metaPassTrigger as any)?.round === 2 && t === 'decide_exit') && this.contract.capabilities.includes(t)),
       ...(this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool' || c.kind === 'subagent').map(c => c.name) : [])])];
   }
   /** The protocol surface, minus what has no object in this run: with no review entrance wired, decide_exit would be
@@ -1225,6 +1313,7 @@ export class SelfRoot extends LiveAgentSelf {
   }
   allowTool(name: string, args: any) { this.assertActionAllowed(this.options.actionOf ? this.options.actionOf(name, args) : name); }
   get inEvolutionReview() { return Boolean(this.review?.triggers.some((t: any) => t.id === 'evolution_review')); }
+  get isMetaSpecialistTurn() { return this.mech.meta && this.inEvolutionReview && (this.metaPassTrigger as any)?.round === 2; }
   get settlementReviewRef() { return this.lastSettlementReview; }
   get inCapabilityReview() { return this.inEvolutionReview; }
   get capabilityReviewClosed() { return this.ledger.some(r => r.type === 'review_closed' && r.value?.occasion === 'evolution_review' && r.value?.closed_by === 'agent'); }
@@ -1276,6 +1365,7 @@ export class SelfRoot extends LiveAgentSelf {
       const selfChange = this.metaSelfChange(p.addresses ?? []);
       applySurface(this.surface());
       const activated = this.fact('reflection_activated', { parent: oldSerial, revision: this.serial, addresses: p.addresses, restore_source: p.source ?? null, review: this.review?.id ?? this.pendingReview ?? null,
+        component_bindings: this.active().filter((c: any) => (p.addresses ?? []).includes(`components.${c.kind}.${c.name}`)).map((c: any) => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash })),
         ...(p.declaredLayers && Object.keys(p.declaredLayers).length ? { declared_layers: p.declaredLayers } : {}),
         ...(selfChange ? { self_change: selfChange } : {}),
         success_predicates: p.windows.filter(Boolean).map((w: any) => ({ predicate: w.success_predicate ?? null, predicate_source: w.predicate_source ?? null })) });
@@ -1329,10 +1419,10 @@ export class SelfRoot extends LiveAgentSelf {
   /** Mechanical later-use facts for a window (no semantic inference). */
   private laterUse(w: Window) {
     const start = this.ledger.findIndex(r => r.ref === w.activation);
-    const tools = new Set(w.scope.filter(a => a.startsWith('components.tool.')).map(a => a.slice('components.tool.'.length)));
-    return this.ledger.filter((r, i) => i > start && r.kind === 'fact' && (
-      (r.type === 'provider_input' && r.value?.pin?.mode === 'execute' && Number(r.value?.pin?.revision) >= w.revision && w.baseline_phase !== null && r.value?.phase === w.baseline_phase && !(w.evidence_refs ?? []).includes(r.ref)) ||
-      (r.type === 'tool_result' && tools.has(r.value?.tool)) || (r.type === 'component_consumed' && r.revision >= w.revision))).map(r => r.ref);
+    const activated = this.ledger[start];
+    const bindings = activated?.value?.component_bindings ?? [];
+    return this.ledger.filter((r, i) => i > start && r.type === 'component_execution' && r.value?.outcome === 'success'
+      && bindings.some((b: any) => b.kind === r.value?.kind && b.name === r.value?.name && b.version === r.value?.version && b.hash === r.value?.hash)).map(r => r.ref);
   }
   /** Deliver a window against one observed segment summary (or none at task end). Differences only; no verdict. */
   private deliverWindow(w: Window, reason: string, observedRef?: string) {
@@ -1374,13 +1464,26 @@ export class SelfRoot extends LiveAgentSelf {
     this.chainFailed = false;
     // META pass cap (2026-11-17): a host-opened pass is bounded; at the cap it closes mechanically as recorded
     // facts and the task resumes. The pass never owns the run, and the closure never invents an agent judgment.
-    // Two rounds (user decision 2026-11-17): each round carries its own cap; the occasion total stays their sum.
+    // The induction round is agent-closed. A specialist focus is an execution turn: reflection/no_change closes
+    // early; analysis-only gets one same-focus request to perform a hot edit or declare no_change.
     if (this.review && this.mech.meta && this.inEvolutionReview) {
       const capRound = (this.metaPassTrigger as any)?.round ?? 1;
-      const cap = META_PASS_ROUND_CAPS[capRound - 1] ?? META_PASS_ROUND_CAPS[0];
-      if (this.reviewRequests >= cap) {
-        this.fact('meta_pass_capped', { review: this.review.id, requests: this.reviewRequests, cap, round: capRound });
-        this.closeMechanically('evolution pass request cap');
+      const pass: any = this.metaPassTrigger;
+      const cap = capRound === 2 ? META_PASS_SPECIALIST_REQUEST_CAP : META_PASS_ROUND_CAPS[0];
+      const lastInput = this.ledger.findLastIndex(r => r.type === 'provider_input');
+      const lastTurnTools = this.ledger.slice(lastInput + 1).filter(r => ['tool_result','tool_failed'].includes(r.type));
+      const needsReadOrRepair = lastTurnTools.some(r => r.type === 'tool_failed' && ['reflect_component','reflect_orchestration'].includes(r.value?.tool)
+        || r.type === 'tool_result' && ['read_self_component','read_self'].includes(r.value?.tool));
+      if (capRound === 2 && (this.reviewChanged() || pass?.noChange?.request === this.request)) {
+        this.closeMetaSpecialist(this.reviewChanged() ? 'hot modification applied' : 'explicit no_change');
+      } else if (capRound === 2 && this.reviewRequests >= 2 && !needsReadOrRepair) {
+        this.closeMetaSpecialist('second request completed without a read or repair needing the conditional request');
+      } else if (this.reviewRequests >= cap) {
+        if (capRound === 2) this.closeMetaSpecialist('execution request cap without action or explicit no_change');
+        else {
+          this.fact('meta_pass_capped', { review: this.review.id, requests: this.reviewRequests, cap, round: capRound });
+          this.closeMechanically('evolution pass request cap');
+        }
       }
     }
     if (!this.review) this.reviewRequests = 0;
@@ -1391,9 +1494,8 @@ export class SelfRoot extends LiveAgentSelf {
       if (this.request >= this.contract.budget.requests) this.fact('heartbeat_gap', { settled_task_requests: settled, reason: 'hard cap; heartbeat not dispatched', source: 'user_contract' });
       else await this.event('heartbeat', boundary, { settled_task_requests: settled, source: 'user_contract' });
     }
-    // META pass (user decision 2026-11-17): evolution judgment runs in one host-opened pass at a recorded run
-    // boundary, outside the task turn. Opening it books the trigger as facts and queues a reflect-mode ticket; the
-    // pass's writes go through the ordinary reflection interface and activate at the following request boundary.
+    // META pass: an in-task progress/recovery signal queues a bounded reflect-mode ticket. The task step stays
+    // suspended only for this pass, then resumes at the same point with any writes active at the request boundary.
     const pass = this.metaPassDue();
     if (pass) {
       this.metaPassTrigger = { ...pass, round: 1 } as any;
@@ -1415,6 +1517,14 @@ export class SelfRoot extends LiveAgentSelf {
   endResponse(applySurface: (tools: string[]) => void, persist: () => void, reason: string) {
     if (!this.paused) this.activatePending(applySurface, persist);
     if (!this.review || !this.inEvolutionReview) this.closeMechanically(reason);
+  }
+  noteSpecialistResponse(message: any) {
+    const pass: any = this.metaPassTrigger;
+    if (!this.isMetaSpecialistTurn || !this.review || this.reviewChanged() || message?.role !== 'assistant' || message?.stopReason === 'error') return;
+    const content = Array.isArray(message.content) ? message.content : [];
+    if (content.some((part: any) => part?.type === 'toolCall')) return;
+    const text = content.filter((part: any) => part?.type === 'text').map((part: any) => String(part.text ?? '')).join('\n').trim();
+    if (/^no_change\s*:/i.test(text)) pass.noChange = { request: this.request, reason: text.slice(0, 500) };
   }
   /** Task end (formal delivery or a real terminal stop): open windows become due. */
   taskEnd(reason: string) {
@@ -1638,8 +1748,8 @@ export class SelfRoot extends LiveAgentSelf {
         decisions: (orchestration.decisions ?? []).length, transitions: (orchestration.transitions ?? []).length },
       revision_chain: this.ledger.filter(r => r.type === 'reflection_activated').map(r => ({ revision: r.value?.revision ?? null, addresses: r.value?.addresses ?? [], review: r.value?.review ?? null })),
       policy_keys: Object.keys(this.policy), design: this.ledger.find(r => r.type === 'meta_t0_design')?.ref ?? null,
-      self_changes: { changes: acceptance.changes, activated: acceptance.activated, used_later: acceptance.used_later,
-        last_change: acceptance.last?.ref ?? null, contract: this.metaContract() },
+      self_changes: { changes: acceptance.changes, activated: acceptance.activated, exposed: acceptance.exposed,
+        successful_execution: acceptance.successful_execution, semantic_use: 'unknown', last_change: acceptance.last?.ref ?? null, contract: this.metaContract() },
     });
   }
   /** Final delivery settles facts but leaves an evolvable review loop open when quality facts or windows remain. */
@@ -1661,17 +1771,18 @@ export class SelfRoot extends LiveAgentSelf {
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
       this.fact('self_view', { review: ticket.id, view: { revision: this.serial, full: 'read_self(section="pin")' } });
-      // META pass entry (user decision 2026-11-17): computed once at entry, stored on the review, booked as a fact.
-      if (this.mech.meta && this.metaPassTrigger) {
+      // The induction entry carries the bounded trajectory. Specialist turns receive only their focused self-view.
+      if (this.mech.meta && this.metaPassTrigger && (this.metaPassTrigger.round ?? 1) === 1) {
         const entryText = this.passEntry(true);
         if (entryText) { this.review.pass_entry = entryText; this.fact('meta_pass_entry', { chars: entryText.length, text: entryText }); }
       }
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
     const due_windows = this.dueWindows.map(id => { const w = this.windows.find(x => x.id === id)!; return { id, predicate: w.success_predicate ?? null, baseline: w.baseline_metrics, delivered: w.delivered ?? null, status: w.status }; });
-    const frame: any = { in_review: true, writes_resume: 'after decide_exit; hot orchestration changes remain active immediately', pending_final_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' };
+    const specialistTurn = this.mech.meta && (this.metaPassTrigger as any)?.round === 2;
+    const frame: any = { in_review: true, writes_resume: specialistTurn ? 'after this focused turn; changes activate at the next request boundary' : 'after decide_exit; hot orchestration changes remain active immediately', pending_final_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), due_windows, review_requests_so_far: this.reviewRequests, object_state, result: 'runtime records activation, booked facts, retention or restore' };
     if (this.mech.legacy_obligation) Object.assign(frame, { must_change_self: true, artifact_does_not_end_evolution: true, rework_path: 'reflect orchestration; rewrite; render; resubmit or preview' });
-    else frame.exit = 'decide_exit is available at any point; a judged no-change is a valid closure';
+    else if (!specialistTurn) frame.exit = 'decide_exit is available at any point; a judged no-change is a valid closure';
     if (this.mech.observation) frame.observation = this.observationText(2400);
     // EVO_L4 closure backflow: the last recorded closures return to the next entrance (presentation only).
     if (this.mech.l4) {
@@ -1691,17 +1802,20 @@ export class SelfRoot extends LiveAgentSelf {
         const rawAddresses = r.value?.addresses ?? r.value?.address;
         const addresses = rawAddresses === undefined ? [] : [rawAddresses];
         const flat = addresses.flatMap((x: any) => Array.isArray(x) ? x : [x]);
-        return flat.map((x: any) => String(x)).map((x: string) => x.startsWith('components.') || x.startsWith('policy.') || x === 'orchestration' ? x : x.includes('.') ? componentAddress(...x.split('.', 2) as [string,string]) : x).includes(address) || (r.type === 'provider_input' && (r.value?.component_addresses ?? []).includes(address)) || (r.type === 'task_outcome' && (r.value?.component_addresses ?? []).includes(address));
+        return flat.map((x: any) => String(x)).map((x: string) => x.startsWith('components.') || x.startsWith('policy.') || x === 'orchestration' ? x : x.includes('.') ? componentAddress(...x.split('.', 2) as [string,string]) : x).includes(address) || (r.type === 'task_outcome' && (r.value?.component_addresses ?? []).includes(address));
       });
-      const exposure = related.filter(r => r.type === 'provider_input').map(r => r.ref);
-      const use = related.filter(r => r.type === 'component_consumed' || r.type === 'tool_result' || r.type === 'activation_activated' || r.type === 'reflection_activated' || r.type === 'policy_applied').map(r => r.ref);
+      const delivery = this.ledger.filter(r => r.type === 'provider_input' && (r.value?.component_delivery ?? []).some((d: any) => d.kind === kind && d.name === name));
+      const exposure = delivery.map(r => r.ref);
+      const successfulExecution = this.ledger.filter(r => r.type === 'component_execution' && r.value?.outcome === 'success' && r.value?.kind === kind && r.value?.name === name).map(r => r.ref);
+      const bodyReads = this.ledger.filter(r => r.type === 'component_body_read' && r.value?.kind === kind && r.value?.name === name && r.value?.outcome === 'success').map(r => r.ref);
+      const use = kind === 'tool' || kind === 'subagent' ? successfulExecution : [];
       const effect = related.filter(r => r.type === 'task_outcome' || r.type === 'unit_preview').map(r => r.ref);
       const tried = new Set(related.flatMap(r => r.type.includes('reflection') || r.type.includes('activation') ? ['redefine'] : r.type === 'component_read' ? ['read'] : []));
       const legal = writable ? (kind === 'component' ? ['define', 'redefine', 'restore', 'read'] : ['patch', 'replace', 'restore', 'read']) : ['read'];
       return { name, kind, controls, value, writable, ops: writable ? change.ops : [], change: writable ? change : null,
-        facts: { exposure: exposure.length > 0, use: use.length > 0, effect: effect.length > 0, used: use.length > 0, changed: related.some(r => r.type === 'reflection_activated'), untried: legal.filter(op => !tried.has(op)), source_refs: [...exposure, ...use].slice(-8), outcome_refs: effect.slice(-8), costs: related.map(r => r.value?.cost ?? r.value?.usage ?? null).filter(Boolean).slice(-8), unknowns: related.length ? [] : ['no same-root use receipt recorded'] }, reason: writable ? undefined : reason ?? 'protected by user contract' };
+        facts: { exposure: exposure.length > 0, exposure_refs: exposure.slice(-8), skill_body_read: bodyReads.length > 0, skill_body_read_refs: bodyReads.slice(-8), successful_execution: use.length > 0, successful_execution_refs: use.slice(-8), semantic_use: 'unknown', effect: effect.length > 0, changed: related.some(r => r.type === 'reflection_activated'), untried: legal.filter(op => !tried.has(op)), source_refs: [...exposure, ...use, ...bodyReads].slice(-8), outcome_refs: effect.slice(-8), costs: related.map(r => r.value?.cost ?? r.value?.usage ?? null).filter(Boolean).slice(-8), unknowns: ['semantic use cannot be inferred from exposure, reads, or successful calls'] }, reason: writable ? undefined : reason ?? 'protected by user contract' };
     };
-    const components = ['prompt','skill','tool','memory'].flatMap(kind => {
+    const components = ['prompt','skill','tool','subagent','memory'].flatMap(kind => {
       const current = active.filter(c => c.kind === kind);
       const names = [...new Set(current.map(c => c.name))];
       if (!names.length) names.push(`${kind}_candidate`);
@@ -1711,14 +1825,14 @@ export class SelfRoot extends LiveAgentSelf {
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, policyValue((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: '<merge patch onto the current value>' } } }));
     const protectedEntries = ['fixed_review_strategy','user_contract','provider_boundary'].map(name => entry(name, 'protected', 'visible protected element', { active: true }, false, null, name === 'fixed_review_strategy' ? 'fixed strategy for this phase' : 'user or provider boundary'));
     const countKind = (kind: string) => components.filter((x: any) => x.kind === kind && !x.candidate).length;
-    const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: countKind('prompt'), skill: countKind('skill'), tool: countKind('tool'), memory: countKind('memory'), protected: protectedEntries.length };
+    const categories = { orchestration: 1, policy: Object.keys(this.policy).length, prompt: countKind('prompt'), context: 1, skill: countKind('skill'), tool: countKind('tool'), subagent: countKind('subagent'), memory: countKind('memory'), loop: 1, protected: protectedEntries.length };
     const factRows = this.ledger.filter(r => r.kind === 'fact');
     const byType: Record<string, number> = {};
     for (const r of factRows) byType[r.type] = (byType[r.type] ?? 0) + 1;
     const facts = { total: factRows.length, by_type: byType, last: factRows.slice(-12).map(r => ({ ref: r.ref, type: r.type, revision: r.revision, request: r.request })), full: 'read_self(section="ledger", offset, count)' };
     const memories = active.filter(c => c.kind === 'memory');
     const allEntries: any[] = [
-      ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: 'full replacement or orchestration_patch; the current definition is this entry value' } }), ...policyEntries, ...protectedEntries
+      ...components, entry('orchestration', 'orchestration', 'steps, transitions and decisions', copy(this.current.orchestration), this.contract.writable.includes('orchestration'), { ops: ['reflect_orchestration'], example: { orchestration: { mode: 'edit', transitions_by_id: { build_to_review: { from: 'build', to: 'review', on: { type: 'action', action: 'office.render' }, requires: [{ type: 'office.render' }] } } } } }), ...policyEntries, ...protectedEntries
     ];
     // EVO_L4: echo recorded layer declarations onto entries and regroup already-recorded facts by layer.
     const declared: Record<string, string> = {};
@@ -1730,8 +1844,17 @@ export class SelfRoot extends LiveAgentSelf {
         e.evolution_layer = declared[address] ?? 'undeclared';
       }
     }
-    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: allEntries, ...(this.mech.l4 ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")',
-      ...(this.inEvolutionReview && this.mech.meta && this.metaPassTrigger ? { evolution_pass: { ...this.metaPassTrigger.facts, ...(this.review?.pass_entry ? { entry: this.review.pass_entry } : {}) } } : {}) };
+    const pass: any = this.metaPassTrigger;
+    const specialist = this.inEvolutionReview && this.mech.meta && (pass?.round ?? 1) === 2
+      ? META_PASS_SPECIALISTS[pass.specialistIndex ?? 0] ?? META_PASS_SPECIALISTS[0] : null;
+    const latestRequest = this.ledger.findLast(r => r.type === 'request_record');
+    const focusedEntries = specialist ? allEntries.filter((e: any) => {
+      if (specialist.id === 'prompt' || specialist.id === 'skill' || specialist.id === 'tool' || specialist.id === 'subagent' || specialist.id === 'memory') return e.kind === specialist.id;
+      if (specialist.id === 'context') return e.kind === 'policy' && e.name === 'policy.context';
+      return e.kind === 'orchestration' || (e.kind === 'policy' && e.name !== 'policy.context');
+    }) : allEntries;
+    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: focusedEntries, ...(this.mech.l4 && !specialist ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(specialist ? 900 : 2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")',
+      ...(this.inEvolutionReview && this.mech.meta && this.metaPassTrigger ? { evolution_pass: { ...this.metaPassTrigger.facts, ...(pass.prior ? { prior: { closed: pass.prior.closed, outcome: pass.prior.outcome, reason: pass.prior.reason, carry: pass.prior.carry } } : {}), ...(specialist ? { specialist: specialist.id, specialist_index: (pass.specialistIndex ?? 0) + 1, specialist_count: META_PASS_SPECIALISTS.length, ...(specialist.id === 'context' ? { context_policy: policyValue(this.policy.context), last_request_composition: latestRequest?.value?.composition ?? null } : {}) } : {}), ...(this.review?.pass_entry ? { entry: this.review.pass_entry } : {}) } } : {}) };
   }
   /** EVO_L4: the four layers as coordinates - a regrouping of facts already recorded elsewhere; no new counters. */
   private layersView(declared: Record<string, string>) {
@@ -1817,21 +1940,52 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.pending) this.fact('review_activation_deferred', { review: review.id, closure: row.ref, outcome: 'activation_intent' });
     if (review.triggers.some((t: any) => t.conclusion_sink === 'lineage')) this.lineage.push(row);
     if (evolution && this.reviewChanged()) this.unresolvedReview = false;
-    // Two rounds (user decision 2026-11-17): the induction round's closure opens the capability round at the next
-    // request boundary - same occasion, same window; the closure's reason and carry are rendered at its entry.
+    // The induction round's closure opens the fixed specialist sweep at the next request boundary.
     const passTrigger: any = this.metaPassTrigger;
     const advance = evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1
       && (closedBy === 'agent' || closedBy === 'mechanical:evolution pass request cap');
     if (advance) {
       const result = (extra as any)?.result ?? null;
-      this.metaPassTrigger = { ...passTrigger, round: 2, prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
+      this.metaPassTrigger = { ...passTrigger, round: 2, specialistIndex: 0, prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
         carry: Array.isArray(result?.carry) ? result.carry.map((x: any) => String(x)) : null } };
-      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary' });
-      this.queue.push({ id: `${review.id}:capability`, boundary: `pass:${this.request}`, event: review.event,
+      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary', specialists: META_PASS_SPECIALISTS.map(x => x.id) });
+      this.queue.push({ id: `${review.id}:specialist:prompt`, boundary: `pass:${this.request}`, event: review.event,
         triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
     }
     this.review = undefined; this.currentMode = this.previousMode; if (!advance) this.metaPassTrigger = undefined;
-    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode, ...(advance ? { next_round: { round: 2, of: 2, opens: 'next request boundary' } } : {}) };
+    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode, ...(advance ? { next_round: { round: 2, of: 2, specialists: META_PASS_SPECIALISTS.map(x => x.id), opens: 'next request boundary' } } : {}) };
+  }
+  /** A specialist execution turn closes on a hot edit, explicit no_change, or its two-request hard cap. */
+  private closeMetaSpecialist(reason: string) {
+    const review = this.review;
+    const pass: any = this.metaPassTrigger;
+    if (!review || !pass || pass.round !== 2) return;
+    const index = pass.specialistIndex ?? 0;
+    const specialist = META_PASS_SPECIALISTS[index] ?? META_PASS_SPECIALISTS[0];
+    const changed = this.reviewChanged();
+    const explicitNoChange = pass.noChange?.request === this.request;
+    const outcome = changed ? 'tool_change' : explicitNoChange ? 'no_change' : 'execution_incomplete';
+    if (outcome === 'execution_incomplete') this.fact('review_unresolved', { review: review.id, requests: this.reviewRequests, reason: 'specialist reached its execution cap without a hot modification or explicit no_change' });
+    const closure = this.fact('review_closed', { review: review.id, occasion: 'evolution_review', specialist: specialist.id,
+      outcome: changed ? 'activated' : explicitNoChange ? 'no_change' : 'unresolved', closed_by: 'specialist_turn_end', requests: this.reviewRequests, changes: review.changes });
+    const row = this.fact('meta_specialist_turn_closed', { review: review.id, closure: closure.ref, specialist: specialist.id, index: index + 1,
+      request: this.request, requests: this.reviewRequests, outcome, changes: review.changes,
+      ...(explicitNoChange ? { no_change_reason: pass.noChange.reason } : {}), reason });
+    this.review = undefined;
+    this.currentMode = this.previousMode;
+    const nextIndex = index + 1;
+    if (nextIndex < META_PASS_SPECIALISTS.length) {
+      const next = META_PASS_SPECIALISTS[nextIndex];
+      this.metaPassTrigger = { ...pass, specialistIndex: nextIndex, noChange: undefined, completed: [...(pass.completed ?? []), outcome] };
+      this.fact('meta_specialist_turn_opened', { previous: row.ref, specialist: next.id, index: nextIndex + 1, opens: 'next request boundary' });
+      this.queue.push({ id: `${review.id}:specialist:${next.id}`, boundary: `pass:${this.request}`, event: review.event,
+        triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
+    } else {
+      const outcomes = [...(pass.completed ?? []), outcome];
+      const incomplete = outcomes.filter(x => x === 'execution_incomplete').length;
+      this.fact('meta_specialist_sweep_closed', { previous: row.ref, turns: META_PASS_SPECIALISTS.map(x => x.id), outcome: incomplete ? 'incomplete' : 'complete', completed_turns: outcomes.length, incomplete_turns: incomplete });
+      this.metaPassTrigger = undefined;
+    }
   }
   /** One mechanical closure (agent_end, crash, budget, second invalid exit). Never invents an Agent decision. */
   closeMechanically(reason: string, extra: any = {}) {

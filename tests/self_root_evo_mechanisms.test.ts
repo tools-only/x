@@ -14,6 +14,20 @@ const all = (s: any) => s.export().root.ledger;
 const QG = { evidence: [{ type: 'task_outcome' }], id: 'qg', judge: 'agent', output: { properties: { pass: { type: 'boolean' } }, required: ['pass'], type: 'object' }, question: 'q' };
 const INTENT = { roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent', decision: 'qg' }, { id: 'submit', role: 'agent' }], decisions: [QG], transitions: [{ id: 't1', from: 'work', on: {}, requires: [], to: 'submit' }] };
 
+test('explicit-predicate adapter keeps qualitative changes live and numeric comparison opt-in', async () => {
+  const s = make(undefined, { validationWindows: 'explicit_predicate' });
+  await tick(s);
+  await s.transaction({ components: [{ op: 'define', kind: 'memory', name: 'labels', source: 'Check chart label legibility.' }], expected_effect: 'Readable chart labels' });
+  await tick(s);
+  assert.equal(s.export().root.windows.length, 0);
+  s.outcome({ metrics: [{ name: 'render.warnings_latest', value: 2, unit: 'count' }] });
+  await s.transaction({ components: [{ op: 'redefine', kind: 'memory', name: 'labels', source: 'Inspect rendered chart labels.' }],
+    success_predicate: { metric: 'render.warnings_latest', direction: 'decrease', segment: 'last' } });
+  await tick(s);
+  assert.equal(s.export().root.windows.length, 1);
+  assert.equal(s.export().root.windows[0].predicate_source, 'agent');
+});
+
 test('M-A: review entrance carries recorded observation; flag off removes it, section read stays factual', async () => {
   const s = make(); await open(s);
   const frame = all(s).findLast((r: any) => r.type === 'review_frame')?.value;
