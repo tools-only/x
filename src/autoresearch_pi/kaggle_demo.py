@@ -283,7 +283,7 @@ def run(root: Path, seconds: int = 14400, resume: bool = False, official_openai:
                "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
                "--no-builtin-tools", "--extension", str(PROJECT / "demo/kaggle_extension.ts"),
                *provider["commands"], "--thinking", thinking, "--session", str(root / "session.jsonl")]
-    protocol = {"started_at": started, "base_branch": "codex/ppt-adapt-context",
+    protocol = {"started_at": started, "base_branch": "codex/kaggle-evo-loop",
                 "competition": json.loads((root / "workspace/data/competition.json").read_text(encoding="utf-8"))["slug"],
                 "provider": identity["provider"], "model": identity["model"], "thinking": thinking,
                 "max_seconds": None if unbounded else min(seconds, 14400),
@@ -291,9 +291,9 @@ def run(root: Path, seconds: int = 14400, resume: bool = False, official_openai:
                 "scope": "one agent-owned Kaggle run with real submission feedback",
                 "command": command}
     protocol["source_hashes"] = {str(path.relative_to(PROJECT)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in [PROJECT / "demo/kaggle_extension.ts", PROJECT / "demo/kaggle_task_context.ts",
-                     PROJECT / "demo/prompts/kaggle_demo_system.md", PROJECT / "demo/prompts/kaggle_adapt_system.md",
-                     PROJECT / "demo/harness-methods/kaggle_self_evolution/SKILL.md",
+        for path in [PROJECT / "demo/kaggle_extension.ts", PROJECT / "demo/self_root.ts", PROJECT / "demo/kaggle_task_context.ts",
+                     PROJECT / "demo/prompts/kaggle_evo_system.md", PROJECT / "demo/prompts/self_root_meta_fields.md",
+                     PROJECT / "demo/prompts/kaggle_adapt_system.md",
                      PROJECT / "src/autoresearch_pi/kaggle_demo.py", PROJECT / "src/autoresearch_pi/kaggle_api.py"]}
     if resume:
         protocol["resumes"] = [*previous_protocol.get("resumes", []), {"at": time.time(), "remaining_seconds": remaining}]
@@ -315,10 +315,11 @@ def run(root: Path, seconds: int = 14400, resume: bool = False, official_openai:
             transport = continue_prompt if resume and continue_prompt else "KAGGLE_RESUME" if resume else (
                 "Start the Kaggle competition. Read data/competition.json, data/instructions.md, "
                 "data/environment.md and inspect data/raw. Establish reproducible validation, submit a "
-                "credible baseline, then improve the solution and your own methods through repeated "
-                "leaderboard feedback. Continue until the top-10 target is verified or the run's configured "
-                "time, spend budget, or competition deadline is exhausted. "
-                "You have the same model for task work and method design.")
+                "credible baseline, then improve the solution through repeated leaderboard feedback. After "
+                "each scored submission, complete the live-Agent EVO induction and seven-focus harness sweep; "
+                "apply justified changes directly through reflection tools in those turns so later task work "
+                "uses them. Continue until the top-10 target is verified or the authorized runtime/competition "
+                "boundary ends. You have the same model for task work and self-evolution.")
             while deadline is None or time.monotonic() < deadline:
                 response = kernel.prompt(transport)
                 if response.get("success") is False:

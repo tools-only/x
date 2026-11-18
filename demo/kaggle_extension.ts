@@ -1,16 +1,16 @@
 /** Kaggle host: agent-owned solution work, versioned methods, and real leaderboard feedback. */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { compact, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Workspace } from "./arc_thin_workspace.ts";
-import { Binder } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
 import { projectKaggleTaskContext } from "./kaggle_task_context.ts";
+import { SelfRoot, FLOOR, hash as selfRootHash, normalizeOperation, providerOperationSchema } from "./self_root.ts";
 
 type Json = Record<string, any>;
 
@@ -70,29 +70,10 @@ function summarizePythonOutput(value: string, limit: number) {
 export default function kaggleDemo(pi: ExtensionAPI) {
   const root = process.env.KAGGLE_DEMO_ROOT!;
   const workspace = new Workspace(root, { dirs: ["data/raw", "work/snippets", "submissions", "notes", "prompts", "skills", "agents", "tools", "methods", "results", "config"] });
-  const binder = new Binder(workspace, validatePythonComponent);
-  const basePrompt = readFileSync(fileURLToPath(new URL("./prompts/kaggle_demo_system.md", import.meta.url)), "utf8");
-  const adaptPrompt = readFileSync(fileURLToPath(new URL("./prompts/kaggle_adapt_system.md", import.meta.url)), "utf8");
-  const activePromptText = () => binder.active().filter(c => c.kind === "prompt").map(c => `${binder.label(c.path)}\n${c.body}`).join("\n\n");
-  const componentIndex = () => {
-    const components = binder.active();
-    const versions = binder.versionMap();
-    const memory = workspace.files().filter(path => /^notes\/memory\/[^/]+\.md$/.test(path)).map(path => {
-      const source = workspace.read(path);
-      const description = source.split(/\r?\n/).find(line => line.trim())?.replace(/^#+\s*/, "") ?? "";
-      return `${basename(path, ".md")}@v${versions[path] ?? 1} | ${description.slice(0, 120)}`;
-    });
-    return ["prompt", "memory", "skill", "tool", "subagent"].map(kind => {
-      const rows = kind === "memory" ? memory : components.filter(component => component.kind === kind)
-        .map(component => {
-          const description = kind === "tool" ? /^# description:\s*(.+)$/m.exec(component.source)?.[1] ?? component.description : component.description;
-          return `${component.name}@v${component.version} | ${description.slice(0, 120)}`;
-        });
-      return `${kind}:\n${rows.length ? rows.map(row => `- ${row}`).join("\n") : "- none"}`;
-    }).join("\n");
-  };
-  const systemPrompt = () => `${basePrompt}\n\nHarness component index (read_component(name) for details; run_harness_tool or run_agent to use tools and subagents):\n${componentIndex()}\n\n${activePromptText()}`;
   const competition = JSON.parse(readFileSync(workspace.path("data/competition.json"), "utf8"));
+  const basePrompt = readFileSync(fileURLToPath(new URL("./prompts/kaggle_evo_system.md", import.meta.url)), "utf8");
+  const evoFieldsPrompt = readFileSync(fileURLToPath(new URL("./prompts/self_root_meta_fields.md", import.meta.url)), "utf8");
+  const adaptPrompt = readFileSync(fileURLToPath(new URL("./prompts/kaggle_adapt_system.md", import.meta.url)), "utf8");
   const python = process.env.KAGGLE_DEMO_PYTHON ?? "python";
   const helper = fileURLToPath(new URL("../src/autoresearch_pi/kaggle_api.py", import.meta.url));
   mkdirSync(join(root, "harness"), { recursive: true });
@@ -100,13 +81,77 @@ export default function kaggleDemo(pi: ExtensionAPI) {
   const statePath = join(root, ".harness", "kaggle-loop.json");
   const state: any = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8"))
     : { revision: 0, complete: false, submissions: [], best: null, pythonRuns: 0 };
-  state.harnessReflections ??= [];
   state.toolSequence ??= 0;
+  const liveSelfPath = join(root, ".harness", "live-self.json");
+  const capabilities = ["read", "write", "edit", "ls", "grep", "run_python", "save_method", "edit_method", "run_method",
+    "run_harness_tool", "list_methods", "kaggle_submit", "kaggle_status", "finish", "read_component", "run_agent", "explore", "adapt",
+    "read_self", "read_self_component", "reflect_component", "reflect_orchestration", "decide", "decide_exit", "decide_validation"];
+  const contract: any = { source: "user_contract", authority: "User-authorized Kaggle competition task",
+    decisions: "Complete the Kaggle task while continuously evolving the same live Agent harness from task evidence; do not stop merely because a score was received.",
+    readonly_reason: "Competition rules, provider authorization, workspace boundary and Kaggle submission limits are host-controlled.",
+    boundaries: [...FLOOR], capabilities,
+    writable: ["orchestration", "policy", "components.prompt", "components.memory", "components.skill", "components.tool", "components.subagent"],
+    budget: { requests: 1000000, tokens: 1000000000, seconds: 315360000, usd: 1000000, storage_bytes: 10000000000 },
+    acceptance: { target_top: competition.target_top, public_leaderboard: true }, inherit_defaults: false };
+  contract.content_hash = selfRootHash(contract);
+  const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, "utf8")) : undefined;
+  const agentSelf = new SelfRoot(contract, savedSelf, validatePythonComponent, workspace, Number.MAX_SAFE_INTEGER, {
+    mechanisms: { meta: true, sweep: true }, reviewTools: ["read", "ls", "grep", "kaggle_status", "read_component", "run_harness_tool", "list_methods"],
+    reservedToolNames: capabilities, actionReceiptTypes: capabilities.filter(name => !["adapt", "explore", "read_self", "read_self_component", "reflect_component", "reflect_orchestration", "decide", "decide_exit", "decide_validation"].includes(name)),
+    taskComplete: () => state.complete, finalDeliveryTools: ["finish"],
+    runPosition: () => ({ submissions: (state.submissions ?? []).length,
+      latest_scored_submission: (state.submissions ?? []).filter((row: any) => Number.isFinite(Number(row.public_score))).at(-1)?.ref ?? null,
+      best_public_score: state.best?.public_score ?? null, latest_full_leaderboard: state.latestFullLeaderboard ?? null }),
+    adapterEvidence: (ref: string, offset = 0) => {
+      const match = /^submission:(\d+)$/.exec(ref);
+      if (!match) return { ref, state: "missing", known_prefixes: ["submission:"] };
+      const row = (state.submissions ?? []).find((item: any) => Number(item.ref) === Number(match[1]));
+      return row ? { ref, state: "recorded", submission: row } : { ref, state: "missing" };
+    },
+  });
   const methodPath = join(root, ".harness", "methods.json");
   const methods: Record<string, any> = existsSync(methodPath) ? JSON.parse(readFileSync(methodPath, "utf8")) : {};
   let resumed = false, initialized = false;
   const persist = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
+  const persistSelf = () => writeFileSync(liveSelfPath, JSON.stringify(agentSelf.export(), null, 2));
   const persistMethods = () => writeFileSync(methodPath, JSON.stringify(methods, null, 2));
+  const activeComponents = () => agentSelf.active();
+  const componentIndex = () => ["prompt", "memory", "skill", "tool", "subagent"].map(kind => {
+    const rows = activeComponents().filter((component: any) => component.kind === kind)
+      .map((component: any) => `${component.name}@v${component.version} | ${String(component.description ?? component.source.split(/\r?\n/).find((line: string) => line.trim()) ?? "").slice(0, 160)}`);
+    return `${kind}:\n${rows.length ? rows.map((row: string) => `- ${row}`).join("\n") : "- none"}`;
+  }).join("\n");
+  const systemPrompt = () => {
+    const review = agentSelf.inEvolutionReview;
+    const taskContext = review ? "" : [
+      existsSync(workspace.path("data/instructions.md")) ? workspace.read("data/instructions.md") : "",
+      existsSync(workspace.path("data/environment.md")) ? workspace.read("data/environment.md") : "",
+    ].filter(Boolean).join("\n\n");
+    const prompts = activeComponents().filter((component: any) => component.kind === "prompt")
+      .map((component: any) => `## PROMPT ${component.name}@v${component.version}\n${component.body ?? component.source}`);
+    const memories = agentSelf.memory()
+      .map((component: any) => `## MEMORY ${component.name}@v${component.version}\n${component.source}`);
+    const skills = activeComponents().filter((component: any) => component.kind === "skill")
+      .map((component: any) => `- ${component.name}@v${component.version}: ${component.description}; read_self_component(kind="skill", name="${component.name}")`);
+    const selfView = review
+      ? agentSelf.inSweep
+        ? { evolution_pass: "The focus-specific view is supplied in the request-scoped evolution sweep tail; expand evidence with read_self.", read_full: 'read_self(section="ledger" | "self" | "policy")' }
+        : { evolution_pass: agentSelf.reviewSelfView(), self: agentSelf.metaBoard(), read_full: 'read_self(section="ledger" | "self" | "policy")' }
+      : { root_id: agentSelf.root_id, revision: agentSelf.revision, step: agentSelf.step,
+        task_position: { submissions: (state.submissions ?? []).length, best_public_score: state.best?.public_score ?? null },
+        self_evolution: agentSelf.metaBoard(), read_full: 'read_self(section="self")' };
+    const groups: Record<string, string> = {
+      prompts: [evoFieldsPrompt, `## SELF-ROOT STRATEGY\n${agentSelf.reviewStrategy()}`, ...prompts].join("\n\n"),
+      memory: memories.join("\n\n"), skills: skills.length ? `## SKILLS\n${skills.join("\n")}` : "",
+    };
+    const contextGroups = (agentSelf.policy.context.order ?? ["prompts", "memory", "skills"]).map((key: string) => groups[key]).filter(Boolean);
+    return [basePrompt, review ? (agentSelf.inSweep
+        ? "EVOLUTION SWEEP: the Kaggle task turn is suspended. The focus-specific material arrives in a request-scoped tail; use the live reflection tools in this Agent turn or conclude no-change in plain text. The host advances to the next focus after this response."
+        : "EVOLUTION PASS: the Kaggle task turn is suspended. Inspect the recorded submission, experiments, provider requests and active harness; then change the live Agent through reflect_component or reflect_orchestration when useful, and close the induction round with decide_exit. These writes are hot-applied before task work resumes.") : taskContext,
+      `## LIVE AGENT SELF\nHarness components and orchestration are fields on this active Agent, not workspace files. reflect_component and reflect_orchestration atomically hot-modify them; the next provider request runs the new revision. Python tools are live tool components executed with run_harness_tool.\n\n${JSON.stringify(selfView)}`,
+      `## ACTIVE HARNESS COMPONENTS\n${componentIndex()}`, agentSelf.policy.context.instruction,
+      ...contextGroups, ...(taskContext ? [`## KAGGLE TASK MATERIAL\n${taskContext}`] : [])].filter(Boolean).join("\n\n");
+  };
   const log = (file: string, row: any) => appendFileSync(join(root, "harness", file), JSON.stringify({ time: new Date().toISOString(), ...row }) + "\n");
   const readLog = (file: string) => existsSync(join(root, "harness", file))
     ? readFileSync(join(root, "harness", file), "utf8").split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)) : [];
@@ -117,40 +162,40 @@ export default function kaggleDemo(pi: ExtensionAPI) {
   const reserve = Number(process.env.KAGGLE_DEMO_REQUEST_RESERVE_USD ?? 3.52);
   const cap = Number(process.env.KAGGLE_DEMO_BUDGET_USD ?? 12);
   const spendNotice = Number(process.env.KAGGLE_DEMO_SPEND_NOTICE_USD ?? 12);
+  const enforceSpendCap = process.env.KAGGLE_DEMO_HARD_SPEND_CAP === "1";
   const inputRate = Number(process.env.KAGGLE_DEMO_INPUT_USD_PER_MILLION ?? 20);
   const outputRate = Number(process.env.KAGGLE_DEMO_OUTPUT_USD_PER_MILLION ?? 80);
   const cacheReadRate = Number(process.env.KAGGLE_DEMO_CACHE_READ_USD_PER_MILLION ?? inputRate);
   const cacheWriteRate = Number(process.env.KAGGLE_DEMO_CACHE_WRITE_USD_PER_MILLION ?? inputRate);
   let requests = previousRequests.at(-1)?.request ?? 0, reserved = 0;
+  let selfRootRequests = 0, selfRootRequestStarted = 0, selfRootSettledRequest = 0, selfRootBoundaryRequest = 0;
   let spent = (lastUsage?.conservative_usd ?? 0) + Math.max(0, requests - (lastUsage?.request ?? 0)) * reserve;
 
   const currentState = () => {
     const latestScored = (state.submissions ?? []).filter((row: any) => Number.isFinite(Number(row.public_score))).at(-1);
-    const pending = latestScored && !state.harnessReflections.some((reflection: any) =>
-      Number(reflection.submission_ref) === Number(latestScored.ref));
     return {
       competition: { slug: competition.slug, metric: competition.metric, target_top: competition.target_top },
       estimated_provider_spend_usd: Number(spent.toFixed(6)),
       spend_notice_usd: Number.isFinite(spendNotice) ? spendNotice : null,
       best: state.best,
       submissions: state.submissions.slice(-8),
-      recent_harness_reflections: state.harnessReflections.slice(-2).map((reflection: any) => ({
-        submission_ref: reflection.submission_ref, public_score: reflection.public_score,
-        harness_gap: reflection.process_gap, strategy_change: reflection.strategy_change, next_test: reflection.next_test,
-      })),
+      self_root: { revision: agentSelf.revision, in_evolution_pass: agentSelf.inEvolutionReview,
+        ...(agentSelf.inSweep ? { evolution_frame: "request-scoped sweep tail" } : { self_evolution: agentSelf.metaBoard() }), components: agentSelf.active().map((component: any) => ({
+          kind: component.kind, name: component.name, version: component.version, description: component.description,
+        })) },
       latest_full_leaderboard: state.latestFullLeaderboard ?? null,
-      harness_tools: binder.active().filter(component => component.kind === "tool" && component.path.startsWith("tools/"))
+      harness_tools: agentSelf.active().filter(component => component.kind === "tool")
         .map(component => ({ name: component.name, version: component.version, description: component.description })),
-      pending_harness_reflection: pending ? latestScored.ref ?? latestScored.file : null,
+      latest_scored_submission: latestScored ? { ref: latestScored.ref, public_score: latestScored.public_score, cv_score: latestScored.cv_score } : null,
       methods: Object.entries(methods).map(([name, m]: [string, any]) => ({ name, version: m.version, description: m.description, runs: m.runs ?? 0 })),
       remaining_submission_allowance: state.limits?.num_allowed_now ?? null,
     };
   };
 
   const modelResult = async (create: any, kind = "consult") => {
-    if (Date.now() > Number(process.env.KAGGLE_DEMO_DEADLINE) || spent + reserve > cap) {
+    if (Date.now() > Number(process.env.KAGGLE_DEMO_DEADLINE) || (enforceSpendCap && spent + reserve > cap)) {
       writeFileSync(join(root, "budget-stop.json"), JSON.stringify({ spent, requests, reason:
-        Date.now() > Number(process.env.KAGGLE_DEMO_DEADLINE) ? "runtime boundary" : "hard spend boundary" }));
+        Date.now() > Number(process.env.KAGGLE_DEMO_DEADLINE) ? "runtime boundary" : "authorized hard spend boundary" }));
       process.exit(0);
     }
     spent += reserve;
@@ -245,16 +290,21 @@ export default function kaggleDemo(pi: ExtensionAPI) {
   };
 
   const runHarnessTool = async (a: any, signal?: AbortSignal) => {
-    const component = binder.active().find(item => item.kind === "tool" && item.path === `tools/${a.name}.py`);
+    const component = activeComponents().find((item: any) => item.kind === "tool" && item.path === `tools/${a.name}.py`);
     if (!component) throw Error(`No active harness tool named ${a.name}.`);
-    const source = a.version === undefined ? component.source : binder.sourceOf(component.path, a.version);
+    const version = a.version ?? component.version;
+    const source = agentSelf.sourceOf(component.path, version);
     if (source === undefined) throw Error(`Harness tool ${a.name} has no version ${a.version}.`);
     const script = `${source}\nimport json\nimport sys\nif "run" not in globals():\n    raise RuntimeError("Harness tool must define run(args)")\nresult = run(json.loads(sys.argv[1]))\nprint(json.dumps(result, ensure_ascii=False, default=str))\n`;
     const path = `work/snippets/harness-tool-${a.name}-${state.currentToolSequence}.py`;
     workspace.runtimeWrite(path, script);
     const receipt = await runPython({ path, args: a.args ?? {}, timeout_s: a.timeout_s }, signal);
     log("harness-tool-runs.jsonl", { name: a.name, active_version: component.version,
-      executed_version: a.version ?? component.version, args: a.args ?? {}, receipt });
+      executed_version: version, args: a.args ?? {}, receipt });
+    methods[a.name] ??= { version: component.version, description: component.description, runs: 0, best_cv: null };
+    methods[a.name].runs = (methods[a.name].runs ?? 0) + 1;
+    if (Number.isFinite(Number(a.args?.cv_score))) methods[a.name].best_cv = Math.max(Number(methods[a.name].best_cv ?? -Infinity), Number(a.args.cv_score));
+    persistMethods();
     return receipt;
   };
 
@@ -264,22 +314,25 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     });
     if (result.status !== 0) throw Error(`Python syntax error: ${(result.stderr ?? "").slice(-1500)}`);
   };
-  const methodFile = (name: string, version?: number) => version
-    ? join(root, ".harness", "method-versions", `${name}@v${version}.py`)
-    : workspace.path(`methods/${name}.py`);
-  const saveMethod = (name: string, source: string, description: string, expected?: number) => {
+  const saveMethod = async (name: string, source: string, description: string, expected?: number) => {
     if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error("Method name must match ^[a-z][a-z0-9_]{0,39}$.");
     validateMethod(source);
-    const before = methods[name]?.version ?? 0;
+    if (!/^\s*def\s+run\s*\(/m.test(source)) throw Error("A reflected Python tool must define run(args).");
+    const current = activeComponents().find((component: any) => component.kind === "tool" && component.name === name);
+    const before = current?.version ?? 0;
     if (expected !== undefined && expected !== before) throw Error(`Method ${name} is v${before}; expected v${expected}. Read it again.`);
-    const version = before + 1;
-    workspace.mutate({ op: "write", path: `methods/${name}.py`, content: source });
-    writeFileSync(methodFile(name, version), source, "utf8");
+    const componentSource = source.split(/\r?\n/).slice(0, 10).some(line => line.trim() === "# program: on")
+      ? source : `# program: on\n# description: ${description.replace(/[\r\n]+/g, " ")}\n${source}`;
+    const reflected = await agentSelf.reflectComponent({ op: current ? "redefine" : "define", kind: "tool", name,
+      source: componentSource, baseRevision: agentSelf.pendingRevision ?? agentSelf.revision,
+      level: 0, origin: { by: "agent", decision: requests } });
+    const version = reflected.component.version;
     methods[name] = { version, description, hash: createHash("sha256").update(source).digest("hex"),
       updated_at: new Date().toISOString(), runs: methods[name]?.runs ?? 0, best_cv: methods[name]?.best_cv ?? null };
     persistMethods();
+    persistSelf();
     log("methods.jsonl", { name, version, description, hash: methods[name].hash });
-    return { method: name, version, description, bytes: Buffer.byteLength(source) };
+    return { method: name, kind: "live tool component", version, description, bytes: Buffer.byteLength(componentSource), activation: "hot reflection before next provider request" };
   };
 
   const submitTool = async (a: any) => {
@@ -295,14 +348,6 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     catch { throw Error(`Submission validation failed: ${clip(validation.stderr || validation.stdout, 3000)}`); }
     if (!validated.ok) throw Error(JSON.stringify(validated));
     if (a.dry_run) return { dry_run: true, validation: validated };
-    const previousScored = (state.submissions ?? []).filter((row: any) => Number.isFinite(Number(row.public_score))).at(-1);
-    if (previousScored) {
-      const reflection = state.harnessReflections.find((item: any) => Number(item.submission_ref) === Number(previousScored.ref));
-      if (!reflection)
-        throw Error(`Before another real Kaggle submission, call harness_reflect for scored submission ${previousScored.ref ?? previousScored.file}. Review your own harness and workflow: what helped, what capability or strategy was missing or underused, what will change, and what experiment will test that change.`);
-      if (Number(state.lastExperimentSequence ?? 0) <= Number(reflection.tool_sequence))
-        throw Error(`Reflection for submission ${previousScored.ref ?? previousScored.file} is recorded, but no later experiment has tested the stated strategy change. Run a new experiment with run_python or run_method before spending another Kaggle submission.`);
-    }
     const limits = await runProcess(python, [helper, "limits", "--competition", competition.slug], 120_000);
     let allowance: Json;
     try { allowance = JSON.parse(limits.stdout.trim().split(/\r?\n/).at(-1)!); }
@@ -326,6 +371,20 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     }
     persist();
     log("submissions.jsonl", row);
+    if (receipt.ok && Number.isFinite(Number(receipt.public_score))) {
+      const outcome = agentSelf.outcome({ source: "kaggle_public_leaderboard", submission_ref: row.ref ?? state.submissions.length,
+        file: rel, cv_score: row.cv_score, cv_std: row.cv_std, public_score: Number(receipt.public_score),
+        method: row.method, notes: row.notes, score_metric: competition.metric,
+        metrics: [{ name: "kaggle.public_score", value: Number(receipt.public_score), unit: competition.metric, scope: "submission",
+          observation_id: row.sha256 }] }, true);
+      await agentSelf.event("task_episode_closed", `submission:${row.ref ?? state.submissions.length}`, {
+        episode: state.submissions.length, id: `submission:${row.ref ?? state.submissions.length}`,
+        submission_ref: row.ref ?? state.submissions.length, outcome_ref: outcome.ref,
+        file: rel, cv_score: row.cv_score, public_score: Number(receipt.public_score),
+      });
+      persistSelf();
+      log("lifecycle.jsonl", { event: "evolution_boundary", reason: "scored_submission", submission_ref: row.ref ?? state.submissions.length, outcome_ref: outcome.ref });
+    }
     return { ...receipt, validation: validated, allowance };
   };
 
@@ -351,8 +410,30 @@ export default function kaggleDemo(pi: ExtensionAPI) {
   };
 
   const tools = new Map<string, any>();
+  const selfProtocol = new Set(["read_self", "read_self_component", "reflect_component", "reflect_orchestration", "decide", "decide_exit", "decide_validation"]);
   const addTool = (tool: any) => {
     tool.parameters = providerToolSchema(tool.parameters);
+    const execute = tool.execute;
+    tool.execute = async (...args: any[]) => {
+      const started = Date.now(), input = args[1] ?? {};
+      if (!selfProtocol.has(tool.name)) agentSelf.allowTool(tool.name, input);
+      try {
+        const result = await execute(...args);
+        if (!selfProtocol.has(tool.name)) {
+          const detail = { tool: tool.name, input_hash: selfRootHash(input), duration_ms: Date.now() - started, is_error: Boolean(result?.isError) };
+          if (!agentSelf.inEvolutionReview && !result?.isError) agentSelf.recordAction(tool.name, detail);
+          await agentSelf.event(result?.isError ? "tool_failed" : "tool_succeeded", `tool:${args[0]}`, detail);
+          persistSelf();
+        }
+        return result;
+      } catch (error) {
+        if (!selfProtocol.has(tool.name)) {
+          await agentSelf.event("tool_failed", `tool:${args[0]}`, { tool: tool.name, input_hash: selfRootHash(input), error: String(error), duration_ms: Date.now() - started });
+          persistSelf();
+        }
+        throw error;
+      }
+    };
     tools.set(tool.name, tool);
     pi.registerTool(tool);
   };
@@ -383,7 +464,10 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       return tool.execute(id, args, signal, update, ctx);
     },
   });
-  workspace.onWrite = async path => { const result = await binder.save(path, 0, { by: "agent", decision: requests }); binder.boundary(); return result; };
+  workspace.onWrite = async path => {
+    if (/^(prompts|skills|agents|tools|notes\/memory)\//.test(path))
+      return `Workspace file ${path} was written, but live harness objects change only through reflect_component; read it, then reflect its source if it should become active.`;
+  };
 
   register("run_python", "Run Python on the host with the installed ML stack (pandas, numpy, scikit-learn, LightGBM, XGBoost, CatBoost, optuna, polars). Supply code or an existing workspace path. cwd is the workspace; data/ is read-only by convention; write models and submissions under work/ or submissions/. Training may take minutes: set timeout_s up to 7200. Args arrive as argv[1] JSON. Provider and Kaggle credentials are not passed to this process. Returns exit status, bounded stdout/stderr and a full log path.",
     Type.Object({ code: Type.Optional(Type.String()), path: Type.Optional(Type.String()),
@@ -395,48 +479,38 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       version: Type.Optional(Type.Integer({ minimum: 1 })), timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 7200 })) }),
     async (a: any, signal: any) => text(await runHarnessTool(a, signal)));
 
-  register("save_method", "Create or revise a reusable Python modeling method. Supply exactly one of body or source_path. Methods live in methods/ with immutable version history under .harness/method-versions/; run them with run_method. Use this for feature builders, validators, trainers and blenders that later iterations should reuse.",
+  register("save_method", "Create or revise a Python modeling tool as a live Agent tool component. Supply exactly one of body or source_path; the source must define run(args). Versions are hot-reflected into the Agent and can be compared through run_method or run_harness_tool.",
     Type.Object({ name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }), description: Type.String({ minLength: 1, maxLength: 200 }),
       body: Type.Optional(Type.String()), source_path: Type.Optional(Type.String()), expected_version: Type.Optional(Type.Integer({ minimum: 0 })) }),
     async (a: any) => {
       if ((a.body === undefined) === (a.source_path === undefined)) throw Error("Supply exactly one of body or source_path.");
       const source = a.body ?? workspace.read(a.source_path);
-      return text(saveMethod(a.name, source, a.description, a.expected_version));
+      return text(await saveMethod(a.name, source, a.description, a.expected_version));
     });
 
-  register("edit_method", "Revise one exact text span in an active method while preserving its version history. Read the method first.",
+  register("edit_method", "Revise one exact text span in an active live Python tool component while preserving its reflective version history. Read the method first.",
     Type.Object({ name: Type.String(), old_text: Type.String(), new_text: Type.String(), expected_version: Type.Integer({ minimum: 1 }) }),
     async (a: any) => {
       const active = methods[a.name];
       if (!active) throw Error(`No active method ${a.name}.`);
       if (active.version !== a.expected_version) throw Error(`Method ${a.name} is v${active.version}; expected v${a.expected_version}.`);
-      const source = workspace.read(`methods/${a.name}.py`);
+      const component = activeComponents().find((item: any) => item.kind === "tool" && item.name === a.name);
+      const source = component?.source;
+      if (!source) throw Error(`No active live tool component named ${a.name}.`);
       if (!a.old_text || source.split(a.old_text).length !== 2) throw Error("old_text must occur exactly once in the active method.");
-      return text(saveMethod(a.name, source.replace(a.old_text, () => a.new_text), active.description, a.expected_version));
+      const body = source.replace(/^# program: on\r?\n(?:# description:[^\r\n]*\r?\n)?/, "");
+      return text(await saveMethod(a.name, body.replace(a.old_text, () => a.new_text), active.description, a.expected_version));
     });
 
-  register("run_method", "Run a saved method with args as argv[1] JSON. Omit version for the active one. The same host Python environment and timeout rules as run_python apply.",
+  register("run_method", "Run an active or retained live Python tool component with args as JSON. Omit version for the active one. The same host Python environment and timeout rules as run_python apply.",
     Type.Object({ name: Type.String(), args: Type.Optional(Type.Record(Type.String(), Type.Any())), version: Type.Optional(Type.Integer({ minimum: 1 })),
       timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 7200 })) }),
-    async (a: any, signal: any) => {
-      const record = methods[a.name];
-      if (!record) throw Error(`No saved method ${a.name}.`);
-      const version = a.version ?? record.version;
-      const source = methodFile(a.name, version);
-      if (!existsSync(source)) throw Error(`Method ${a.name} v${version} is not available.`);
-      const rel = `work/method-runs/${a.name}@v${version}.py`;
-      workspace.runtimeWrite(rel, readFileSync(source));
-      const result = await runPython({ path: rel, args: a.args ?? {}, timeout_s: a.timeout_s }, signal);
-      methods[a.name].runs = (methods[a.name].runs ?? 0) + 1;
-      if (Number.isFinite(Number(a.args?.cv_score))) methods[a.name].best_cv = Math.max(Number(methods[a.name].best_cv ?? -Infinity), Number(a.args.cv_score));
-      persistMethods();
-      return text(result);
-    });
+    async (a: any, signal: any) => text(await runHarnessTool(a, signal)));
 
   register("list_methods", "List saved methods, versions, descriptions and run counts.",
     Type.Object({}), async () => text(Object.entries(methods).map(([name, m]: [string, any]) => ({ name, ...m }))));
 
-  register("kaggle_submit", "Validate a submission CSV, check the remaining Kaggle allowance, upload it, and return the public score when scoring completes. After receiving a score, call harness_reflect to diagnose what your own problem-solving process should improve before the next real submission or finish. Record cv_score/cv_std/method so the submission ledger links local validation to leaderboard feedback. Use dry_run=true to validate only. Every real call spends one competition submission.",
+  register("kaggle_submit", "Validate a submission CSV, check the remaining Kaggle allowance, upload it, and return the public score when scoring completes. A scored result is recorded in the live self-evolution ledger and opens an EVO pass at the next request boundary. Record cv_score/cv_std/method so the submission ledger links local validation to leaderboard feedback. Use dry_run=true to validate only. Every real call spends one competition submission.",
     Type.Object({ file: Type.String(), message: Type.String({ minLength: 1, maxLength: 500 }),
       cv_score: Type.Optional(Type.Number()), cv_std: Type.Optional(Type.Number()), method: Type.Optional(Type.String()),
       notes: Type.Optional(Type.String()), wait_s: Type.Optional(Type.Integer({ minimum: 10, maximum: 600 })), dry_run: Type.Optional(Type.Boolean()) }),
@@ -446,80 +520,7 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     Type.Object({ top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })), full: Type.Optional(Type.Boolean()) }),
     async (a: any) => text(await statusTool(a)));
 
-  register("harness_reflect", "Required after each scored Kaggle submission and before the next real submission or finish. Turn your process reflections into prompt, memory, skill, tool or subagent components using self_component, including provisional hypotheses; identify the components and the next experiment that will use and assess them. Diagnose your harness and methodology, not only the model.",
-    Type.Object({
-      submission_ref: Type.Integer({ minimum: 1 }),
-      task_result: Type.String({ minLength: 20 }),
-      process_worked: Type.String({ minLength: 20 }),
-      process_gap: Type.String({ minLength: 30 }),
-      cause: Type.String({ minLength: 20 }),
-      strategy_change: Type.String({ minLength: 30 }),
-      next_test: Type.String({ minLength: 20 }),
-      harness_components: Type.Optional(Type.Array(Type.String({ minLength: 8 }), { maxItems: 8 })),
-      harness_edit: Type.Optional(Type.String({ maxLength: 1000 })),
-    }),
-    async (a: any) => {
-      const scored = (state.submissions ?? []).filter((row: any) => Number.isFinite(Number(row.public_score)));
-      const latest = scored.at(-1);
-      if (!latest) throw Error("No scored Kaggle submission is available to reflect on. Check kaggle_status after submission.");
-      if (Number(a.submission_ref) !== Number(latest.ref))
-        throw Error(`Reflect on the latest scored submission ${latest.ref ?? latest.file}, not ${a.submission_ref}.`);
-      if (state.harnessReflections.some((item: any) => Number(item.submission_ref) === Number(a.submission_ref)))
-        throw Error(`Submission ${a.submission_ref} already has a self-harness reflection.`);
-      const previous = scored.at(-2);
-      const delta = previous ? Number(latest.public_score) - Number(previous.public_score) : null;
-      const path = `notes/reflections/checkpoint-${a.submission_ref}.md`;
-      const row = {
-        ...a, path, file: latest.file, public_score: Number(latest.public_score), cv_score: latest.cv_score ?? null,
-        previous_public_score: previous ? Number(previous.public_score) : null, delta,
-        tool_sequence: state.currentToolSequence, at: new Date().toISOString(),
-      };
-      const body = [
-        `# Self-harness checkpoint for submission ${a.submission_ref}`,
-        "",
-        `- candidate: \`${latest.file}\``,
-        `- CV: ${latest.cv_score ?? "not recorded"}`,
-        `- public: ${Number(latest.public_score).toFixed(5)}`,
-        `- previous public: ${previous ? Number(previous.public_score).toFixed(5) : "none"}`,
-        `- public delta: ${delta === null ? "n/a" : `${delta >= 0 ? "+" : ""}${delta.toFixed(5)}`}`,
-        "",
-        "## Task result",
-        a.task_result,
-        "",
-        "## What worked in my process",
-        a.process_worked,
-        "",
-        "## Harness or workflow gap",
-        a.process_gap,
-        "",
-        "## Why it happened",
-        a.cause,
-        "",
-        "## Strategy change for the next iteration",
-        a.strategy_change,
-        "",
-        "## Experiment that will test the change",
-        a.next_test,
-        "",
-        "## Components created or revised",
-        ...(a.harness_components?.length ? a.harness_components.map((line: string) => `- ${line}`) : ["No component was recorded in this checkpoint."]),
-        "",
-        "## Harness edits",
-        a.harness_edit ?? "See the component list; any new or revised components remain hypotheses until later use provides evidence.",
-        "",
-      ].join("\n");
-      workspace.mutate({ op: "write", path, content: body });
-      await binder.save(path, 0, { by: "agent", decision: requests });
-      state.harnessReflections.push(row);
-      persist();
-      log("harness-reflections.jsonl", row);
-      return text({
-        recorded: true, path, public_score: row.public_score, delta,
-        required_before_next_submission: "Run a new experiment that tests the stated strategy change, then compare its result.",
-      });
-    });
-
-  register("finish", "Complete the task only after a fresh full Kaggle leaderboard check verifies that your best submission meets the competition target rank and the latest scored submission has a harness_reflect checkpoint. Until the target is reached, keep testing candidate and harness improvements; a reflection, plateau claim, or list of next steps is not a reason to finish. Summarize process improvements and score evidence after the target is verified.",
+  register("finish", "Complete the task only after a fresh full Kaggle leaderboard check verifies that your best submission meets the competition target rank. Until the target is reached, keep testing candidate and harness improvements through the live EVO loop; a score, reflection, plateau claim, or list of next steps is not a reason to finish. Summarize process improvements and score evidence after the target is verified.",
     Type.Object({
       summary: Type.String({ minLength: 80 }),
       hypothesis: Type.String({ minLength: 12 }),
@@ -548,9 +549,6 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       const reject = (why: string) => {
         throw Error(`${why}\n\nScore facts recomputed from harness/submissions.jsonl: ${facts}\nRepeat the finish call with: summary, hypothesis, changes[] (distinct actions), harness_review, harness_gaps[], strategy_changes[], harness_components[] (created/revised components or []), vs_previous (must contain the latest public score as ${Number(latest.public_score).toFixed(4)}), verdict (improved|regressed|neutral), next_steps[>=2].`);
       };
-      const latestReflection = state.harnessReflections.find((item: any) => Number(item.submission_ref) === Number(latest.ref));
-      if (!latestReflection)
-        reject(`The latest scored submission ${latest.ref ?? latest.file} has no harness_reflect checkpoint. Reflect on your problem-solving process and strategy after receiving the score before finishing.`);
       const leaderboard = state.latestFullLeaderboard;
       if (!leaderboard || Number(leaderboard.submission_count) !== scored.length)
         reject("The current best has not been checked against the full leaderboard since the latest scored submission. Call kaggle_status(full=true), then continue optimizing unless the target rank is reached.");
@@ -616,8 +614,6 @@ export default function kaggleDemo(pi: ExtensionAPI) {
         "",
       ].join("\n");
       workspace.mutate({ op: "write", path: reflection, content: body });
-      await binder.save(reflection, 0, { by: "agent", decision: requests });
-
       const factsTable = { latest: latest.file, public: Number(latest.public_score), cv: latest.cv_score ?? null,
         prior_best: priorBest ? Number(priorBest.public_score) : null, delta };
       log("reflections.jsonl", { window, path: reflection, ...a, facts: factsTable });
@@ -625,43 +621,23 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       state.complete = true;
       state.finishedAt = new Date().toISOString();
       state.finish = { ...a, reflection, facts: factsTable };
+      agentSelf.taskEnd("delivered");
+      persistSelf();
       persist();
       return text({ finished: true, reflection, best: state.best, facts: factsTable }, true);
     });
 
   register("read_component", "Inspect a named prompt, skill, subagent role, memory entry or method and its exact active version.",
     Type.Object({ name: Type.String() }), (a: any) => {
-      if (methods[a.name]) return text(`${a.name}@v${methods[a.name].version}\n${workspace.read(`methods/${a.name}.py`)}`);
-      const c = binder.active().find(c => c.name === a.name);
-      if (!c) {
-        const path = `notes/memory/${a.name}.md`;
-        if (workspace.files().includes(path)) return text(`${a.name}@v${binder.versionMap()[path] ?? 1}\n${workspace.read(path)}`);
-        throw Error("No active component by this name");
-      }
-      return text(`${c.name}@v${c.version}\n${c.source}`);
-    });
-
-  register("self_component", "Create or revise task-local prompt, skill, memory, tool or subagent harness components. Tool source is Python defining run(args), saved under tools/ and runnable by run_harness_tool(name,args,version). Save useful or promising procedures as components when they emerge; later experiments judge whether each component helps. Subagents declare allowed tools and a write_scope for write/edit.",
-    Type.Object({ kind: Type.Union([Type.Literal("prompt"), Type.Literal("skill"), Type.Literal("memory"), Type.Literal("tool"), Type.Literal("subagent")]),
-      name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }), content: Type.String(),
-      description: Type.Optional(Type.String()), tools: Type.Optional(Type.Array(Type.String())), write_scope: Type.Optional(Type.Array(Type.String())) }),
-    async (a: any) => {
-      const path = a.kind === "memory" ? `notes/memory/${a.name}.md` : a.kind === "skill" ? `skills/${a.name}/SKILL.md`
-        : a.kind === "subagent" ? `agents/${a.name}.md` : a.kind === "tool" ? `tools/${a.name}.py` : `prompts/${a.name}.md`;
-      const content = a.kind === "memory" ? `${a.description ? `# ${a.description.replace(/[\r\n]+/g, " ")}\n\n` : ""}${a.content}` : a.kind === "prompt" ? `---\nactive: true\ndescription: ${JSON.stringify(a.description ?? a.name)}\n---\n${a.content}`
-        : a.kind === "subagent" ? `---\ndescription: ${JSON.stringify(a.description ?? a.name)}\ntools: ${JSON.stringify(a.tools ?? ["read"])}${a.write_scope ? `\nwrite_scope: ${JSON.stringify(a.write_scope)}` : ""}\n---\n${a.content}`
-        : a.kind === "tool" ? `# ${(a.description ?? a.name).replace(/[\r\n]+/g, " ")}\n${a.content}`
-        : `---\nname: ${a.name}\ndescription: ${JSON.stringify(a.description ?? a.name)}\n---\n${a.content}`;
-      workspace.mutate({ op: "write", path, content });
-      const receipt = await binder.save(path, 0, { by: "agent", decision: requests });
-      binder.boundary();
-      return text(receipt ?? `Saved ${path}; active from the next request.`);
+      const component = activeComponents().find((item: any) => item.name === a.name);
+      if (!component) throw Error("No active live component by this name");
+      return text({ kind: component.kind, name: component.name, version: component.version, source: component.source });
     });
 
   /** A saved role runs in a fresh context with only its declared tools and material. */
   const runSubagent = async (a: any, signal: any, ctx: any, parentPrompt = "") => {
-    const agent = binder.active().find(c => c.kind === "subagent" && c.name === a.agent);
-    if (!agent) throw Error(`No active subagent ${a.agent}. Create one with self_component(kind="subagent").`);
+    const agent = activeComponents().find((c: any) => c.kind === "subagent" && c.name === a.agent);
+    if (!agent) throw Error(`No active subagent ${a.agent}. Define it with reflect_component(kind="subagent").`);
     if (!ctx.model) throw Error("run_agent needs the active model context");
     const writeScope = (agent.write_scope ?? []).map((s: string) => s.replace(/\\/g, "/").replace(/^\.\//, ""));
     const allowed = agent.tools ?? ["read"];
@@ -701,7 +677,8 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       content.push({ type: "text", text: `${ref}:\n${workspace.read(String(ref))}` });
     }
     const messages: any[] = [{ role: "user", content, timestamp: Date.now() }];
-    const systemPrompt = `${agent.source}\n${parentPrompt}${activePromptText()}`;
+    const componentPrompts = activeComponents().filter((component: any) => component.kind === "prompt").map((component: any) => component.body ?? component.source).join("\n\n");
+    const systemPrompt = `${agent.body ?? agent.source}\n${parentPrompt}${componentPrompts ? `\n${componentPrompts}` : ""}`;
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
     while (true) {
       const create = () => ctx.modelRegistry.streamSimple(ctx.model, { systemPrompt, messages, tools: defs },
@@ -757,7 +734,7 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     Type.Object({ context: Type.Optional(Type.String()), refs: Type.Optional(Type.Array(Type.String())) }),
     async (a: any, signal: any, ctx: any) => {
       if (!ctx.model) throw Error("ADAPT needs the active model context");
-      const method = binder.active().find(component => component.kind === "skill" && component.name === "adapt_method");
+      const method = activeComponents().find((component: any) => component.kind === "skill" && component.name === "adapt_method");
       const systemPrompt = `${adaptPrompt}${method ? `\n\n## Agent-authored adapt_method (${method.path}@v${method.version})\n${method.body}` : ""}`;
       const content: any[] = [{ type: "text", text: a.context ?? "" }];
       const reader = workspace.fileTools().find(tool => tool.name === "read")!;
@@ -771,7 +748,7 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       log("lifecycle.jsonl", { event: "adapt_enter", context: a.context ?? "", refs: a.refs ?? [] });
       while (true) {
         if (signal?.aborted) throw Error("ADAPT aborted");
-        const available = [...tools.values()].filter(tool => !["adapt", "finish", "kaggle_submit", "harness_reflect"].includes(tool.name));
+        const available = [...tools.values()].filter(tool => !["adapt", "finish", "kaggle_submit"].includes(tool.name));
         const create = () => ctx.modelRegistry.streamSimple(ctx.model, { systemPrompt, messages,
           tools: available.map(({ name, description, parameters }) => ({ name, description, parameters })) },
           { apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: process.env.KAGGLE_DEMO_THINKING ?? "high", maxTokens: ctx.model.maxTokens });
@@ -797,6 +774,99 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       }
     });
 
+  register("read_self", "Inspect this live Agent's self, orchestration, policy, contract, ledger, windows, observations, segments or recorded evidence. Facts are not ranked or diagnosed by the host.",
+    Type.Object({ section: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })),
+      count: Type.Optional(Type.Integer({ minimum: 1, maximum: 40 })), ref: Type.Optional(Type.String()) }),
+    (a: any) => text(a.section === "evidence" ? agentSelf.evidence(a.ref, a.offset ?? 0) : agentSelf.detail(a.section ?? "self", a.offset ?? 0, a.count ?? 20)));
+
+  register("read_self_component", "Read the exact active or retained version of a live prompt, memory, skill, Python tool or subagent component.",
+    Type.Object({ kind: Type.Union([Type.Literal("prompt"), Type.Literal("memory"), Type.Literal("skill"), Type.Literal("tool"), Type.Literal("subagent")]),
+      name: Type.String(), version: Type.Optional(Type.Integer({ minimum: 1 })) }),
+    (a: any) => {
+      const path = a.kind === "tool" ? `tools/${a.name}.py` : a.kind === "prompt" ? `prompts/${a.name}.md`
+        : a.kind === "skill" ? `skills/${a.name}/SKILL.md` : a.kind === "subagent" ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
+      const component = activeComponents().find((item: any) => item.path === path);
+      const version = a.version ?? component?.version;
+      const source = version === undefined ? undefined : agentSelf.sourceOf(path, version);
+      if (source === undefined) throw Error(`No ${a.kind} component ${a.name}@v${version ?? "active"}.`);
+      return text({ kind: a.kind, name: a.name, version, active: component?.version === version, history: agentSelf.historyOf(path), source });
+    });
+
+  register("reflect_component", "Hot-modify one live Agent prompt, memory, skill, tool or subagent; the new version activates before the next provider request.",
+    Type.Object({ op: Type.String(), kind: Type.String(), name: Type.String(), source: Type.Optional(Type.String()),
+      version: Type.Optional(Type.Integer()), write: Type.Optional(Type.String()), patch: Type.Optional(Type.Array(Type.Any())),
+      evidence_refs: Type.Optional(Type.Array(Type.String())), success_predicate: Type.Optional(Type.Any()), expected_effect: Type.Optional(Type.String()) }), async (a: any) => {
+      const operation = normalizeOperation("component", a, undefined, { layer: false });
+      const result = await agentSelf.reflectComponent({ ...operation, baseRevision: agentSelf.pendingRevision ?? agentSelf.revision,
+        level: 0, origin: { by: "agent", decision: requests } });
+      persistSelf();
+      log("live-agent-self.jsonl", { event: "reflect_component", revision: result.revision,
+        kind: result.component.kind, name: result.component.name, version: result.component.version, hash: result.component.hash });
+      return text(result);
+    });
+
+  register("reflect_orchestration", "Hot-modify this live Agent's task loop, orchestration or context policy. Changes are versioned and active at the next provider boundary.",
+    Type.Object({ orchestration: Type.Optional(Type.Record(Type.String(), Type.Any())), orchestration_patch: Type.Optional(Type.Record(Type.String(), Type.Any())),
+      policy: Type.Optional(Type.Record(Type.String(), Type.Any())), components: Type.Optional(Type.Array(Type.Any())), restore: Type.Optional(Type.Integer()),
+      restore_scope: Type.Optional(Type.Array(Type.String())), carry: Type.Optional(Type.Record(Type.String(), Type.Any())),
+      stepMap: Type.Optional(Type.Record(Type.String(), Type.String())), evidence_refs: Type.Optional(Type.Array(Type.String())),
+      success_predicate: Type.Optional(Type.Any()), expected_effect: Type.Optional(Type.String()) }), async (a: any) => {
+      const operation = normalizeOperation("orchestration", a, undefined, { layer: false });
+      const result = await agentSelf.reflectOrchestration({ ...operation, baseRevision: agentSelf.pendingRevision ?? agentSelf.revision, authorized: true });
+      persistSelf();
+      log("live-agent-self.jsonl", { event: "reflect_orchestration", revision: result.revision, result });
+      return text(result);
+    });
+
+  register("decide", "Record a task-loop decision against evidence refs and advance the transition declared in your active orchestration.",
+    Type.Object({ decisionId: Type.String(), evidenceRefs: Type.Array(Type.String()), result: Type.Any() }), (a: any) => {
+      if (agentSelf.inEvolutionReview) throw Error("Close the current evolution round with decide_exit.");
+      const decision = agentSelf.decide({ decisionId: a.decisionId, actor: "agent", evidenceRefs: a.evidenceRefs, result: a.result });
+      const transition = agentSelf.advance();
+      persistSelf();
+      return text({ decision, transition });
+    });
+
+  register("decide_exit", "Close the current bounded EVO round after examining its recorded facts; the next round or task turn resumes at the next request boundary.",
+    Type.Object({ reason: Type.Optional(Type.String()), result: Type.Optional(Type.Any()) }), async (a: any) => {
+      const operation = normalizeOperation("review", a, agentSelf.reviewExitSchema);
+      const result = await agentSelf.exit(operation);
+      persistSelf();
+      return text(result);
+    });
+
+  register("decide_validation", "Record your interpretation of a due self-change validation window. Missing or non-comparable evidence remains unverified.",
+    Type.Object({ window: Type.Optional(Type.String()) }), async (a: any) => {
+      const result = await agentSelf.interpret(a.window);
+      persistSelf();
+      return text(result);
+    });
+
+  const applySelfSurface = (names: string[]) => {
+    const components = activeComponents();
+    const exposed = names.map(name => {
+      const component = components.find((item: any) => item.name === name && (item.kind === "tool" || item.kind === "subagent"));
+      return component?.kind === "tool" ? "run_harness_tool" : component?.kind === "subagent" ? "run_agent" : name;
+    });
+    const registered = new Set(pi.getAllTools().map(tool => tool.name));
+    const missing = exposed.filter(name => !registered.has(name));
+    if (missing.length) throw Error(`SelfRoot advertised unregistered Kaggle tools: ${missing.join(", ")}`);
+    pi.setActiveTools([...new Set(exposed)]);
+  };
+  const advanceSelfBoundary = async () => {
+    await agentSelf.requestBoundary();
+    await agentSelf.boundary(applySelfSurface, persistSelf);
+    persistSelf();
+  };
+  pi.on("turn_end", async (event: any) => {
+    for (const result of event.toolResults ?? []) if (result.isError && !selfProtocol.has(result.toolName)) {
+      await agentSelf.event("tool_failed", `tool:${result.toolCallId}`, { tool: result.toolName, content: result.content });
+    }
+    await advanceSelfBoundary();
+    selfRootBoundaryRequest = selfRootRequests;
+  });
+  pi.on("session_start", () => persistSelf());
+
   pi.on("context", event => {
     const messages = projectKaggleTaskContext(event.messages, workspace);
     log("context-projection.jsonl", { request: requests + 1, before_chars: JSON.stringify(event.messages).length, after_chars: JSON.stringify(messages).length });
@@ -820,14 +890,8 @@ export default function kaggleDemo(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event: any) => {
     if (!initialized) {
-      await binder.scan(0);
-      const skillPath = "skills/self_evolution/SKILL.md";
-      if (!binder.candidates().some(c => c.path === skillPath)) {
-        const skill = readFileSync(fileURLToPath(new URL("./harness-methods/kaggle_self_evolution/SKILL.md", import.meta.url)), "utf8");
-        workspace.mutate({ op: "write", path: skillPath, content: skill });
-        await binder.save(skillPath, 0, { by: "system", decision: requests });
-      }
-      binder.boundary(); initialized = true;
+      if (!existsSync(liveSelfPath)) persistSelf();
+      initialized = true;
     }
     resumed = event.prompt === "KAGGLE_RESUME" || event.prompt.startsWith("KAGGLE_RESUME\n");
     if (resumed && state.complete) {
@@ -836,30 +900,50 @@ export default function kaggleDemo(pi: ExtensionAPI) {
       persist();
       log("lifecycle.jsonl", { event: "resume_after_finish", previous_finished_at: state.resumedFromFinish });
     }
-    if (!resumed) { binder.boundary(); persist(); }
-    pi.setActiveTools(["adapt", "read", "write", "edit", "ls", "grep", "run_python", "save_method", "edit_method", "run_method",
-      "run_harness_tool", "list_methods", "kaggle_submit", "kaggle_status", "harness_reflect", "finish", "read_component", "self_component", "run_agent", "explore"]);
-    const skillIndex = binder.active().filter(c => c.kind === "skill")
-      .map(c => `${c.name}@v${c.version} | ${c.description} | read_component(name) for full method`).join("\n");
+    if (!resumed) persist();
+    await advanceSelfBoundary();
+    const skillIndex = activeComponents().filter((component: any) => component.kind === "skill")
+      .map((component: any) => `${component.name}@v${component.version} | ${component.description} | read_self_component(kind="skill", name="${component.name}")`).join("\n");
     const unbounded = process.env.KAGGLE_DEMO_UNBOUNDED === "1";
     const remainingMinutes = unbounded ? "unlimited" : String(Math.max(0, Math.ceil((Number(process.env.KAGGLE_DEMO_DEADLINE) - Date.now()) / 60000)));
-    const budgetLine = unbounded ? `Remaining runtime and estimated spend: unlimited; provider requests ${requests}.`
-      : `Remaining: ${remainingMinutes} min; estimated USD ${Math.max(0, cap - spent).toFixed(2)} of ${cap.toFixed(2)}; provider requests ${requests}.`;
+    const budgetLine = unbounded ? `Remaining runtime: unlimited; cumulative estimated spend $${spent.toFixed(2)} (notice threshold $${spendNotice.toFixed(2)}, may continue above it); provider requests ${requests}.`
+      : `Remaining runtime: ${remainingMinutes} min; cumulative estimated spend $${spent.toFixed(2)} (notice threshold $${spendNotice.toFixed(2)}, may continue above it); provider requests ${requests}.`;
     log("lifecycle.jsonl", { event: resumed ? "resume" : "request_started" });
     return { systemPrompt: systemPrompt(), message: { customType: "kaggle-work-state",
-      content: `Current state: ${JSON.stringify(currentState())}\nSkills: ${skillIndex || "none"}\nMethods: ${Object.keys(methods).join(", ") || "none"}\n${budgetLine}`,
+      content: `Current state: ${JSON.stringify(currentState())}\nSkills: ${skillIndex || "none"}\nMethods (live tool components): ${Object.keys(methods).join(", ") || "none"}\n${budgetLine}`,
       display: false } };
   });
 
-  pi.on("before_provider_request", (event: any) => {
-    if (Date.now() > Number(process.env.KAGGLE_DEMO_DEADLINE) || spent + reserve > cap) {
+  pi.on("before_provider_request", async (event: any) => {
+    if (Date.now() > Number(process.env.KAGGLE_DEMO_DEADLINE) || (enforceSpendCap && spent + reserve > cap)) {
       writeFileSync(join(root, "budget-stop.json"), JSON.stringify({ spent, requests, reason: "authorized budget boundary" }));
       process.exit(0);
     }
+    // A reflection tool call can be followed by another provider call before Pi emits turn_end. Treat that
+    // boundary as the end of the current one-request sweep focus so its pending write activates first.
+    if (selfRootRequests > selfRootBoundaryRequest) {
+      await advanceSelfBoundary();
+      selfRootBoundaryRequest = selfRootRequests;
+    }
     spent += reserve; reserved = reserve;
-    binder.boundary();
     const prompt = systemPrompt();
+    const pin = agentSelf.pin();
+    selfRootRequests++;
+    selfRootRequestStarted = Date.now();
     const payload = event.payload as any;
+    const schemas: Record<string, any> = {
+      reflect_component: providerOperationSchema("component", undefined, undefined, { layer: false }),
+      reflect_orchestration: providerOperationSchema("orchestration", undefined, agentSelf.current.orchestration, { layer: false }),
+      decide_exit: agentSelf.exitOperationSchema,
+      decide_validation: providerOperationSchema("validation"),
+    };
+    for (const item of payload.tools ?? []) {
+      const name = item.function?.name ?? item.name;
+      const schema = schemas[name];
+      if (!schema) continue;
+      if (item.function) item.function.parameters = providerToolSchema(schema);
+      else item.parameters = providerToolSchema(schema);
+    }
     if (Array.isArray(payload.system)) {
       const block = payload.system.find((part: any) => typeof part.text === "string" && part.text.includes(basePrompt.slice(0, 80)));
       if (block) block.text = prompt;
@@ -871,7 +955,19 @@ export default function kaggleDemo(pi: ExtensionAPI) {
         if (head) { head.content = prompt; delete head.sections; }
       }
     }
-    log("provider-requests.jsonl", { request: ++requests, estimated_usd_so_far: spent,
+    if (agentSelf.inSweep) {
+      const messages = payload.messages ?? payload.input;
+      if (Array.isArray(messages)) {
+        const marker = "KAGGLE_EVOLUTION_SWEEP_TAIL";
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const content = messages[i]?.content;
+          if (messages[i]?.role === "user" && typeof content === "string" && content.startsWith(marker)) messages.splice(i, 1);
+        }
+        const sweep = (agentSelf.reviewSelfView() as any).evolution_pass.sweep;
+        messages.push({ role: "user", content: `${marker}\n${sweep.header}\n${JSON.stringify(sweep)}` });
+      }
+    }
+    log("provider-requests.jsonl", { request: ++requests, self_root_request: pin.request, self_root_revision: agentSelf.revision, estimated_usd_so_far: spent,
       payload: JSON.stringify(payload, (key, value) => key === "url" && typeof value === "string" && value.startsWith("data:") ? "(image)" : value) });
   });
 
@@ -880,10 +976,21 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     if (m.role === "assistant") {
       const u = m.usage ?? {};
       const known = Number.isFinite(u.input) && Number.isFinite(u.output) && (u.input + u.output) > 0;
+      if (selfRootRequests > selfRootSettledRequest) {
+        const estimate = known ? ((u.input ?? 0) * inputRate + (u.cacheRead ?? 0) * cacheReadRate + (u.cacheWrite ?? 0) * cacheWriteRate + (u.output ?? 0) * outputRate) / 1e6 : reserve;
+        agentSelf.cost(u, Date.now() - selfRootRequestStarted, estimate, known, 12000, { stop: m.stopReason ?? null });
+        selfRootSettledRequest = selfRootRequests;
+        persistSelf();
+      }
       if (known) spent += ((u.input ?? 0) * inputRate + (u.cacheRead ?? 0) * cacheReadRate + (u.cacheWrite ?? 0) * cacheWriteRate + (u.output ?? 0) * outputRate) / 1e6 - reserved;
       reserved = 0;
       log("model-usage.jsonl", { request: requests, usage: known ? u : null, conservative_usd: spent,
         usage_status: known ? "reported" : "unknown_reserved", stopReason: m.stopReason });
+      if (spent >= spendNotice && !state.spendNoticeAt) {
+        state.spendNoticeAt = new Date().toISOString();
+        log("spend-notices.jsonl", { spent, threshold: spendNotice, requests });
+        persist();
+      }
     }
   });
 }
