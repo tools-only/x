@@ -16,7 +16,7 @@ import { blockNote, cellRefs, codeKey, commentLines, repeatedBlocks } from './ar
 
 /** One action taken for foreground code: its feedback, or why acting stopped; `line` is the receipt. */
 export type ActOutcome = { observation?: Record<string, unknown>; stopped?: string; line?: string };
-type Host = { pi: ExtensionAPI; workspace: Workspace; self: any; reflectedSelf?: any; state(): Record<string, unknown>;
+type Host = { pi: ExtensionAPI; workspace: Workspace; self: any; binder: Binder; reflectedSelf?: any; state(): Record<string, unknown>;
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   hookTurn?(): boolean;
   /** Reflective hosts supply a persisted run-wide compute allowance, shared across resumes. */
@@ -50,6 +50,9 @@ export const SAVE_NAME = /^[a-z_][a-z0-9_]{0,40}$/;
 export const MAX_ACTS = 24;
 /** Python executions of the agent and its subagents that run at once (each is one python process). */
 const MAX_PARALLEL = 4;
+/** Runtime limits for Agent-authored action mounts; these protect the environment call path, not SelfRoot usage. */
+const MAX_LOOP_MOUNTS = 4;
+const MAX_LOOP_MOUNT_MS = 5000;
 /** States after which a view whose output never changed is shown as a snapshot: its head only (observe). */
 export const CONSTANT_VIEW_RUNS = 5;
 /** How long a guard may take to answer for one action before the action passes without it (admit below). */

@@ -44,6 +44,7 @@ import { validatePythonComponent } from "./arc_thin_components.ts";
 import { NativeRuntime } from "./arc_thin_native_runtime.ts";
 import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
 import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
+import { metaTrialFacts } from "./arc_thin_meta_trial.ts";
 import { SelfHarnessPhaseLoop } from "./arc_thin_phase_loop.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
@@ -511,6 +512,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				openMetaTrial(expect, path, [path], trial.versions, versions);
 		}
 		return `trial ${trial.id}: ${choice} verified against component versions`;
+	}
+	function settleMetaTrial(reason?: string): void {
+		const trial = activeMetaTrial;
+		if (!trial || trial.measured) return;
+		const end = trajectory.length;
+		if (!reason && end - trial.start < trial.within) return;
+		const measuredEnd = Math.min(end, trial.start + trial.within);
+		const facts = metaTrialFacts({ start: trial.start, end: measuredEnd, level: trial.level,
+			candidatePaths: trial.candidatePaths, candidateVersions: trial.versions, startDecision: trial.startDecision, endDecision: decision,
+			actions: trajectory, guards: readRows("guard_runs.jsonl"), components: readRows("component_runs.jsonl"),
+			mountActions: readRows("mount_action_runs.jsonl"), mountChecks: readRows("mount_prediction_runs.jsonl"),
+			views: readRows("observer_runs.jsonl"), promptRuns: readRows("prompt_runs.jsonl") });
+		trial.measured = { end: measuredEnd, status: end - trial.start >= trial.within ? "measured" : "unknown",
+			...(reason ? { reason } : {}), facts, versions: binder?.versionMap() ?? {} };
+		append("meta_trials.jsonl", { kind: "measured", ...trial, decision });
 	}
 	/** Characters of the last request (system prompt and messages), shown in RESOURCES so the agent sees its context size. */
 	let lastContextChars = 0;
@@ -1462,7 +1478,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
-<<<<<<< HEAD
 			if (!evo) out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
@@ -4941,7 +4956,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         artifacts: (artifactInputs(artifactLog) as any).artifacts ?? {} });
       writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
     }
-    nativeRuntime = new NativeRuntime({ pi, workspace, self: binder, reflectedSelf: evo,
+		nativeRuntime = new NativeRuntime({ pi, workspace, self: binder, binder, reflectedSelf: evo,
 		hookTurn: () => run.hookTurn,
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
@@ -5394,7 +5409,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const current = arcTaskRuntimeView as any;
 			arcTaskRuntimeView = { ...current, context: { ...current?.context, capability_index: capabilities || undefined } };
 			const taskObservation = chView ? chObservation(ctx).text : undefined;
-			run.workingSet!.text = JSON.stringify(evo.executionView({ ...(taskObservation ? { taskObservation } : {}), taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> }), null, 2);
+			const viewInput = compactArc && taskObservation ? { taskObservation } : chView ? { taskObservation: '' } : {};
+			const view = evo.executionView({ ...viewInput, taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> });
+			const { task_observation, ...selfView } = view;
+			const selfText = JSON.stringify(selfView, null, 2);
+			run.workingSet!.text = compactArc
+				? [typeof task_observation === 'string' ? task_observation : '', selfText].filter(Boolean).join('\n\n')
+				: [run.workingSet!.text, selfText].filter(Boolean).join('\n\nSELFROOT EXECUTION VIEW\n');
 		}
 			run.head = {
 				...user,

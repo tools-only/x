@@ -40,7 +40,7 @@ test('META pass: an episode close opens one pass outside the task turn, with its
   assert.ok(all(s).some((r: any) => r.type === 'meta_pass_opened' && r.value.trigger === 'episode_boundary' && r.value.round === 1));
   const closed = s.exit({ reason: 'no change: the recorded facts show one delivery path' });
   assert.ok(closed.recorded);
-  assert.deepEqual(closed.next_round, { round: 2, of: 2, opens: 'next request boundary' }, 'the induction closure announces the capability round');
+  assert.deepEqual(closed.next_round, { round: 2, of: 2, specialists: ['prompt', 'context', 'skill', 'tool', 'subagent', 'memory', 'loop'], opens: 'next request boundary' }, 'the induction closure announces the fixed capability sweep');
   assert.equal(s.review, undefined);
   assert.equal(s.mode, 'execute', 'decide_exit suspends the pass until the next boundary');
   await tick(s);
@@ -86,6 +86,7 @@ test('META pass: request counts do not mechanically close either round', async (
   for (let i = 0; i < 10; i++) s.pin();
   await tick(s);
   assert.ok(s.review, 'round 1 remains open until the agent closes it');
+  assert.doesNotMatch(s.reviewStrategy(), /request\s+\d+\/\d+/i, 'SelfRoot does not prescribe a request cadence');
   assert.ok(s.reviewStrategy().includes(META_PASS_ROUND1_LINE));
   assert.ok(!all(s).some((r: any) => r.type === 'meta_pass_capped'));
   s.exit({ reason: 'the recorded evidence supports continuing to the capability round' });
@@ -95,6 +96,7 @@ test('META pass: request counts do not mechanically close either round', async (
   for (let i = 0; i < 40; i++) s.pin();
   await tick(s);
   assert.ok(s.review, 'round 2 remains open until a change or explicit no_change');
+  assert.doesNotMatch(s.reviewStrategy(), /request\s+\d+\/\d+/i, 'the capability pass has no request-count cap');
   assert.ok(!all(s).some((r: any) => r.type === 'meta_pass_capped'));
 });
 

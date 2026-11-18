@@ -4,14 +4,15 @@ import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNat
 import {readFileSync} from 'node:fs';
 import { renderPrompt } from '../demo/prompt_loader.ts';
 
-test('native production instructions prefer reuse and evidence-led applicability without a creation quota', () => {
+test('native production instructions expose compact observations and defer capability choices to the Agent', () => {
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
-  assert.match(prompt, /Reuse your saved components before re-deriving or rewriting anything/);
-  assert.match(prompt, /applicability on current evidence/);
+  assert.match(prompt, /working view carries the current observation, recent action results, task memory and SelfRoot execution changes/);
+  assert.match(prompt, /the Agent decides whether to create, call, revise or retire one/);
+  assert.doesNotMatch(prompt, /Say what each action should do before it is played|call its same-named Task tool/);
   const assembled = renderPrompt('arc_thin_native_system.md', { game: 'test', acting: 'test', observation: 'test', carry: '', predict_on: 'test', list_stop: '', daemon: '', refine: '', call_points: '', arc: '' });
-  assert.match(assembled, /call its same-named Task tool with parameters in `args`/);
-  assert.match(assembled, /\{"\$python_session":"variable_name"\}/);
-  assert.match(assembled, /`promote` and `save_tool` publish only; `read_component` only inspects; none runs a mounted tool/);
+  assert.match(assembled, /Python is a persistent sandbox/);
+  assert.match(assembled, /Full history remains available through `history\.grid\(n\)`/);
+  assert.match(assembled, /the Agent decides whether to create, call, revise or retire one/);
 });
 
 test('Self Task prompt uses logical tools and four states without filesystem or diagnostic teaching', () => {
@@ -217,13 +218,9 @@ test('a tool-calling message with no short fields is told so once, on the result
   assert.match(kept, /probe: press ACTION2/);
 });
 
-test('the native instructions state what a prediction is for, which the native foundation had left unsaid', () => {
-  // ls20-r01 and ls20-r02 played 29 and 7 actions with prediction hits=0 and misses=0: the agent moved its acting
-  // into env.act and stopped predicting, so nothing was scored, no hypothesis check was tested and no judgment was
-  // promoted. The legacy prompt states the contract; the native one mentioned predict only as a parameter name.
+test('native instructions leave action interpretation to the Agent and expose receipts as evidence', () => {
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
-  // Where predict goes depends on the action tool (a then list, or CH's action list under ARC_THIN_OBSERVATION=ch).
-  assert.match(prompt, /predict carries it, \{\{predict_on\}\}\. That is what gets scored, what a check is tested against/);
-  assert.match(prompt, /\{\{list_stop\}\} stops at the first missed prediction/);
-  assert.match(prompt, /level or WIN transition, predict it explicitly/);
+  assert.match(prompt, /The working view carries the current observation, recent action results, task memory and SelfRoot execution changes/);
+  assert.match(prompt, /Receipts report changed cells and their box/);
+  assert.doesNotMatch(prompt, /predict carries it|predict it explicitly|stops at the first missed prediction/);
 });

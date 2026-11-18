@@ -44,7 +44,7 @@ async function fixture(extra: Record<string, string> = {}) {
   const env = { ...process.env };
   // The reviews' consult-first call point is tested in arc_thin_loop_bound.test.ts.
   Object.assign(process.env, { ARC_RUN_ROOT: root, ARC_THIN_FOUNDATION: 'native', ARC_THIN_VARIANT: 'treatment', ARC_THIN_OBSERVATION: 'ch',
-    PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'disabled',
+    ARC_THIN_SELFROOT: '0', PI_ARC_BRIDGE_URL: `http://127.0.0.1:${(server.address() as any).port}`, ARC_HARNESS_LEDGER: 'disabled',
     ARC_HARNESS_CRITIC: 'disabled', ARC_REFINE_EVERY: '1000000', ARC_THIN_REVIEW_CONSULT: '0', ...extra });
   const tools = new Map<string, any>(), handlers = new Map<string, any[]>(); let active: string[] = [];
   arcThinExtension({ registerTool: (t: any) => tools.set(t.name, t), setActiveTools: (v: string[]) => active = v,
@@ -121,10 +121,12 @@ test('a decision shows the game as CH does, after this harness\'s own sections; 
     assert.match(current, /Grid current_state_frame \(8x8\) \[hex 0-f = color 0-15\]:\n00000000\n00000000\n09000000/);
     assert.doesNotMatch(text, /TOOL RESULTS FROM PREVIOUS TURN|## TURN|PREVIOUS CONVERSATION STOPPED|RECENT ACTIONS/);
     assert.equal(head(messages).content.filter((b: any) => b.type === 'image').length, 1, 'the PNG of each grid rendered as text');
-    assert.match(h.system(), /A decision ends after an acting call \(arc_action, which plays its list of actions in order/);
-    assert.match(h.system(), /predict carries it, on each entry of arc_action's list and on env\.act\. [\s\S]*An action list stops at the first missed prediction/);
-    assert.match(h.system(), /## INPUT FORMAT[\s\S]*## COORDINATE SYSTEM[\s\S]*ACTION7=Undo\/Back · RESET=restart the level[\s\S]*## GAME SETTING/);
-    assert.doesNotMatch(h.system(), /Soft guideline|RESET is not one of your actions|non-action turns/);
+    assert.match(h.system(), /A Task decision ends at an acting call/);
+    assert.match(h.system(), /working view carries the current observation, recent action results, task memory and SelfRoot execution changes/);
+    assert.match(h.system(), /Coordinates are zero-based from the top-left/);
+    assert.match(h.system(), /Each action produces a receipt/);
+    assert.doesNotMatch(h.system(), /Spend each action wisely|predict carries it|Take an experimental action only/);
+    assert.ok(h.system().length < 3000, `compact ARC instructions: ${h.system().length}`);
     assert.deepEqual(Object.keys(h.tool('arc_action').parameters.properties).sort(), ['actions', 'predict_skill', 'reasoning']);
   } finally { await h.close(); }
 });
@@ -138,10 +140,9 @@ test('arc_action plays a list in order, cut at its first bad entry and stopped b
     assert.deepEqual(h.submitted, ['ACTION1', 'ACTION1'], 'the unknown name and everything after it is not played');
     assert.match(played.text, /^#1 ACTION1 → changed=2[\s\S]*\n#2 ACTION1 → changed=2[\s\S]*\nnot played: entry 3 and the rest/);
     const [first, second] = h.rows();
-    assert.equal(first.source, 'arc_action');
+    assert.equal(first.action, 'ACTION1');
     assert.equal(first.note, 'walk right', 'the list\'s reasoning is its first step\'s note');
     assert.deepEqual([first.batch_position, second.batch_position, second.batch_total, second.batch_id], [1, 2, 2, first.batch_id]);
-    assert.equal(first.batch_rejected[0].position, 3);
     assert.deepEqual(first.grid_change, [[9, 0, 1, 2, 2, 1, 1], [0, 9, 1, 2, 2, 2, 2]]);
     const messages = await h.decide(), text = textOf(head(messages));
     assert.ok(messages.length > 1, 'the earlier decision stays in view as a transcript');

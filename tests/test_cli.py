@@ -5,6 +5,36 @@ from autoresearch_pi import cli
 from autoresearch_pi.project import ProjectPaths
 
 
+def test_arc_thin_cli_can_disable_the_consecutive_no_action_stop(monkeypatch, tmp_path):
+    paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")
+    monkeypatch.setattr(cli.ProjectPaths, "from_environment", lambda: paths)
+    seen = []
+
+    def fake_run(root, **kwargs):
+        seen.append((root, kwargs))
+        root.mkdir(parents=True)
+        summary = root / "summary.json"
+        summary.write_text(json.dumps({"passed": True}), encoding="utf-8")
+        return summary
+
+    monkeypatch.setattr(cli, "run_arc_thin_e2e", fake_run)
+    root = paths.root / "runs" / "uncapped-arc"
+    code = cli.main([
+        "arc-thin-e2e", "--root", str(root), "--arc-root", str(tmp_path / "arc"),
+        "--provider", "az", "--model", "qwen3.8-27B",
+        "--experiment-timeout", "0", "--decision-timeout", "0",
+        "--max-no-action-decisions", "0",
+    ])
+
+    assert code == 0
+    actual_root, kwargs = seen[0]
+    assert actual_root == root.resolve()
+    assert kwargs["max_actions"] is None and kwargs["max_decisions"] is None
+    assert kwargs["max_reported_tokens"] is None and kwargs["experiment_timeout_seconds"] == 0
+    assert kwargs["decision_timeout_seconds"] == 0 and kwargs["max_no_action_decisions"] is None
+    assert kwargs["pi_provider"] == "az" and kwargs["pi_model"] == "qwen3.8-27B"
+
+
 def test_shopping_e2e_cli_enables_isolated_context_compaction_capability(monkeypatch, tmp_path):
     """Catches the smoke-test switch failing to reach the selected Shopping run."""
     paths = ProjectPaths(tmp_path / "project", tmp_path / "jit", tmp_path / "meta")

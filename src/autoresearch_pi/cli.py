@@ -194,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
                           help="maximum seconds for one Pi turn; 0 disables the per-turn deadline")
     arc_thin.add_argument("--turn-idle-timeout", type=float, default=180.0,
                           help="seconds without a native Pi event before one bounded turn recovery")
+    arc_thin.add_argument("--max-no-action-decisions", type=int, default=3,
+                          help="stop after consecutive task turns without an environment action; 0 disables this run stop")
     arc_thin.add_argument("--consolidate-after", type=int, default=None,
                           help="periodic review interval: native defaults off (0), legacy defaults 25")
     arc_thin.add_argument("--review-on-miss", action="store_true",
@@ -480,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             max_actions=args.max_actions, max_decisions=args.max_decisions,
             max_reported_tokens=args.max_reported_tokens, experiment_timeout_seconds=args.experiment_timeout,
             decision_timeout_seconds=args.decision_timeout, turn_idle_timeout_seconds=args.turn_idle_timeout,
+            max_no_action_decisions=None if args.max_no_action_decisions == 0 else args.max_no_action_decisions,
             consolidate_after_actions=args.consolidate_after, review_on_miss=args.review_on_miss, pi_provider=args.provider, pi_model=args.model,
             thinking=args.thinking, thinking_format=args.thinking_format,
             input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,

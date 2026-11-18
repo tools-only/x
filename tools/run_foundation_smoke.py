@@ -122,7 +122,7 @@ parent_requests = [r for r in requests if not r.get("analyst") and not r.get("cr
 # budget, as a summarised section of the working set; what an ended decision's tools returned is checked in both.
 shown_history = json.dumps([[r.get("current", ""), r.get("transcript", [])] for r in parent_requests], ensure_ascii=False)
 config = json.loads((root / 'run-config.json').read_text(encoding='utf-8'))
-summary_chars = 1200 if tight else 12000 if script == 'history' else 0
+summary_chars = 1200 if tight else 12000
 assert config['native_history'] == {'summary_chars': summary_chars, 'result_chars': 5000, 'decision_tool_calls': 16}, config['native_history']
 assert config['decision_reasoning'] is True and config['python_session'] is True, config
 if defaults or disabled:

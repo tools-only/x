@@ -1,6 +1,6 @@
 # ARC 在线任务的 SelfRoot 上下文与能力累积方案
 
-日期 2026-11-19。状态为设计待实施。本文承接 [ARC 迁移记录](2026-11-18-arc-selfroot-migration.md)，作为后续实施和验收记录。适用默认 native SelfRoot/CH 路径。
+日期 2026-11-19。状态为设计定稿、分阶段实施中。本文承接 [ARC 迁移记录](2026-11-18-arc-selfroot-migration.md)，作为实施和验收记录。适用默认 native SelfRoot/CH 路径。
 
 ## 1. 目标、现状与判定依据
 
@@ -72,6 +72,18 @@
 | 5. 测量探测的剩余原因 | 以实际请求为单位计算重复观测、工具调用与输出长度、已归档结果的补读和真实进展。先修观测或读取缺口；有可复用计算需求时由 Agent 决定是否制作工具 | 能区分重算已显示事实、因截断重跑、验证新假设以及真正必要的串行判断。只调整出现断点的一项机制 |
 
 尽量分提交交付，按版本回退投影或策略；原始轨迹和组件历史始终可读。以上各步沿现有请求、工具和 pass 执行，不新增后台模型、并行研究员或每动作强制 memory 写入。
+
+### 当前实现状态（2026-11-19）
+
+- 已完成：请求发出时记录动作计数；报告按动作区间统计 Python 调用、可唯一归属的 Provider 请求和已报告 token，并将无法归属的请求单列。对应提交 `878cbba0`、`fdf74ef8`。
+- 已完成：普通 ARC SelfRoot/CH 工作视图使用当前 CH 观测、紧凑最近动作与条目化 task memory；旧的整段 memory 文本不再与 SelfRoot task memory 重复投影。task memory 仍由 Agent 写，SelfRoot 按当前 memory strategy 选择，完整证据保留来源引用。对应提交 `8a9805e3`、`bd4a94f0`。
+- 已完成：SelfRoot execution view 为 pass 提供 ledger 窗口、挂起位置、组件激活版本和读取/投递/执行回执引用。对应提交 `e6c3c5aa`。
+- 本轮修复：移除 SelfRoot 自身的 request/token/storage 与 request cadence 强制门槛；修正 META round 的入口问题、episode close 丢失触发、NativeRuntime 未接 Binder、缺少 `settleMetaTrial` 和 loop mount 常量，以及无 token cap 时 runner 图片预留值未初始化和 smoke provider 重复标识符。
+- 上下文精简：将 ARC SelfRoot/CH system instructions 从重复描述改为观测契约、能力定位和按需取回说明；移除系统要求的逐 action 推理/预测流程指导。脚本 smoke 的 `context_budget.jsonl` 中 `system_chars` 从同类先前 run 的 4,760 降为 1,949（约 -59%）。这是字符数与 scripted provider 证据，不等同真实模型 token 或质量收益。
+- 功能验证：定向 Node 测试共 94 项通过，包含 SelfRoot、30-action pass、无 SelfRoot quota、task memory、CH observation renderer、request telemetry 和 native context；Python runner/request-accounting/CLI 测试 16 项通过。新增 `--max-no-action-decisions 0` 可关闭 runner 的连续无 action 停止条件，未设置时仍保持原有默认行为。`git diff --check` 通过。
+- 全链路验证：`python tools/run_foundation_smoke.py runs/arc-selfroot-foundation-20261119h foundation uncapped` 通过；Pi 0.87、生产 bridge、mock ARC SDK、scripted provider 完成 3 个 action、8 个 provider 请求，无 provider error。该 smoke 只证明接线和低成本功能，不证明真实模型自主采用或关卡收益。
+- 留存的边界：`tests/arc_thin_coverage_events.test.ts` 属于旧 harness 接口检查；目前它仍使用与现行 action-list schema 不一致的 scalar action fixture，未纳入上述当前 SelfRoot 定向验收。此兼容测试问题单独记录，不能将它算作通过。
+- 尚未完成：真实 provider payload 是否减少了重复观测、真实任务中的 Python 探测频次是否下降、Agent 是否自主利用记忆/自进化修订、相对 CH 的效率和任务净收益。不得从投影大小或脚本 smoke 推断这些效果。
 
 ## 7. 实验协议与交付边界
 

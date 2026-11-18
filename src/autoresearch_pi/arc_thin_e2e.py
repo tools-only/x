@@ -1851,7 +1851,7 @@ def run_arc_thin_e2e(
     experiment_timeout_seconds: float | None = None,
     consolidate_after_actions: int | None = None,
     review_on_miss: bool = False,
-    max_no_action_decisions: int = 3,
+    max_no_action_decisions: int | None = 3,
     max_environment_failures: int = 2,
     decision_timeout_seconds: float = 900.0,
     turn_idle_timeout_seconds: float = 180.0,
@@ -2062,9 +2062,9 @@ def run_arc_thin_e2e(
             pi_env["PI_PROVIDER_CONTEXT_ADMISSION"] = "enabled"
             pi_env["PI_PROVIDER_REPORTED_ADMISSION"] = "enabled"
             pi_env["PI_PROVIDER_TOKEN_BUDGET_ROOT"] = str((root / "harness").resolve())
-            # ARC native requests can contain one rendered board image; use the same explicit
-            # conservative per-image reserve as the other real ARC runner.
-            pi_env.setdefault("PI_PROVIDER_IMAGE_TOKEN_RESERVE", "4096")
+        # ARC requests can contain rendered board images. This context preflight reserve is
+        # independent of the optional run-wide token cap and is always recorded in run-config.
+        pi_env.setdefault("PI_PROVIDER_IMAGE_TOKEN_RESERVE", "4096")
         if pi_provider_extension is None:
             if not settings["base_url"] or not settings["api_key"]:
                 raise RuntimeError("define ARC_OPENAI_API_BASE/ARC_OPENAI_API_KEY or OPENAI_API_BASE/OPENAI_API_KEY")
@@ -2184,6 +2184,7 @@ def run_arc_thin_e2e(
                                              "thinking_format", "thinking_reaches_provider")},
             "max_actions": max_actions, "max_decisions": max_decisions,
             "max_reported_tokens": max_reported_tokens, "token_cap_measure": "uncached_input+output",
+            "max_no_action_decisions": max_no_action_decisions,
             "experiment_timeout_seconds": experiment_timeout_seconds,
             "consolidate_after_actions": consolidate_after_actions, "review_on_miss": review_on_miss, "input_modalities": settings["input_modalities"],
             "max_output_tokens": settings.get("max_tokens"), "command": command,
@@ -2623,7 +2624,8 @@ def run_arc_thin_e2e(
             if time.monotonic() >= deadline - 5:
                 summary["stop_reason"] = "deadline"
                 break
-            if no_action_streak >= max_no_action_decisions and not pending_adapt:
+            if max_no_action_decisions is not None and max_no_action_decisions > 0 \
+                    and no_action_streak >= max_no_action_decisions and not pending_adapt:
                 summary["stop_reason"] = "no_action_streak"
                 break
 

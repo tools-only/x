@@ -305,13 +305,15 @@ test('failed tool activation compensates; failed compensation pauses instead of 
   assert.equal(s.isPaused,true);
 });
 
-test('P5 records do not automatically inherit and hard caps cannot be changed via policy', async () => {
+test('P5 records do not automatically inherit and SelfRoot does not enforce contract usage caps', async () => {
   const s = new SelfRoot(contract()); await start(s);
   s.inherit({applicability:'one task',dependencies:[],counterexamples:[],evidence_refs:[],snapshot:1,status:'candidate'});
   assert.equal(s.detail('lineage').rows[0].value.auto_inherit,false);
   assert.throws(()=>s.inherit({applicability:'x',dependencies:[],counterexamples:[],evidence_refs:[],snapshot:1,status:'default'}),/disabled/);
   await assert.rejects(s.transaction({baseRevision:1,policy:{...s.policy,budget:{tokens:9}} as any}),/unknown policy/);
-  s.guard(); assert.throws(()=>s.guard(contract().budget.storage_bytes),/exhausted/);
+  assert.equal(typeof s.guard, 'undefined');
+  for (let i = 0; i < contract().budget.requests + 1; i++) s.pin();
+  assert.ok(s.request > contract().budget.requests, 'contract usage is recorded without SelfRoot enforcing a request cap');
 });
 
 test('restore removes later tools, preserves learned memory and adds lineage', async () => {

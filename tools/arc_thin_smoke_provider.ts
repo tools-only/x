@@ -175,7 +175,7 @@ const CONTINUITY_SCRIPT: Step[] = [
 // guard, the next action turn is refused once then changed, and the following
 // review receives the mechanically generated LOOP AUDIT before it chooses
 // `no_change`.
-const GUARD_SCRIPT: Step[] = [
+const NATIVE_GUARD_SCRIPT: Step[] = [
 	{ kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'first move opens the review window' }]] },
 	{ kind: 'consolidate', calls: [['write', { path: 'tools/action_guard.py', content:
 		'def admit(state, action):\n    return {"allow": action["name"] != "ACTION1", "reason": "the first choice repeats a measured failure"}\n' }]] },
@@ -559,6 +559,7 @@ const META_SCRIPT: Step[] = [
 ];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'guard' ? GUARD_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'stall-guard' ? NATIVE_GUARD_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'meta' ? META_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT

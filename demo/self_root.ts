@@ -650,7 +650,7 @@ export class SelfRoot extends LiveAgentSelf {
     // Two rounds (user decision 2026-11-17): under META the questions belong to the capability round alone - the
     // induction round closes on the agent's own schema. Non-META arms keep the EVO_ASK gating unchanged.
     const metaRound = this.mech.meta && this.metaPassTrigger ? ((this.metaPassTrigger as any).round ?? 1) : null;
-    if (this.inEvolutionReview && (metaRound !== null ? metaRound === 1 : this.mech.ask)) {
+    if (this.inEvolutionReview && (metaRound !== null ? metaRound === 2 : this.mech.ask)) {
       schema.properties = { ...(schema.properties ?? {}), entry_question_responses: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'One response per entrance question, in order; "none" is a valid response.' } };
       schema.required = [...new Set([...(schema.required ?? []), 'entry_question_responses'])];
     }
@@ -741,12 +741,7 @@ export class SelfRoot extends LiveAgentSelf {
       const pass: any = this.metaPassTrigger;
       if ((pass?.round ?? 1) === 1) return `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
       const specialist = META_PASS_SPECIALISTS[pass?.specialistIndex ?? 0] ?? META_PASS_SPECIALISTS[0];
-      const phase = this.reviewRequests >= 2
-        ? this.reviewRequests >= 3
-          ? 'FINAL REPAIR REQUEST (request 3/3): finish the already identified edit or explicit no_change now. This is the last request for this focus.'
-          : 'EXECUTION CONTINUATION (request 2/3): apply the justified hot modification now, or explicitly finish with evidence-based no_change. A third request is available only if this response still needs a source read or repair.'
-        : 'EXECUTION TURN (request 1/3): analyze this focus and hot-modify now if evidence supports it; use explicit evidence-based no_change if it does not. A successful reflection or no_change closes immediately.';
-      return `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${phase}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
+      return `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(false)}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
     }
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
@@ -811,10 +806,13 @@ export class SelfRoot extends LiveAgentSelf {
   metaPassDue() {
     if (!this.mech.meta || this.review || this.queue.length || this.metaT0Pending) return null;
     const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
-    const anchor = Math.max(index('review_closed'), index('meta_t0_design'), index('task_episode_started'), index('task_episode_closed'));
+    const anchor = Math.max(index('review_closed'), index('meta_t0_design'), index('task_episode_started'));
     if (anchor < 0) return null;
     const window: [number, number] = [anchor + 1, this.ledger.length - 1];
     const after = this.ledger.slice(window[0]);
+    const episode = after.find(r => r.type === 'task_episode_closed');
+    if (episode) return { reason: 'episode_boundary', window,
+      facts: { trigger: 'episode_boundary', episode: episode.value?.episode ?? null, id: episode.value?.id ?? null, window } };
     const feedback = after.findIndex((r, i) => r.type === 'render_action_receipt'
       && !after.slice(i + 1).some(next => next.type === 'unit_delivered' || next.type === 'task_episode_closed'));
     if (feedback >= 0) {
