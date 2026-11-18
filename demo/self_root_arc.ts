@@ -98,12 +98,12 @@ export function arcOperationContract(kind: 'component' | 'orchestration' | 'revi
 }
 
 /** ARC-only protocol wiring. The core remains task-neutral; this adapter owns facts and tool dispatch. */
-export function installArcSelfRootTools({ pi, evo, text, persist, contextItem, readEvidence, runPosition }: any) {
+export function installArcSelfRootTools({ pi, evo, resolveSessionToolOperation, text, persist, contextItem, readEvidence, runPosition }: any) {
   const open = (keys: string[]) => Type.Object(Object.fromEntries(keys.map(k => [k, Type.Optional(Type.Any())])), { additionalProperties: true });
-  const register = (name: string, description: string, parameters: any, execute: (a: any, ctx: any) => any) => pi.registerTool({
+  const register = (name: string, description: string, parameters: any, execute: (a: any, ctx: any, signal?: any) => any) => pi.registerTool({
     name, label: name, description, parameters,
-    execute: async (_id: string, args: any, _signal: any, _update: any, ctx: any) => {
-      try { const result = await execute(args ?? {}, ctx); persist(); return text(typeof result === 'string' ? result : JSON.stringify(result), undefined, Boolean(result?.context_reset_requested)); }
+      execute: async (_id: string, args: any, signal: any, _update: any, ctx: any) => {
+      try { const result = await execute(args ?? {}, ctx, signal); persist(); return text(typeof result === 'string' ? result : JSON.stringify(result), undefined, Boolean(result?.context_reset_requested)); }
       catch (error: any) {
         evo.fact('tool_failed', { tool: name, error: String(error?.message ?? error) });
         persist();
@@ -121,7 +121,10 @@ export function installArcSelfRootTools({ pi, evo, text, persist, contextItem, r
     return found.length ? found : { state: 'missing', kind: a.kind ?? null, name: a.name ?? null, version: a.version ?? null };
   });
   const component = operationContract('component');
-  register('reflect_component', component.description, open(Object.keys(component.properties)), (a) => evo.transaction(normalizeOperation('component', a, undefined, { layer: evo.mech.l4 })));
+  register('reflect_component', component.description, open(Object.keys(component.properties)), async (a, _ctx, signal) => {
+    const operation = normalizeOperation('component', a, undefined, { layer: evo.mech.l4 });
+    return evo.transaction(await resolveSessionToolOperation(operation, signal));
+  });
   const orchestration = operationContract('orchestration');
   register('reflect_orchestration', orchestration.description, open(Object.keys(orchestration.properties)), (a) => evo.transaction(normalizeOperation('orchestration', a, undefined, { layer: evo.mech.l4 })));
   register('decide', 'Submit an ARC task decision or enter a SelfRoot mode.', selfRootToolParameters, (a) => {

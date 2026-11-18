@@ -3489,7 +3489,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const text = (value: string, details?: unknown, terminate = false) =>
 		({ content: [{ type: "text" as const, text: value }], details, terminate });
 	if (evo && selfRootPersist) {
-		installArcSelfRootTools({ pi, evo, text, persist: selfRootPersist,
+		installArcSelfRootTools({ pi, evo, resolveSessionToolOperation: (operation: any, signal?: AbortSignal) => nativeRuntime!.resolveSessionToolOperation(operation, signal), text, persist: selfRootPersist,
 			contextItem: (ref: string) => ({ ref, state: 'missing' }),
 			readEvidence: (ref: string) => {
 				let offset = 0;

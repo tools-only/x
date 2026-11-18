@@ -45,6 +45,13 @@
 - 验证：本次只完成静态合并与文件检查，未运行 tests。evo 侧原有 fixture 是源改动的一部分，不能视为本 ARC 工作树通过；本轮 provider behavior、Pi lifecycle 实际接线、continuation 语义连续性、Memory 采用与成本收益仍未验证。迁移后的静态检查结果在最终交付中单独报告。
 - 后续边界：迁移设计记录含 evo 源工作区的实验与验收上下文，仅作来源/设计记录；继续维护 ARC 时优先看本文件的 ARC 范围和限制。延后项 A（ARC adapter 边界）及 D（压缩认知连续性）仍开放。
 
+### Evo runtime 新增：从 ARC Python session 发布工具（2026-11-18）
+
+- 来源：`origin/evo-loop-implementation` 新提交 `4bc48f56`（`Move session tool export into shared runtime`），父提交 `c2171e75`。
+- ARC 迁入：通用 `reflect_component` schema 接受 `session_ref` 与单行 `description`；`NativeRuntime.resolveSessionToolOperation()` 从当前 Python session 导出函数源码，限制为 tool define/redefine、替换语义和合法函数名，再沿现有反射事务发布。PPT adapter 中的导出逻辑没有复制，ARC 使用同一 runtime 入口。
+- 使用路径：Agent 在 ARC Python session 定义并测试 `(args, env)` 函数，然后以 `reflect_component(kind="tool", session_ref=..., description=...)` 发布；后续工具版本/装配仍由现有 NativeRuntime 路径管理。
+- 验证：仅运行相关 TypeScript 语法检查和 `git diff --check`；未运行 ARC provider 或测试，因此 Python session 导出、反射激活及后续工具调用的全链路仍未验证。此能力不代表通用 Pi runtime layer 已安装为 ARC session owner。
+
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 通过（定向） | Python pytest + Node tests | 初始 frame recovery、SelfRoot 首轮 action grant/镜像通过；完整 ARC e2e 文件仍有冻结旧路径失败 |
