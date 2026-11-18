@@ -754,7 +754,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     };
     advanceEvoBoundary = async () => {
       activatingEvo = true;
-      try { await evo.requestBoundary(); await evo.boundary(applySurface,persistLiveSelf); }
+      try { await evo.boundary(applySurface,persistLiveSelf); }
       catch (error) {
         evo.fact('request_paused', { error: String(error) }); persistLiveSelf();
         writeFileSync(join(root,'budget-stop.json'),JSON.stringify({ reason: String(error), resources: evo.resources(), stop_kind: 'budget_stop' }));

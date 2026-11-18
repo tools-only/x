@@ -2153,7 +2153,7 @@ def run_arc_thin_e2e(
         # The self-evolution loop (docs/plans/2026-11-16-arc-selfloop-migration.md): off unless set to 1. The slot
         # inventory the extension shows names the host's defaults, so the stall interval this runner resolved is
         # exported for the stage-3 stall.after slot to show as its default and replace.
-        selfloop = foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_SELFLOOP") == "1"
+        selfloop = native_treatment and not self_root_enabled and pi_env.get("ARC_THIN_SELFLOOP") == "1"
         if selfloop:
             pi_env["ARC_THIN_STALL_REVIEW"] = str(stall_review_after)
         # The evolution pass (docs/plans/2026-11-17-arc-evolution-pass.md): on with the self-loop unless
@@ -2743,16 +2743,26 @@ def run_arc_thin_e2e(
                     pending_hook_receipt = ""
                     pending_inspect_to_call = ""
                     restart_note = ""
+                    working_log = harness / "working_set.jsonl"
+                    check_interval_pass = self_root_enabled and action_count >= 30
+                    working_offset = working_log.stat().st_size if check_interval_pass and working_log.exists() else 0
                     events = recover_length(prompt, safe_turn(prompt))
                     summary["decisions"] += 1
                     new_rows = _read_jsonl(harness / "trajectory.jsonl")[action_count:]
                     if new_rows:
                         no_action_streak = 0
                         level_changed_since_consolidation |= any(row.get("level_changed") for row in new_rows)
-                    # A decision the environment ended is not one without an action (environment_streak below).
                     elif _environment_errors(harness) == environment_before:
-                        no_action_streak += 1
-                        summary["no_action_decisions"] += 1
+                        interval_turn = False
+                        if check_interval_pass and working_log.exists():
+                            with working_log.open("rb") as stream:
+                                stream.seek(working_offset)
+                                interval_turn = any(json.loads(line).get("self_root_interval_review") for line in stream if line.strip())
+                        if interval_turn:
+                            summary["evo_passes"] += 1
+                        else:
+                            no_action_streak += 1
+                            summary["no_action_decisions"] += 1
                     if single_loop and not reflective_path and not length_stopped(events) and _environment_errors(harness) == environment_before:
                         requests = _read_jsonl(harness / "adapt_requests.jsonl")
                         handled = {str(row.get("id")) for row in requests if row.get("event") == "handled"}

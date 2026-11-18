@@ -22,7 +22,7 @@ export function arcSelfRootPaths(root: string) {
   return { dir, contract: join(dir, 'contract.json'), state: join(dir, 'state.json') };
 }
 
-export function loadOrCreateArcContract(root: string, budget: SelfContract['budget'], capabilities: string[]): SelfContract {
+export function loadOrCreateArcContract(root: string, capabilities: string[]): SelfContract {
   const paths = arcSelfRootPaths(root);
   mkdirSync(paths.dir, { recursive: true });
   const proposed: Omit<SelfContract, 'content_hash'> = {
@@ -30,21 +30,38 @@ export function loadOrCreateArcContract(root: string, budget: SelfContract['budg
     decisions: 'The Agent chooses task actions, component changes, orchestration, context use, and whether to validate a declared effect.',
     readonly_reason: 'Environment observations and action results are recorded facts; the runner owns bridge execution and budgets.',
     boundaries: [...FLOOR], capabilities: [...new Set(capabilities)],
-    writable: ['components.prompt', 'components.skill', 'components.memory', 'policy', 'orchestration'],
-    budget: { ...budget },
+    writable: ['components.prompt', 'components.skill', 'components.tool', 'components.memory', 'policy', 'orchestration'],
     acceptance: { terminal_states: ['WIN', 'GAME_OVER', 'FINISHED'], task_metrics: 'recorded ARC task and environment facts only' },
     inherit_defaults: false,
   };
   const contract = { ...proposed, content_hash: hash(proposed) } as SelfContract;
   if (existsSync(paths.contract)) {
     const saved = JSON.parse(readFileSync(paths.contract, 'utf8')) as SelfContract;
-    if (saved.content_hash !== contract.content_hash || hash(Object.fromEntries(Object.entries(saved).filter(([key]) => key !== 'content_hash'))) !== contract.content_hash)
-      throw Error(`ARC SelfRoot contract differs from current capabilities or budget: ${paths.contract}`);
-    return saved;
+    const savedBody = Object.fromEntries(Object.entries(saved).filter(([key]) => key !== 'content_hash'));
+    if (saved.content_hash !== hash(savedBody)) throw Error(`ARC SelfRoot contract hash mismatch: ${paths.contract}`);
+    if (saved.content_hash === contract.content_hash) return saved;
+    const legacyBody = { ...savedBody } as Record<string, unknown>;
+    delete legacyBody.budget;
+    const previousWithoutTools = { ...proposed, writable: proposed.writable.filter(address => address !== 'components.tool') };
+    if (hash(legacyBody) !== contract.content_hash && hash(legacyBody) !== hash(previousWithoutTools))
+      throw Error(`ARC SelfRoot contract differs from current capabilities: ${paths.contract}`);
+    migrateArcContractHash(paths.state, saved.content_hash, contract.content_hash);
+    writeFileSync(paths.contract + '.next', JSON.stringify(contract, null, 2));
+    renameSync(paths.contract + '.next', paths.contract);
+    return contract;
   }
   writeFileSync(paths.contract + '.next', JSON.stringify(contract, null, 2));
   renameSync(paths.contract + '.next', paths.contract);
   return contract;
+}
+
+function migrateArcContractHash(statePath: string, previousHash: string, nextHash: string) {
+  if (!existsSync(statePath)) return;
+  const saved = JSON.parse(readFileSync(statePath, 'utf8'));
+  if (saved?.root?.contract_hash !== previousHash) return;
+  saved.root.contract_hash = nextHash;
+  writeFileSync(statePath + '.next', JSON.stringify(saved, null, 2));
+  renameSync(statePath + '.next', statePath);
 }
 
 export function arcRunPosition(observation: any, trajectoryLength: number, decision: number) {
@@ -123,7 +140,7 @@ export function installArcSelfRootTools({ pi, evo, resolveSessionToolOperation, 
   const component = operationContract('component');
   register('reflect_component', component.description, open(Object.keys(component.properties)), async (a, _ctx, signal) => {
     const operation = normalizeOperation('component', a, undefined, { layer: evo.mech.l4 });
-    return evo.transaction(await resolveSessionToolOperation(operation, signal));
+    return evo.reflectComponent(await resolveSessionToolOperation(operation, signal));
   });
   const orchestration = operationContract('orchestration');
   register('reflect_orchestration', orchestration.description, open(Object.keys(orchestration.properties)), (a) => evo.transaction(normalizeOperation('orchestration', a, undefined, { layer: evo.mech.l4 })));

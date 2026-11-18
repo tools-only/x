@@ -6,7 +6,7 @@ import { Type } from 'typebox';
 import { SelfRoot, hash, operationContract, providerOperationSchema, normalizeOperation, type SelfContract } from './self_root.ts';
 
 export type SelfRootManifest = {
-  experiment_id: string; provider: string; model: string; contract: SelfContract;
+  experiment_id: string; provider: string; model: string; contract: SelfContract & { budget: { requests: number; tokens: number; seconds: number; usd: number; storage_bytes: number } };
   sources: Record<string,string>; units: Array<{ id: string; title: string; required: string[]; citation: string }>;
   checker: { version: string; sha256: string }; settings: any; engineering_commit: string;
   episodes?: Array<{ id: string; sources: Record<string,string>; units: SelfRootManifest['units']; acceptance: any; scope: string; coverage_tags?: string[] }>;

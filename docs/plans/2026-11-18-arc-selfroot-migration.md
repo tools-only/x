@@ -52,6 +52,14 @@
 - 使用路径：Agent 在 ARC Python session 定义并测试 `(args, env)` 函数，然后以 `reflect_component(kind="tool", session_ref=..., description=...)` 发布；后续工具版本/装配仍由现有 NativeRuntime 路径管理。
 - 验证：仅运行相关 TypeScript 语法检查和 `git diff --check`；未运行 ARC provider 或测试，因此 Python session 导出、反射激活及后续工具调用的全链路仍未验证。此能力不代表通用 Pi runtime layer 已安装为 ARC session owner。
 
+### ARC 请求数与 review 工作集缩减（2026-11-18）
+
+- 机会：用户报告 4 个动作前有 43 次 Python 调用（3/5/19/16），总计 51 次 provider 请求、约 2.2M input；dec3 的 19 次 Python 调用约 13 分钟，review working set 达 282KB。按用户要求未读取本地日志。
+- 源码定位：Python 的 43 次调用均未保存组件，唯一重复代码仅 `show`；这更符合逐个验证一次性假设，而不是反复计算没有被沉淀。普通 native 决策的 16+4 工具上限不是本次根因。review 中 `dynamic` 从约 4.4k 增至 108.6k 后回落到 5.7k，说明整段 review 证据注入造成单次峰值；dec5 的 18 次请求、每次约 41k input 是独立的普通回合成本。
+- 窄命题：在 Python 工具说明中明确同一观察下合并已知独立检查、只返回能改变下一步的结果；有新结果后产生的新假设仍可单独验证。review mirror 提供触发事实、指标/结果摘要、事实计数和精确 ledger 范围，按需读完整正文。预期 Python 往返下降，review 首轮输入明显缩小且关键证据可定位。若任务进展下降，或 review 补读成本抵消首屏节省，则修订/撤回。
+- 负担/成本：不加新工具、调用门槛、组件发布要求或更低回合预算；Agent 继续决定检查顺序和证据深度。review 的摘要字段只转述已记录事实，不做策略解释。
+- 验证边界：本次没有读取 run logs、没有跑自动化测试、没有启动付费 provider。`git diff --check` 与两个修改文件的 Node TypeScript 语法检查通过；往返下降、review 全程输入/补读成本、Agent 可读性、动作质量和净收益均未验证。下一次真实 provider 检查应对比每个 action 前请求数和任务进展，并记录完整 review 输入、补读次数和耗时，使用同 provider/model/初态/预算。
+
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 通过（定向） | Python pytest + Node tests | 初始 frame recovery、SelfRoot 首轮 action grant/镜像通过；完整 ARC e2e 文件仍有冻结旧路径失败 |
@@ -65,3 +73,30 @@
 - 决定与依据：保留当前 SelfRoot 单视图接线；首轮 action grant、默认合同预算与 bridge 空 frame 恢复问题均已修正并有定向检查。
 - 剩余验证与下一可证伪检查：从既有 AZ provider 配置取得 Pi 可用的 endpoint/key 后，以 `az` / `qwen3.8-27B` 和已授权预算启动一次真实 run，检查实际 request schema、SelfRoot mirror、动作 receipt 与 session 边界；不得用其他 provider替代。
 - 关联 backlog：`docs/deferred-research-todos.md` 的 A（ARC adapter / Agent runtime / policy 边界）仍开放；B/C/D 本轮未改变。
+
+## 2026-11-18 补充 · 连续 30 个 ARC 动作没有进入 pass
+
+默认 ARC SelfRoot 以前只在已有事件和工作结算时进入 reflect。旧 runner 的 stagnation 还会因普通组件写入重新计数。用户要求给默认路径一个只按已执行动作计数的上限。
+
+- ARC 在非终局、仍有动作预算的回执后检查间隔。SelfRoot 从持久化 ledger 回看最近一次自进化或 Agent 主动进入 reflect 的位置。累计 30 个动作就提交一次 `work_quantum`，已有过关自进化优先。组件写入不重置间隔。
+- 复用 SelfRoot 的 review 队列、证据窗口、`decide_exit` 和恢复路径。等待和执行这次 review 期间，共用动作入口暂停环境动作。Agent 可以保持当前方法。额外成本是 review 占用的模型请求、时间与 token。`ARC_THIN_EVO_PASS=0` 关闭此兜底。
+- 功能检查使用本地 Node、ARC 合同和持久化 SelfRoot，覆盖 29/30、恢复、重复排队和过关后的新窗口。没有启动付费运行。真实 Pi/bridge 全链路、自主采用和净收益待验证。
+- 下一次真实验证需留出至少 31 个环境动作，并给一次 pass 和后续任务请求留预算。检查触发事件、模型看到的 review、关闭后的首个动作。评估净收益需比较相同初态、模型和总预算下开关兜底时的关卡进展、总 token 与延迟。
+
+## 2026-11-18 补充 · 修复 SelfRoot 反射与工具运行闭环
+
+- 真实机会及代码证据：ARC `reflect_component` 将一个 component operation 传给 `transaction()`，而该事务处理 `components[]`，导致 Agent 的有效 component 操作无法提交。即使直接写进 SelfRoot，`NativeRuntime` 原先只从 Binder 读工具，发布版本也不会成为下一请求可调用的工具。SelfRoot 的 ARC 统计还等待 `provider_input.component_delivery` 和 `component_execution`，ARC 原先没有这两类对应记录。
+- 窄命题：通过 ARC 模型实际使用的 `reflect_component` 或 Python 保存入口发布一个工具后，修改先进入 SelfRoot 的版本历史；在下一请求边界，NativeRuntime 可注册并执行同一版本；SelfRoot 轨迹能关联它被展示和执行的版本。
+- 实现：`reflect_component` 现在通过 `SelfRoot.reflectComponent()` 提交。ARC 合同新增 `components.tool` 写权限；既有运行目录只在旧合同内容及哈希精确匹配时，才迁移该单项权限并同步 SelfRoot 状态的合同哈希。NativeRuntime 保留 Binder 对旧组件的执行支持，并在工具注册/调用中合并 SelfRoot 拥有的普通工具；Python 的 `save=` 和组件文件写入走 SelfRoot 反射，不另写一份 Binder 版本。SelfRoot 默认路径隐藏旧 `promote`/`save_tool` 入口。ARC provider 请求记录准确的工具版本和哈希，NativeRuntime 每次工具执行记录相同版本的成功/失败回执。
+- 生命周期：Agent 提交后仍在现有请求边界激活；只有边界激活后的 SelfRoot 版本才进入可执行注册表和后续 provider 请求。来源依赖不完整、组件验证失败或合同未授权仍会拒绝发布。
+- 成本及限制：新增每次 provider 请求的版本化组件投递条目和每次运行工具的执行回执，成本为少量本地 JSONL/SelfRoot ledger 空间；模型调用路径不增加额外请求。此实现尚未通过定向自动化或真实 provider 验收；源码语法解析通过，`git diff --check` 通过。下一步验收是 ARC 真链路内发布 Python session 函数，并在后一个 provider 请求成功调用同一组件版本；失败时检查拒绝信息、工具未注册和 selfRoot 状态未激活。
+
+## 2026-11-18 补充 · 移除 SelfRoot 自带配额与请求节奏阈值
+
+- 问题：ARC runner 同时有真实环境动作/Provider 预算，SelfRoot 又用合同内 request/token/time/USD/storage 配额在 `pin()` 前硬停；它还按每个 work request 触发 `work_quantum`、每 3 个 settled request 触发 heartbeat、每 12 个 execute request 兜底触发 META pass，并限制 META 每轮和每个 specialist 的 provider request 数。它们会提前改写任务节奏或结束复盘。
+- 改动：ARC SelfRoot 合同不再写入配额，`ARC_SELFROOT_REQUESTS/TOKENS/SECONDS/USD/STORAGE_BYTES` 默认值不再被读取；SelfRoot 只记录 request、token、耗时、费用估算和存储量，不据此停止。删除默认 work-quantum/heartbeat、12-request pass trigger 与 META request-count 自动结束。META round 1 由 Agent 通过 `decide_exit` 结束，specialist 在有修改或显式 no_change 时结束。
+- 兼容：读取既有 ARC 合同时先验证 `content_hash`，确认除旧 `budget` 外其余字段与当前合同匹配后，移除旧配额字段、写入新合同，并同步迁移 SelfRoot state 的合同哈希。SelfRoot 构造时也丢弃旧合同中的 budget/heartbeat/segment/review 字段。PPT manifest 的实验限额仍由 PPT runner 作为外层授权预算执行；ARC runner 的环境动作预算、Provider admission/preflight、权限、版本哈希和 provider 输出窗口保留。
+- 保留的节奏：用户此前明确要求的 ARC 30 个实际环境动作无 pass 兜底仍在 ARC adapter 内，不属于 SelfRoot 通用自动节奏。read_self 页大小与 context policy 的内容裁剪属于接口/上下文控制，不是运行 request/token/USD/time/storage 配额。
+- 验证边界：本轮没有访问 run logs、没有运行测试或真实 Provider。静态检查已通过：本轮修改的 TypeScript 源文件及定向测试文件均通过 `node --experimental-transform-types --check`，`git diff --check` 通过。未运行测试或 Provider；合同迁移、无配额持续请求、SelfRoot 不自动派发 heartbeat/work_quantum，以及外层授权 runner 在边界停止的全链路仍待验证。
+
+范围澄清：SelfRoot 不再设置 request/token/time/USD/storage 硬配额，也不再按固定请求数触发 heartbeat/META 或因请求数强制结束 pass。保留 ARC adapter 中用户此前要求的“30 个环境动作无 pass 时复盘”；它是 ARC 任务层触发条件。保留 read_self 页大小、上下文策略裁剪及 provider 输出窗口等接口/传输控制，它们不消耗或终止 SelfRoot 运行配额。PPT manifest/runner 和 ARC runner 的外层授权预算继续有效。

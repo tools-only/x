@@ -876,8 +876,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	let observation: Record<string, any> | undefined;
 	if (selfRootEnabled && workspace) {
 	  const runRoot = process.env.ARC_RUN_ROOT ?? process.cwd();
-	  const budget = { requests: Number(process.env.ARC_SELFROOT_REQUESTS ?? 1000), tokens: Number(process.env.ARC_SELFROOT_TOKENS ?? 2_000_000), seconds: Number(process.env.ARC_SELFROOT_SECONDS ?? 86_400), usd: Number(process.env.ARC_SELFROOT_USD ?? 10), storage_bytes: Number(process.env.ARC_SELFROOT_STORAGE_BYTES ?? 50_000_000) };
-	  const contract = loadOrCreateArcContract(runRoot, budget, [...ARC_SELF_ROOT_OPTIONS.reviewTools ?? [], ...ARC_SELF_ROOT_OPTIONS.evolutionTools ?? []]);
+	  const contract = loadOrCreateArcContract(runRoot, [...ARC_SELF_ROOT_OPTIONS.reviewTools ?? [], ...ARC_SELF_ROOT_OPTIONS.evolutionTools ?? []]);
 	  const paths = arcSelfRootPaths(runRoot);
 	  const saved = existsSync(paths.state) ? JSON.parse(readFileSync(paths.state, 'utf8')) : undefined;
 	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS, taskRuntimeView: () => arcTaskRuntimeView });
@@ -1570,6 +1569,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try {
 			const row = {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
+				...(evo?.actionIntervalReviewState === 'active' ? { self_root_interval_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), ...(run.evoPass ? { evo_pass: true, evo_focus: run.evoFocus, evo_focus_index: run.evoFocusIndex } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
 					...(contextLayout && self ? [["self", self] as [string, string]] : []),
@@ -1958,14 +1958,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         pi.setActiveTools(run.adaptTurn
           ? agentNativeProgramLoop
             ? ['save_program', 'self_component', 'adapt_policy', 'skip', ...(evo ? ARC_SELFROOT_TOOLS : [])]
-            : ['promote', 'save_tool', 'self_component', 'adapt_policy', 'skip', ...(evo ? ARC_SELFROOT_TOOLS : [])]
-          : ['promote', 'save_tool', 'skip', ...(evo ? ARC_SELFROOT_TOOLS : [])]);
+            : [...(evo ? [] : ['promote', 'save_tool']), 'self_component', 'adapt_policy', 'skip', ...(evo ? ARC_SELFROOT_TOOLS : [])]
+          : [...(evo ? [] : ['promote', 'save_tool']), 'skip', ...(evo ? ARC_SELFROOT_TOOLS : [])]);
         return;
       }
       // Keep the core list fixed; newly saved tools and subagents enter on the next provider request.
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
       pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory',
-        ...(agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'read', 'write', 'edit', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? ['request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
+        ...(evo ? ['python'] : agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'read', 'write', 'edit', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? ['request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : []), ...(evo ? ARC_SELFROOT_TOOLS : [])]);
       return;
     }
@@ -3955,6 +3955,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	}, via?: string, meta: { batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
 		Promise<{ row: ActionRow } | { refusal: string; environment?: boolean }> {
 		if (run.hookTurn) return { refusal: 'self_harness_hook cannot submit environment actions' };
+		if (evo?.actionIntervalReviewState) return { refusal: 'Environment actions are paused for the SelfRoot evolution review.' };
 		const available = availableActions(observation);
 		const previous = trajectory.at(-1);
 		if (!available.includes(params.action))
@@ -4138,6 +4139,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					await evo.event('unit_completed', `arc-level:${row.levels_completed}:action:${row.n}`, {
 						unit: `level:${row.levels_completed}`, event_classes: ['task_outcome'], evidenceRefs: [outcome.ref], metrics: arcMetrics(trajectory, observation),
 					});
+				} else if (process.env.ARC_THIN_EVO_PASS !== '0') {
+					const budget = row.budget;
+					if (!(budget?.maximum != null && budget.used >= budget.maximum) &&
+						!(budget?.total_maximum != null && budget.total_used >= budget.total_maximum)) {
+						await evo.queueActionIntervalReview(30, row.n);
+					}
 				}
 				selfRootPersist?.();
 			} catch (error) { logError('self_root:action_receipt', error); }
@@ -4677,7 +4684,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 							"cell(12, a, b) only its lines a to b, and a call that repeats an earlier one, or some of its lines, is told so. " : "") +
 						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
 							"names and print only what you need to read; the final value is also _. " : "") +
-					"Combine computation and feedback checks in code; print or return selected evidence. Saved tools run without this namespace."
+					"For one observation, run the independent checks you already know you need in one call (for example, counts, regions, bounds, or comparisons); keep intermediate values in session names and return only results that can change the next action. Make another call when a result creates a new hypothesis you could not have checked before. Saved tools run without this namespace."
 				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
 					"Returns what you print and the value of a final expression. Standard library only; no files or network.",
@@ -4931,12 +4938,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         artifacts: (artifactInputs(artifactLog) as any).artifacts ?? {} });
       writeFileSync(migrationMarker, JSON.stringify({ migrated, at: new Date().toISOString() }) + '\n');
     }
-    nativeRuntime = new NativeRuntime({ pi, workspace, self: binder,
+    nativeRuntime = new NativeRuntime({ pi, workspace, self: binder, reflectedSelf: evo,
 		hookTurn: () => run.hookTurn,
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
       act: (call, via) => actForCode(call, via),
       componentSaved: recordComponentWrite,
+      componentEvent: (type, value) => { if (evo) { evo.fact(type, value); selfRootPersist?.(); } },
       ...(pythonMemory ? { remember: pythonMemory } : {}),
       pythonSession: !agentNativeProgramLoop && process.env.ARC_THIN_PYTHON_SESSION !== "0",
       pythonKernel,
@@ -5364,7 +5372,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// provider reuses its cached prefix only while everything before the newest message is unchanged. Rebuilding it
 		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
-		const headKey = `${decision}:${lastUser}`;
+		const intervalReview = evo?.actionIntervalReviewState === 'active';
+		const headKey = `${decision}:${lastUser}:${Boolean(intervalReview)}`;
 		if (!native || run.headKey !== headKey) {
 			// Hooks first: what they write (files, memory) is what this decision's memory, views' readers, guards and
 			// predictors see, and what they return is shown with the state.
@@ -5386,7 +5395,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.head = {
 				...user,
 				content: [
-				{ type: "text", text: run.hookTurn ? `${run.phasePrompt ?? messageText(user)}\n\n${hookFacts}` : `${run.phasePrompt ?? messageText(user)}\n\n${run.workingSet!.text}${!evo && capabilities ? '\n\n' + capabilities : ''}` },
+				{ type: "text", text: run.hookTurn ? `${run.phasePrompt ?? messageText(user)}\n\n${hookFacts}` : `${intervalReview ? "SelfRoot evolution review after 30 environment actions. Inspect the recorded facts, revise your harness if useful, and close with decide_exit to resume play." : run.phasePrompt ?? messageText(user)}\n\n${run.workingSet!.text}${!evo && capabilities ? '\n\n' + capabilities : ''}` },
 					...((!run.hookTurn || agentNativeProgramLoop) ? (run.workingSet?.images ?? (run.workingSet?.image ? [run.workingSet.image] : [])) : []),
 					...(!run.hookTurn && run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
 				],
@@ -5523,7 +5532,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			evo!.fact('tool_failed', { tool: result.toolName, content: result.content });
 		}
 		try {
-			await evo!.requestBoundary();
 			await evo!.boundary((surface) => {
 				const registered = new Set((pi.getAllTools?.() ?? []).map((tool: any) => tool.name));
 				const next = [...new Set([...pi.getActiveTools(), ...surface.filter(name => registered.has(name))])].filter(name => registered.has(name));
@@ -5543,7 +5551,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const composition = { sections: ['self_root_runtime_view', 'pi_history'], messages: messages.length, chars: deliveredChars,
 					runtime_view_hash: hash(arcTaskRuntimeView ?? null), provider_payload_hash: hash(messages) };
 				evo.recordContext(composition, { revision: evo.revision, hash: hash(evo.policy.context), delivered_chars: deliveredChars });
-				evo.fact('provider_input', { pin, tools: pi.getActiveTools(), context_hash: hash(composition), delivered_chars: deliveredChars });
+				evo.fact('provider_input', { pin, tools: pi.getActiveTools(), component_delivery: nativeRuntime?.componentDeliveries(pi.getActiveTools()) ?? [], context_hash: hash(composition), delivered_chars: deliveredChars });
 				selfRootPersist?.();
 			} catch (error) { logError('self_root:request_boundary', error, true); throw error; }
 		}
