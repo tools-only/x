@@ -4145,7 +4145,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			label: "Python",
 			description: native
 				? "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
-					"value of a final expression. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
+					"value of a final expression. Batch independent checks available from the same observation in one call; keep intermediate results in session names and return only evidence that could change your next decision. Call again only when a result creates a new checkable hypothesis. One-off analysis code does not need to be saved or published. " +
+					"save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
 					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
 					"called later as the tool name(args={...}). " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
