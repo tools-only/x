@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import {
 	DROPPED_CALLS, MAX_EVIDENCE, MAX_FACTS, MAX_HYPOTHESES, applyRow, applyRows, emptyMemory, planMemoryUpdate, prepareMemoryArguments,
-	questionTests, renderFactsCompact, renderHypotheses, renderMemory, renderRevisions, renderStrategies, testsToldApart, toldApart, visibleDropped, type MemoryState,
+	projectTaskMemoryItems, questionTests, renderFactsCompact, renderHypotheses, renderMemory, renderRevisions, renderStrategies, testsToldApart, toldApart, visibleDropped, type MemoryState,
 } from "../demo/arc_thin_memory.ts";
 
 const commit = (state: MemoryState, params: any, actions = 10) => {
@@ -12,6 +12,29 @@ const commit = (state: MemoryState, params: any, actions = 10) => {
 	applyRows(state, plan.rows);
 	return plan;
 };
+
+test("task memory projection keeps stable refs and compact, addressable authored entries", () => {
+	const state = emptyMemory();
+	commit(state, {
+		key: "fact.controls", text: "ACTION1 moves the marker", confidence: 4,
+		hypotheses: [{ key: "hyp.exit", question: "goal", claim: "the gate leads to the exit", predicts: "ACTION2 opens it",
+			status: "contested", next_test: "try ACTION2 after matching", evidence: { action: 7, condition: "gate visible", observed: "gate stayed closed", verdict: "refutes" } }],
+		strategies: [{ key: "strat.route", plan: "follow the marked path", depends_on: ["hyp.exit"], steps: ["ACTION1", "ACTION2"] }],
+	}, 7);
+	commit(state, { tests: [{ action: 4, condition: "gate matched", observed: "gate opened", verdicts: { "hyp.exit": "supports" } }] }, 7);
+	const projected = projectTaskMemoryItems(state);
+	assert.deepEqual(projected.map(({ ref }) => ref), ["task-memory:strategy:strat.route", "task-memory:hypothesis:hyp.exit", "task-memory:fact:fact.controls"]);
+	assert.deepEqual(projected[0], {
+		ref: "task-memory:strategy:strat.route", kind: "strategy", key: "strat.route", status: "active", since: 7,
+		depends_on: ["hyp.exit"], sourceRef: "memory:strat.route", text: "follow the marked path; steps: ACTION1 → ACTION2",
+	});
+	assert.equal(projected[1].sourceRef, "memory:hyp.exit");
+	assert.match(projected[1].text, /#4 supports under gate matched: gate opened/);
+	assert.match(projected[1].text, /#7 refutes under gate visible: gate stayed closed/);
+	assert.equal(projected[1].since, 7);
+	assert.equal(projected[2].text, "ACTION1 moves the marker");
+	assert.equal(projected[2].sourceRef, "memory:fact.controls");
+});
 
 test("a strategy's planned steps are matched against the moves taken, and tracking stops at the first difference", () => {
 	const state = emptyMemory();

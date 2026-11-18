@@ -68,7 +68,7 @@ import {
 } from "./arc_thin_critic.ts";
 import {
 	MAX_EVIDENCE, MAX_HYPOTHESES, MAX_STEPS, MAX_STRATEGIES, STATUSES, STRATEGY_STATUSES, VERDICTS, applyRow, applyRows, emptyMemory, memoryForSkills,
-	planMemoryUpdate, renderFactsCompact, renderMemory, renderDecisionMemory, resetMemory, type ComponentContext, type MemoryParams,
+	planMemoryUpdate, projectTaskMemoryItems, renderFactsCompact, renderMemory, renderDecisionMemory, resetMemory, type ComponentContext, type MemoryParams,
 } from "./arc_thin_memory.ts";
 import { isEnvironmentFailure, repairActionArguments, repairActionList, repairMemoryArguments, repairSkillArguments, unescapeSource } from "./arc_thin_boundary.ts";
 import {
@@ -1074,6 +1074,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const head = full.slice(0, index).trimEnd();
 		return `${head}\n\n${renderFactsCompact(memory, 2200, native)}`;
 	};
+	const taskMemoryItems = () => projectTaskMemoryItems(memory);
 
 	const currentLevel = () => Number(observation?.levels_completed ?? trajectory.at(-1)?.levels_completed ?? 0) || 0;
 	/** A skill written before the level changed may encode the earlier board; said once per line, not judged. */
@@ -1461,7 +1462,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
-			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), evo && chView ? 1600 : undefined, contestNotes()), ...(evo && chView ? [] : rivals)].join("\n")]);
+<<<<<<< HEAD
+			if (!evo) out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
@@ -1562,9 +1564,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					evolution_pass: run.evoPass, observation_delivery: observationMode },
 				action_history_ref: 'read_self(section="ledger")',
 			});
-			const memoryText = retainedSections.memory;
-			body = JSON.stringify(evo.executionView(chView ? { taskObservation: stateText,
-				...(memoryText && memoryText !== "MEMORY: empty." ? { taskMemory: memoryText } : {}) } : {}));
+			body = JSON.stringify(evo.executionView({ taskObservation: stateText, taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> }));
 		}
 		try {
 			const row = {
@@ -5393,6 +5393,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (evo) {
 			const current = arcTaskRuntimeView as any;
 			arcTaskRuntimeView = { ...current, context: { ...current?.context, capability_index: capabilities || undefined } };
+			const taskObservation = chView ? chObservation(ctx).text : undefined;
+			run.workingSet!.text = JSON.stringify(evo.executionView({ ...(taskObservation ? { taskObservation } : {}), taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> }), null, 2);
 		}
 			run.head = {
 				...user,

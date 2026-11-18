@@ -59,6 +59,35 @@ export type MemoryState = {
 	facts: Map<string, Fact>; hypotheses: Map<string, Hypothesis>; strategies: Map<string, Strategy>;
 	dropped: Dropped[]; revisions: Revision[];
 };
+/** Individually addressable ARC task memory passed to SelfRoot for context selection. */
+export type TaskMemoryItem = {
+	ref: string; kind: "strategy" | "hypothesis" | "fact"; key: string; status: string; since: number;
+	depends_on: string[]; sourceRef: string; text: string;
+};
+
+/** Project agent-authored semantic memory without selecting or interpreting it. */
+export function projectTaskMemoryItems(state: MemoryState): TaskMemoryItem[] {
+	const strategies = [...state.strategies].map(([key, strategy]): TaskMemoryItem => ({
+		ref: `task-memory:strategy:${key}`, kind: "strategy", key, status: strategy.status,
+		since: strategy.since, depends_on: strategy.depends_on, sourceRef: `memory:${key}`,
+		text: `${strategy.plan}${strategy.note ? `; note: ${strategy.note}` : ""}${strategy.steps?.length ? `; steps: ${strategy.steps.join(" → ")}` : ""}`,
+	}));
+	const hypotheses = [...state.hypotheses].map(([key, hypothesis]): TaskMemoryItem => {
+		const evidence = hypothesis.evidence;
+		return {
+			ref: `task-memory:hypothesis:${key}`, kind: "hypothesis", key, status: hypothesis.status,
+			since: evidence.reduce((latest, item) => Math.max(latest, item.action ?? 0), 0), depends_on: [], sourceRef: `memory:${key}`,
+			text: [hypothesis.question, hypothesis.claim, hypothesis.predicts && `predicts ${hypothesis.predicts}`,
+				hypothesis.next_test && `next ${hypothesis.next_test}`,
+				...evidence.map(item => `#${item.action ?? "?"} ${item.verdict} under ${item.condition}: ${item.observed}`)].filter(Boolean).join("; "),
+		};
+	});
+	const facts = [...state.facts].map(([key, fact]): TaskMemoryItem => ({
+		ref: `task-memory:fact:${key}`, kind: "fact", key, status: "recorded", since: fact.at ?? 0,
+		depends_on: [], sourceRef: `memory:${key}`, text: fact.text,
+	}));
+	return [...strategies, ...hypotheses, ...facts];
+}
 /**
  * Harness components outside memory that a strategy can use; checks: the rendered check line per hypothesis key;
  * checkSources: each check's code under its hypothesis (the full memory read on demand, not the per-decision views).
