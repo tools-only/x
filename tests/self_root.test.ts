@@ -45,6 +45,32 @@ test('execution view is compact and keeps the full SelfRoot view readable on dem
   assert.ok(s.mirror().architecture);
 });
 
+test('execution view selects task memory by SelfRoot policy and carries pass refs forward', () => {
+  const s = new SelfRoot(contract());
+  const inputItems = [
+    { ref: 'memory:route@1', kind: 'finding', key: 'route', status: 'superseded', since: 'action:1', depends_on: [], sourceRef: 'ledger:1', text: 'old finding' },
+    { ref: 'memory:route@2', kind: 'finding', key: 'route', status: 'active', since: 'action:3', depends_on: ['memory:observation@1'], sourceRef: 'ledger:3', text: 'current finding' },
+    { ref: 'memory:observation@1', kind: 'observation', key: 'shape', status: 'active', since: 'action:2', depends_on: [], sourceRef: 'ledger:2', text: 'observed shape' },
+  ];
+  const delivered = s.fact('provider_input', { component_delivery: [{ kind: 'tool', name: 'inspect', version: 2 }] });
+  const changed = s.fact('reflection_activated', { revision: 4, addresses: ['components.tool.inspect'], component_bindings: [{ kind: 'tool', name: 'inspect', version: 2, hash: 'component-hash' }] });
+  const executed = s.fact('component_execution', { kind: 'tool', name: 'inspect', version: 2, outcome: 'success' });
+  const event = s.fact('event', { type: 'meta_pass_due', facts: { trigger: 'task_feedback_checkpoint', window: [0, 2] } });
+  (s as any).review = { id: 'review:pass-1', event: event.ref, ledger_offset: 0, suspended: { step: 'play', revision: 3 }, triggers: [{ id: 'evolution_review', source: 'meta_pass' }] };
+
+  const view = s.executionView({ taskMemoryItems: inputItems });
+  assert.deepEqual(view.task_memory.map((item: any) => item.ref), ['memory:route@2', 'memory:observation@1']);
+  assert.deepEqual(view.task_memory.find((item: any) => item.key === 'route'), inputItems[1]);
+  assert.equal(view.execution.pass.trigger_ref, event.ref);
+  assert.deepEqual(view.execution.pass.suspended, { step: 'play', revision: 3 });
+  assert.deepEqual(view.execution.pass.evidence, { offset: 0, count: 4, read: 'read_self(section="ledger", offset, count)' });
+  assert.deepEqual(view.execution.pass.changes, [{ ref: changed.ref, revision: 4, addresses: ['components.tool.inspect'], bindings: [{ kind: 'tool', name: 'inspect', version: 2, hash: 'component-hash' }] }]);
+  assert.deepEqual(view.execution.pass.use_receipts, [
+    { kind: 'tool', name: 'inspect', version: 2, use: 'delivered', count: 1, first_ref: delivered.ref, last_ref: delivered.ref },
+    { kind: 'tool', name: 'inspect', version: 2, use: 'executed', count: 1, first_ref: executed.ref, last_ref: executed.ref },
+  ]);
+});
+
 test('META merges a boundary, deduplicates consumption, no automatic failure diagnosis', async () => {
   const s = new SelfRoot(contract());
   await s.event('tool_failed','a',{ error:'x' }); assert.equal(s.export().root.queue.length,0);

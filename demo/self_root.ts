@@ -403,6 +403,8 @@ export function mergePatch(target: any, patch: any): any {
 /** One context item of a provider request, described without content (task- and runtime-neutral). */
 export type ContextItem = { ref: string; section: string; role?: string; kind?: 'text' | 'reasoning' | 'tool_call_args' | 'tool_result_text' | 'tool_result_image';
   source?: string; chars: number; image_bytes?: number; images: number; turn_age: number; latest_assistant?: boolean; pair?: string; segment?: number };
+/** Adapter-owned task memory. SelfRoot routes these records through its current memory policy without interpreting them. */
+export type TaskMemoryItem = { ref: string; kind: string; key: string; status: unknown; since: unknown; depends_on: string[]; sourceRef: string; text: string };
 export type ContextAction = 'include' | 'stub' | 'drop' | { truncate: number };
 const SINCE_CURRENT = (i: ContextItem) => i.turn_age >= 1;
 const STUB_CHARS = 220;
@@ -2153,9 +2155,57 @@ export class SelfRoot extends LiveAgentSelf {
     return { orchestration: 1, policy: Object.keys(this.policy).length, prompt: count('prompt'), skill: count('skill'), tool: count('tool'), memory: count('memory'), protected: 3 };
   }
   /** Compact task-facing view. Full canonical state remains available through read_self. */
-  executionView(input: { taskObservation?: unknown; taskMemory?: string } = {}) {
+  executionView(input: { taskObservation?: unknown; taskMemoryItems?: TaskMemoryItem[] } = {}) {
     const run = super.mirror().run;
     const contract = (this.current?.orchestration as any)?.contract ?? null;
+    const taskMemory = input.taskMemoryItems ?? [];
+    const memoryPolicy = this.policy.memory_strategy;
+    let selectedMemory = memoryPolicy.sources.length && !memoryPolicy.sources.includes('agent') ? [] : [...taskMemory];
+    if (memoryPolicy.retention === 'latest') {
+      const latest = new Map<string, TaskMemoryItem>();
+      for (const item of selectedMemory) latest.set(`${item.kind}\0${item.key}`, item);
+      selectedMemory = selectedMemory.filter(item => latest.get(`${item.kind}\0${item.key}`) === item);
+    }
+    if (memoryPolicy.retrieval === 'recent') selectedMemory = selectedMemory.slice(-memoryPolicy.recent_count);
+    if (memoryPolicy.partition === 'kind') selectedMemory.sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key) || a.ref.localeCompare(b.ref));
+    const pass = this.inEvolutionReview ? (() => {
+      const event = this.ledger.find(r => r.ref === this.review!.event && r.type === 'event');
+      const facts = event?.value?.facts ?? {};
+      const range = Array.isArray(facts.pass_window) ? facts.pass_window : Array.isArray(facts.window) ? facts.window : null;
+      const start = range?.[0] ?? this.review!.ledger_offset;
+      const end = this.ledger.length - 1;
+      const rows = this.ledger.slice(start, end + 1);
+      const changes = rows.filter(r => r.type === 'reflection_activated').map(r => ({
+        ref: r.ref,
+        revision: r.value?.revision ?? null,
+        addresses: r.value?.addresses ?? [],
+        bindings: r.value?.component_bindings ?? [],
+      }));
+      const useReceiptMap = new Map<string, any>();
+      for (const r of rows) {
+        const receipts = r.type === 'provider_input'
+          ? (r.value?.component_delivery ?? []).map((d: any) => ({ kind: d.kind, name: d.name, version: d.version, use: 'delivered' }))
+          : r.type === 'component_execution' && r.value?.outcome === 'success'
+            ? [{ kind: r.value.kind, name: r.value.name, version: r.value.version, use: 'executed' }]
+            : r.type === 'component_body_read' && r.value?.outcome === 'success'
+              ? [{ kind: r.value.kind, name: r.value.name, version: r.value.version, use: 'read' }]
+              : [];
+        for (const receipt of receipts) {
+          const key = `${receipt.kind}\0${receipt.name}\0${receipt.version}\0${receipt.use}`;
+          const prior = useReceiptMap.get(key);
+          useReceiptMap.set(key, prior ? { ...prior, count: prior.count + 1, last_ref: r.ref } : { ...receipt, count: 1, first_ref: r.ref, last_ref: r.ref });
+        }
+      }
+      return {
+        id: this.review!.id,
+        trigger_ref: this.review!.event,
+        trigger: facts.trigger ?? facts.type ?? this.review!.triggers?.[0]?.source ?? null,
+        suspended: copy(this.review!.suspended),
+        evidence: { offset: start, count: Math.max(0, end - start + 1), read: 'read_self(section="ledger", offset, count)' },
+        changes,
+        use_receipts: [...useReceiptMap.values()],
+      };
+    })() : null;
     const review = this.review;
     const event = review && this.ledger.find(row => row.ref === review.event);
     const facts = event?.value?.facts;
@@ -2165,7 +2215,7 @@ export class SelfRoot extends LiveAgentSelf {
       revision: this.serial,
       task: contract ? { goal: contract.task_goal, acceptance: contract.task_acceptance } : null,
       task_observation: input.taskObservation ?? this.options.taskRuntimeView?.() ?? null,
-      ...(input.taskMemory ? { working_memory: input.taskMemory } : {}),
+      task_memory: selectedMemory.map(item => ({ ...copy(item) })),
       ...(review ? { review: { trigger: review.boundary ?? event?.value?.type, event: review.event,
         suspended: review.suspended, ledger_range: facts?.pass_window ?? facts?.window ?? summary?.value?.ledger,
         segment: facts?.segment_summary, request_range: summary?.value?.requests,
@@ -2179,6 +2229,7 @@ export class SelfRoot extends LiveAgentSelf {
         in_review: Boolean(this.review),
         recent_actions: run.actions.slice(-2),
         recent_decisions: run.decisions.slice(-2),
+        pass,
       },
       active_components: this.active().map(({ kind, name, version, description }) => ({ kind, name, version, description })),
       pending_activation: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses } : null,
