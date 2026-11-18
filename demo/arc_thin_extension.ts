@@ -262,10 +262,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const native = process.env.ARC_THIN_FOUNDATION === "native";
   const selfBaseline = native && process.env.ARC_THIN_SELF_BASELINE === "1";
   const selfConvert = selfBaseline && process.env.ARC_THIN_SELF_CONVERT === "1";
-  // How the game is shown: "query" (the extension's own default, kept for tests that build it directly), "inline", or
-  // "ch", Continual Harness's observation and action tool inside this harness's decision (the runner's native default
-  // since 2026-10-20; arc_thin_ch_view.ts).
-  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
+  // How the game is shown: "ch" is the native default; "query" and "inline" remain explicit alternatives.
+  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'ch' : 'inline';
 	const imageInputEnabled = process.env.ARC_THIN_IMAGE_INPUT === "1";
   if (!['query', 'inline', 'ch'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query, inline or ch');
   const queryObservation = native && observationMode === 'query';
@@ -5390,7 +5388,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (evo) {
 			const current = arcTaskRuntimeView as any;
 			arcTaskRuntimeView = { ...current, context: { ...current?.context, capability_index: capabilities || undefined } };
-			run.workingSet!.text = JSON.stringify(evo.mirror(), null, 2);
+			const taskObservation = chView ? chObservation(ctx).text : undefined;
+			run.workingSet!.text = JSON.stringify(evo.executionView({ ...(taskObservation ? { taskObservation } : {}) }), null, 2);
 		}
 			run.head = {
 				...user,
