@@ -2,6 +2,10 @@
 
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-11-18 Codex/Claude Code 设计迁移：新增 `pi_runtime_layer.ts` 作为通用 Pi adapter 安装入口；Continuation adapter 可从 session entries 在 `before_agent_start` 注入，版本化 Memory 可通过宿主 API 读写到 Pi session entries。它们仍是可复用 adapter，不是统一 production session owner；Memory 仅 session 持久，未接管 SelfRoot，也未提供跨 session 检索。下一步先确定共同 session owner 和唯一持久层，再接管既有 Memory writer；通用子会话协议、幂等 loop 生命周期、跨压缩语义连续性、自主采用/成本收益仍开放。Auto-Research 历史条目不属于本次迁移目标。细节与下一步见[迁移记录](plans/2026-11-18-evo-loop-design-migration.md#本次实现记录)。
+
+2026-11-18 工具渐进披露：PPT SelfRoot 的 provider schema 现由当前 `surface()` 生成，避免步骤绑定越过当前可用 surface；Skill 索引保留描述与版本化读取入口，当前步骤绑定时附加简短提示。Pi 脚本 provider 接线通过；模型是否注意摘要、真实采用率及收益仍待普通真实运行确认。避免把“有绑定”当作必须读取或调用，审阅合理不使用。
+
 2026-10-13 合并候选：Claude 的执行/计算会话/回执/历史/refinement 改动与 Codex 的 query 观测共存，原始动画帧/PNG 自动保存，默认只提供状态引用。见[合并记录](reports/2026-10-13-query-claude-merge.md)。普通真实自主查询、总成本净收益和跨压缩认知连续性未验证，B/D保持开放。
 
 2026-10-13 后续授权实施：最终方案的恢复/对账、原生压缩生效、短引用、调查配额减负、来源提示、critic条件证据及推理offload原则已实现，WASI阶段计量已接入。工程产物和一次100动作、无整场时间/token/decision上限、compaction开启的普通真实运行状态统一记录在[同一实现报告](reports/2026-10-12-harness-foundation-implementation.md#optimization-implementation-and-restart-2026-10-13)。B/C/D的真实自主采用、总成本净收益和压缩后认知连续性仍开放；Auto-Research继续关闭。以下“仅方案/未实现”段落保留为此前阶段记录。

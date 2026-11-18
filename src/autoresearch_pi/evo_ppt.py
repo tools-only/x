@@ -21,8 +21,11 @@ from .project import load_project_dotenv
 from .resource_daemon import refresh_resource_daemon
 
 PROJECT = Path(__file__).resolve().parents[2]
-MODEL = "glm-5.3-flash"
+DEFAULT_PROVIDER = "az"
+DEFAULT_MODEL = "glm-5.3-flash"
+MODEL = DEFAULT_MODEL
 BASE = "https://az.gptplus5.com/v1"
+PI_CLI = PROJECT / "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
 # User-contract review boundaries; must equal FLOOR in demo/self_root.ts (D1: no before_delivery; final delivery is one call).
 CONTRACT_BOUNDARIES = ("before_active_reset", "unit_completed", "before_session_end")
 INPUT_RATE = 0.15
@@ -67,18 +70,42 @@ def resource_usage(root: Path, reserve: dict):
             "billing":"conservative estimate; actual invoice unknown"}
 
 
-def local_settings(registration: Path):
+def local_settings(registration: Path | None, provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None):
     """Use the existing exact model definition; rename its local provider handle to az."""
+    if provider == "openai-codex":
+        config_dir = (pi_config_dir or Path.home() / ".pi" / "agent").resolve()
+        data = json.loads((config_dir / "models.json").read_text(encoding="utf-8"))
+        model = next((item for item in data.get("providers", {}).get(provider, {}).get("models", [])
+                      if item.get("id") == model_id), None)
+        if model is None:
+            raise ValueError(f"{provider}/{model_id} unavailable in the selected Pi model registry")
+        rates = model.get("cost", {})
+        if any(not isinstance(rates.get(key), (int, float)) for key in ("input", "output", "cacheRead", "cacheWrite")):
+            raise ValueError(f"{provider}/{model_id} is missing registered cost rates")
+        return {"registration": str(config_dir / "models.json"), "provider": provider, "baseUrl": None,
+                "api": model.get("api", "openai-codex-responses"), "model": model, "thinking": "low",
+                "request_output_tokens": model["maxTokens"], "pi_config_dir": str(config_dir),
+                "auth_type": "oauth",
+                "rates": {"input": rates["input"], "output": rates["output"],
+                          "cacheRead": rates["cacheRead"], "cacheWrite": rates["cacheWrite"]},
+                "request_reserve": {"tokens": model["contextWindow"] + model["maxTokens"],
+                                    "usd": (model["contextWindow"] * max(rates["input"], rates["cacheRead"], rates["cacheWrite"]) +
+                                            model["maxTokens"] * rates["output"]) / 1e6,
+                                    "basis": "registered model maximum input/output; API-equivalent estimate; OAuth usage is subscription quota"},
+                "sampling": {"temperature": "provider default; not supplied", "top_p": "provider default; not supplied"},
+                "agent_settings": {"compaction": {"enabled": False}}}
+    if provider != DEFAULT_PROVIDER or registration is None:
+        raise ValueError("AZ provider requires its exact local model registration")
     data = json.loads(registration.read_text(encoding="utf-8"))
     found = []
-    for name, provider in data.get("providers", {}).items():
-        if provider.get("baseUrl", "").rstrip("/") != BASE:
+    for name, provider_config in data.get("providers", {}).items():
+        if provider_config.get("baseUrl", "").rstrip("/") != BASE:
             continue
-        for model in provider.get("models", []):
-            if model.get("id") == MODEL:
-                found.append((name, provider, model))
+        for model in provider_config.get("models", []):
+            if model.get("id") == model_id:
+                found.append((name, provider_config, model))
     if not found:
-        raise ValueError("az/glm-5.3-flash unavailable in the existing local registration; no substitution")
+        raise ValueError(f"{provider}/{model_id} unavailable in the existing local registration; no substitution")
     name, provider, model = found[0]
     return {"registration": str(registration), "original_provider_handle": name, "provider": "az", "baseUrl": BASE,
             "api": provider["api"], "compat": provider.get("compat", {}), "model": model, "thinking": "low",
@@ -86,16 +113,14 @@ def local_settings(registration: Path):
             "request_reserve": {"tokens": model["contextWindow"] + model["maxTokens"],
                                 "usd": (model["contextWindow"]*INPUT_RATE + model["maxTokens"]*OUTPUT_RATE)/1e6,
                                 "basis": "registered maximum input/output; GLM-5.3-Flash rates 0.15/0.50 USD per million and zero cache rates; unknown invoice"},
+            "rates": {"input": INPUT_RATE, "output": OUTPUT_RATE, "cacheRead": CACHE_RATE, "cacheWrite": CACHE_RATE},
             "sampling": {"temperature": "provider default; not supplied", "top_p": "provider default; not supplied"},
-            # Pi's HTTP dispatcher resets its headers/body idle clock on received
-            # bytes. A silent call fails before the 300s turn watchdog; Pi then
-            # retries that failed assistant request in the same serial session.
-            # B3-1 (2026-11-16): shared-gateway 429 bursts outlast 2 retries at
-            # 2-4s spacing (three consecutive failures across 35s killed the run);
-            # ride out minute-scale RPM windows with more, longer-spaced retries.
-            "agent_settings": {"compaction": {"enabled": False}, "httpIdleTimeoutMs": 240_000,
-                               "retry": {"enabled": True, "maxRetries": 6, "baseDelayMs": 5000,
-                                         "maxAgentDelayMs": 60_000, "provider": {"maxRetries": 0}}}}
+            # Keep HTTP stream idle failure ahead of PiKernel's 10-minute turn watchdog,
+            # so Pi can surface the provider error and use its one bounded agent retry.
+            "agent_settings": {"compaction": {"enabled": False}, "httpIdleTimeoutMs": 180_000,
+                               "retry": {"enabled": True, "maxRetries": 1, "baseDelayMs": 5000,
+                                         "maxAgentDelayMs": 60_000,
+                                         "provider": {"timeoutMs": 300_000, "maxRetries": 0}}}}
 
 
 def content_units(material: str):
@@ -142,7 +167,8 @@ def renderer_preflight(root: Path):
     return result
 
 
-def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: str, arm="B"):
+def freeze(root: Path, source: Path, registration: Path | None, caps: dict, authority: str, arm="B",
+           provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None):
     root = root.resolve()
     if not root.is_relative_to(PROJECT):
         raise ValueError("experiment writes must remain in this worktree")
@@ -161,7 +187,7 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
             raise ValueError(f"cap must be an integer: {key}")
     if not authority.strip():
         raise ValueError("numeric resource authorization provenance required")
-    settings = local_settings(registration)
+    settings = local_settings(registration, provider, model_id, pi_config_dir)
     if unlimited_tokens and caps["requests"] * settings["request_reserve"]["tokens"] >= caps["tokens"]:
         raise ValueError("token-free compatibility value must exceed all authorized request permits")
     if unlimited_usd and caps["requests"] * settings["request_reserve"]["usd"] >= caps["usd"]:
@@ -182,12 +208,14 @@ def freeze(root: Path, source: Path, registration: Path, caps: dict, authority: 
             "inherit_defaults": False, "segment": {"work_requests": 3}, "review": {"max_requests_without_change": 4}}
     if tuple(body["boundaries"]) != CONTRACT_BOUNDARIES:
         raise ValueError(f"frozen contract floor must be {list(CONTRACT_BOUNDARIES)}, got {body['boundaries']}")
-    manifest = {"experiment_id": root.name, "arm": arm, "provider": "az", "model": MODEL, "contract": {**body, "content_hash": digest(body)},
+    manifest = {"experiment_id": root.name, "arm": arm, "provider": provider, "model": model_id, "contract": {**body, "content_hash": digest(body)},
                 "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v2", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
                 "engineering_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
             "engineering_tag": "exact engineering commit above; local tag recorded by the runner", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
                     "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/pi_context_adapter.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/prompts/self_root_meta_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
-                "comparison": "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence",
+                "comparison": ("Single bounded run on the explicitly selected model; no cross-model comparison claim"
+                               if provider != DEFAULT_PROVIDER else
+                               "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence"),
                 "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
     if unlimited_tokens:
         manifest["token_budget"] = {"authorized_cap": None, "runtime_nonbinding_value": caps["tokens"],
@@ -241,7 +269,8 @@ def case_assets(case: Path) -> Path:
     return assets
 
 
-def freeze_task_family(root: Path, cases, registration: Path, caps: dict, authority: str):
+def freeze_task_family(root: Path, cases, registration: Path | None, caps: dict, authority: str,
+                       provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None):
     """Freeze an ordered task family in one root. One case keeps the single-task manifest unchanged; more
     cases add a frozen episodes list: episode 1 is the live workspace, and each later episode's staged
     sources wait under cases/<id>/workspace/data until the agent's own transition to complete closes the
@@ -249,7 +278,7 @@ def freeze_task_family(root: Path, cases, registration: Path, caps: dict, author
     assets = [case_assets(c) for c in ([cases] if isinstance(cases, Path) else list(cases))]
     if len({a.parent.name for a in assets}) != len(assets):
         raise ValueError("task family requires distinct case ids")
-    manifest = freeze(root, assets[0], registration, caps, authority, "B")
+    manifest = freeze(root, assets[0], registration, caps, authority, "B", provider, model_id, pi_config_dir)
     root = root.resolve()
     manifest["task_id"] = assets[0].parent.name
     manifest["comparison"] = "One authorized task; unit completion boundaries; no task pool or switching."
@@ -293,6 +322,28 @@ def freeze_task_family(root: Path, cases, registration: Path, caps: dict, author
 
 def model_preflight(root: Path, manifest: dict, values: dict, inference=False, deadline: float | None = None):
     """No fallback/retry. Optional tiny connectivity probe is separately accounted."""
+    provider, model_id = manifest["provider"], manifest["model"]
+    if provider == "openai-codex":
+        config_dir = Path(manifest["settings"]["pi_config_dir"])
+        env = {**os.environ, "PI_CODING_AGENT_DIR": str(config_dir)}
+        started = time.monotonic()
+        completed = subprocess.run([shutil.which("node"), str(PI_CLI), "auth", "check", "--provider", provider,
+                                    "--model", model_id, "--no-refresh", "--json"], cwd=PROJECT, env=env,
+                                   capture_output=True, text=True, timeout=30)
+        elapsed = time.monotonic() - started
+        try:
+            auth = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            auth = {}
+        result = {"status": "available" if completed.returncode == 0 and auth.get("status") == "ready" else "auth_unavailable",
+                  "provider": provider, "model": model_id, "auth_type": auth.get("authType"),
+                  "kind": "local OAuth readiness check; no inference request", "elapsed_seconds": elapsed}
+        result["accounting"] = {"requests": 0, "tokens": 0, "usd": 0, "seconds": elapsed,
+                                "usage_status": "not_applicable"}
+        write(root / "provider-preflight.json", result)
+        persist_resource_daemon(root)
+        return result
+
     sent = False
     if values.get("OPENAI_API_BASE", "").rstrip("/") != BASE or not values.get("OPENAI_API_KEY"):
         result = {"status": "az_unavailable", "reason": "existing endpoint/key missing"}
@@ -300,7 +351,7 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
         key = values["OPENAI_API_KEY"]
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         url = BASE + ("/chat/completions" if inference else "/models")
-        probe_payload = {"model": MODEL, "messages": [{"role": "user", "content": "Reply OK."}], "max_completion_tokens": 16,
+        probe_payload = {"model": model_id, "messages": [{"role": "user", "content": "Reply OK."}], "max_completion_tokens": 16,
                          "reasoning_effort": manifest["settings"]["thinking"], "stream": False}
         data = json.dumps(probe_payload).encode() if inference else None
         started = time.monotonic()
@@ -314,8 +365,8 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
             sent = True
             with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=timeout) as response:
                 body = json.load(response)
-                listed = any(m.get("id") == MODEL for m in body.get("data", [])) if not inference else None
-                result = {"status": "available" if (body.get("model") == MODEL if inference else listed) else "model_mismatch_or_not_listed",
+                listed = any(m.get("id") == model_id for m in body.get("data", [])) if not inference else None
+                result = {"status": "available" if (body.get("model") == model_id if inference else listed) else "model_mismatch_or_not_listed",
                           "http_status": response.status, "returned_model": body.get("model"), "model_listed": listed,
                           "usage": body.get("usage"), "error":body.get("error"), "elapsed_seconds": time.monotonic()-started,
                           "kind": "separate inference connectivity probe" if inference else "read-only model listing"}
@@ -335,8 +386,9 @@ def model_preflight(root: Path, manifest: dict, values: dict, inference=False, d
 
 def run(root: Path, *, round_deadline: float | None = None):
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest["provider"] != "az" or manifest["model"] != MODEL:
-        raise ValueError("provider/model substitution refused")
+    provider, model_id = manifest["provider"], manifest["model"]
+    if provider not in (DEFAULT_PROVIDER, "openai-codex") or manifest["settings"]["provider"] != provider or manifest["settings"]["model"]["id"] != model_id:
+        raise ValueError("provider/model differs from the frozen runtime registration")
     if os.environ.get("EVO_META") == "1" and manifest["arm"] != "B":
         raise ValueError("EVO_META requires arm B (the evo self_root); elsewhere the flag would only rename the task prompt")
     if (root / "session.jsonl").exists():
@@ -366,12 +418,14 @@ def run(root: Path, *, round_deadline: float | None = None):
         result={"stop":"round_wall_clock_before_preflight", "resources":{"requests":0,"tokens":0,"usd":0},
                 "units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); persist_resource_daemon(root); return result
-    if b["requests"] < 2 or b["tokens"] < 4352 or b["usd"] < (4336*INPUT_RATE+16*OUTPUT_RATE)/1e6:
+    probe_requests = 1 if provider == DEFAULT_PROVIDER else 0
+    if b["requests"] < probe_requests + 1 or (provider == DEFAULT_PROVIDER and
+            (b["tokens"] < 4352 or b["usd"] < (4336*INPUT_RATE+16*OUTPUT_RATE)/1e6)):
         result={"stop":"insufficient_preflight_budget","units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); persist_resource_daemon(root); return result
     probe = model_preflight(root,manifest,values,inference=True,deadline=round_deadline)
     if probe["status"] != "available":
-        result = {"stop":"az_inference_unavailable", "preflight":probe, "provider":"az", "model":MODEL,
+        result = {"stop":f"{provider}_preflight_unavailable", "preflight":probe, "provider":provider, "model":model_id,
                   "resources":probe["accounting"],"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result)
         persist_resource_daemon(root)
@@ -385,7 +439,8 @@ def run(root: Path, *, round_deadline: float | None = None):
     # Deductions landing on an integer-valued float (3600 - 4.0 = 3596.0) are
     # canonicalized to int because json.dumps writes "3596.0" where
     # JSON.stringify writes "3596", so the two contract hashes would diverge.
-    caps.update(requests=caps["requests"]-1,
+    preflight_requests = probe["accounting"]["requests"]
+    caps.update(requests=caps["requests"]-preflight_requests,
                 tokens=caps["tokens"]-int(probe_tokens),
                 usd=caps["usd"]-probe_usd if caps["usd"] < 1e15 else caps["usd"],
                 seconds=caps["seconds"]-probe["elapsed_seconds"])
@@ -396,34 +451,46 @@ def run(root: Path, *, round_deadline: float | None = None):
     if any(v <= 0 for v in caps.values()):
         result={"stop":"preflight_exhausted_budget","preflight":probe,"units":[{"id":u["id"],"status":"not_run"} for u in manifest["units"]]}
         write(root / "summary.json",result); persist_resource_daemon(root); return result
-    runtime_manifest["preflight_allocation"]={"original_contract_hash":contract["content_hash"],"requests":1,"tokens":probe_tokens,"usd":probe_usd,"ref":"inference-preflight.json"}
+    runtime_manifest["preflight_allocation"]={"original_contract_hash":contract["content_hash"],"requests":preflight_requests,"tokens":probe_tokens,"usd":probe_usd,
+                                               "ref":"inference-preflight.json" if preflight_requests else "provider-preflight.json"}
     runtime_manifest["contract"]["content_hash"]=digest({k:v for k,v in runtime_manifest["contract"].items() if k != "content_hash"})
     write(root / "runtime-manifest.json",runtime_manifest)
     agent = root / ".pi-agent"
-    agent.mkdir()
     settings = manifest["settings"]
-    write(agent / "models.json", {"providers": {"az": {"baseUrl": BASE, "api": settings["api"], "apiKey": "$OPENAI_API_KEY", "authHeader": True,
-          "compat": settings["compat"], "models": [settings["model"]]}}})
-    write(agent / "settings.json",settings["agent_settings"])
-    env = {"PI_CODING_AGENT_DIR": str(agent), "OPENAI_API_KEY": values["OPENAI_API_KEY"], "PPT_DEMO_ROOT": str(root), "PPT_DEMO_PYTHON": os.sys.executable,
-           "PPT_DEMO_MODEL": MODEL, "PPT_DEMO_THINKING": settings["thinking"], "PPT_FRESH_BATCH": "0", "PPT_DEMO_DEADLINE": str(int((time.time()+caps["seconds"])*1000)),
+    if provider == DEFAULT_PROVIDER:
+        agent.mkdir()
+        write(agent / "models.json", {"providers": {"az": {"baseUrl": BASE, "api": settings["api"], "apiKey": "$OPENAI_API_KEY", "authHeader": True,
+              "compat": settings["compat"], "models": [settings["model"]]}}})
+        write(agent / "settings.json",settings["agent_settings"])
+        pi_config_dir = agent
+    else:
+        pi_config_dir = Path(settings["pi_config_dir"])
+    rates = settings["rates"]
+    env = {"PI_CODING_AGENT_DIR": str(pi_config_dir), "PPT_DEMO_ROOT": str(root), "PPT_DEMO_PYTHON": os.sys.executable,
+           "PPT_DEMO_MODEL": model_id, "PPT_DEMO_THINKING": settings["thinking"], "PPT_FRESH_BATCH": "0", "PPT_DEMO_DEADLINE": str(int((time.time()+caps["seconds"])*1000)),
            "PPT_DEMO_BUDGET_USD": str(caps["usd"]), "PPT_DEMO_REQUEST_RESERVE_USD": str(settings["request_reserve"]["usd"]),
-           "PPT_DEMO_REQUEST_RESERVE_TOKENS": str(settings["request_reserve"]["tokens"]), "PPT_DEMO_INPUT_USD_PER_MILLION": str(INPUT_RATE),
-           "PPT_DEMO_OUTPUT_USD_PER_MILLION": str(OUTPUT_RATE), "PPT_DEMO_CACHE_READ_USD_PER_MILLION": str(CACHE_RATE),
-           "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": str(CACHE_RATE)}
+           "PPT_DEMO_REQUEST_RESERVE_TOKENS": str(settings["request_reserve"]["tokens"]), "PPT_DEMO_INPUT_USD_PER_MILLION": str(rates["input"]),
+           "PPT_DEMO_OUTPUT_USD_PER_MILLION": str(rates["output"]), "PPT_DEMO_CACHE_READ_USD_PER_MILLION": str(rates["cacheRead"]),
+           "PPT_DEMO_CACHE_WRITE_USD_PER_MILLION": str(rates["cacheWrite"])}
+    if provider == DEFAULT_PROVIDER:
+        env["OPENAI_API_KEY"] = values["OPENAI_API_KEY"]
+    if os.environ.get("EVO_META") == "1":
+        env["EVO_META"] = "1"
     if manifest["arm"] == "B":
         env["EVO_MANIFEST"] = str(root / "runtime-manifest.json")
     else:
         env["PPT_EXPERIMENT_LIMITS"] = str(root / "runtime-manifest.json")
-    command = [shutil.which("node"), str(PROJECT / "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"), "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills",
-               "--no-prompt-templates", "--no-builtin-tools", "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"), "--provider", "az", "--model", MODEL,
+    command = [shutil.which("node"), str(PI_CLI), "--mode", "rpc", "--no-context-files", "--no-extensions", "--no-skills",
+               "--no-prompt-templates", "--no-builtin-tools", "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"), "--provider", provider, "--model", model_id,
                "--thinking", settings["thinking"], "--session", str(root / "session.jsonl")]
     deadline = time.monotonic()+caps["seconds"]
-    result = {"stop": "running", "provider": "az", "model": MODEL, "arm": manifest["arm"], "units": [{"id":u["id"],"status":"not_delivered"} for u in manifest["units"]]}
+    result = {"stop": "running", "provider": provider, "model": model_id, "arm": manifest["arm"], "units": [{"id":u["id"],"status":"not_delivered"} for u in manifest["units"]]}
     def record(event):
         if event.get("type") != "message_update":
             with (root / "pi-events.jsonl").open("a",encoding="utf-8") as stream:
-                stream.write(json.dumps(event,ensure_ascii=False).replace(values["OPENAI_API_KEY"],"[redacted]")+"\n")
+                serialized = json.dumps(event, ensure_ascii=False)
+                api_key = values.get("OPENAI_API_KEY")
+                stream.write((serialized.replace(api_key, "[redacted]") if api_key else serialized) + "\n")
         # Retry transitions are already recorded in pi-events.jsonl. The
         # existing provider dispatch/usage ledgers retain each charged attempt.
         if event.get("type") in ("auto_retry_start", "auto_retry_end"):
@@ -434,14 +501,12 @@ def run(root: Path, *, round_deadline: float | None = None):
         with PiKernel(command,cwd=str(root / "workspace"),env=env,timeout=90,deadline=deadline,event_sink=record) as kernel:
             message = "Complete the supplied presentation brief using data/instructions.md, data/material.txt and data/environment.md."
             if os.environ.get("EVO_META") == "1":
-                # The goal sentence's task half: the spine half is general and lives in the harness; the artifact it
-                # names is the runner's business, so it is stated here and only for META runs (other arms stay identical).
-                message += " Your task artifact is the presentation deck that brief defines."
+                message += " Deliver both the presentation and the reusable harness required by the brief. Design and revise your workflow within the authorized budget; use intermediate task evidence and subsequent substantive work to develop and judge both outputs before final completion."
             while time.monotonic() < deadline:
                 reply = kernel.prompt(message)
                 if reply.get("success") is False:
                     raise RuntimeError(str(reply))
-                events = kernel.wait_for_agent_events(timeout=max(1,deadline-time.monotonic()),idle_timeout=300)
+                events = kernel.wait_for_agent_events(timeout=max(1,deadline-time.monotonic()),idle_timeout=600)
                 state_path = root / ".harness/ppt-loop.json"
                 state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
                 if (root / "budget-stop.json").exists():
@@ -490,12 +555,15 @@ def run(root: Path, *, round_deadline: float | None = None):
             else:
                 result["stop"] = "time_budget"
     except Exception as error:
+        api_key = values.get("OPENAI_API_KEY")
+        error_text = str(error).replace(api_key, "[redacted]") if api_key else str(error)
         result.update(stop="budget_or_integrity_stop" if (root / "budget-stop.json").exists() else "runtime_or_provider_error",
-                      error=str(error).replace(values["OPENAI_API_KEY"],"[redacted]"))
+                      error=error_text)
     result["elapsed_seconds"] = time.monotonic()-started
-    result["preflight"] = {"requests":1,"tokens":probe_tokens,"usd":probe_usd,"seconds":probe["elapsed_seconds"],"returned_model":probe["returned_model"]}
+    result["preflight"] = {"requests":preflight_requests,"tokens":probe_tokens,"usd":probe_usd,"seconds":probe["elapsed_seconds"],
+                           "status":probe["status"],"returned_model":probe.get("returned_model", model_id)}
     result["resources"] = resource_usage(root,settings["request_reserve"])
-    result["resources"].update(requests=result["resources"]["requests"]+1,tokens=result["resources"]["tokens"]+probe_tokens,
+    result["resources"].update(requests=result["resources"]["requests"]+preflight_requests,tokens=result["resources"]["tokens"]+probe_tokens,
                                usd=result["resources"]["usd"]+probe_usd,seconds=result["elapsed_seconds"]+probe["elapsed_seconds"])
     saved_path = root / ".harness/live-self.json"
     if saved_path.exists():
@@ -594,6 +662,9 @@ def main():
     parser.add_argument("--root",required=True,type=Path)
     parser.add_argument("--source",type=Path,default=PROJECT / "demo/ppt-cases/bank-of-america-3q21/assets")
     parser.add_argument("--sources",type=Path,nargs="+",help="ordered case directories for a multi-episode task family in one root (requires --task-family)")
+    parser.add_argument("--provider",choices=[DEFAULT_PROVIDER,"openai-codex"],default=DEFAULT_PROVIDER)
+    parser.add_argument("--model",help="model ID from the selected provider")
+    parser.add_argument("--pi-config-dir",type=Path,help="Pi config directory for native OAuth providers")
     parser.add_argument("--registration",type=Path)
     parser.add_argument("--caps",type=Path,help="JSON with authorized requests/tokens/seconds/usd/storage_bytes")
     parser.add_argument("--authority",help="source of numeric resource authorization")
@@ -603,31 +674,44 @@ def main():
     parser.add_argument("--round-plan",type=Path,help="JSON: total_caps, calibration_caps, b_caps; all within the named numeric authorization")
     parser.add_argument("--task-family",action="store_true",help="freeze the tagged PPT task-family pool; does not launch unless --run is also given")
     args = parser.parse_args()
+    model_id = args.model or (DEFAULT_MODEL if args.provider == DEFAULT_PROVIDER else "gpt-6-luna")
     root = args.root.resolve()
+    if args.provider == DEFAULT_PROVIDER and not args.registration and not args.prepare_only:
+        parser.error("AZ provider requires --registration")
+    if args.provider == DEFAULT_PROVIDER and model_id != DEFAULT_MODEL:
+        parser.error("AZ provider/model substitution refused")
+    if args.provider == "openai-codex" and args.round_plan:
+        parser.error("round plans currently use the frozen AZ provider only")
     if not root.is_relative_to(PROJECT):
         parser.error("run root must remain in the worktree")
     if args.prepare_only:
         prepare(root,args.source.resolve())
         (root / "workspace/AGENTS.md").unlink()
         units=content_units((root / "workspace/data/material.txt").read_text(encoding="utf-8"))
-        write(root / "draft-plan.json",{"status":"not_run_missing_numeric_authorization","provider":"az","model":MODEL,"units":units,
+        write(root / "draft-plan.json",{"status":"not_run_missing_numeric_authorization","provider":args.provider,"model":model_id,"units":units,
             "sources":{p.name:file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()},
-            "settings":local_settings(args.registration) if args.registration else None,"renderer_preflight":renderer_preflight(root)})
+            "settings":local_settings(args.registration, args.provider, model_id, args.pi_config_dir)
+                if args.registration or args.provider == "openai-codex" else None,
+            "renderer_preflight":renderer_preflight(root)})
         write(root / "units.json",units)
         print(json.dumps({"prepared":str(root),"units":len(units),"inference_requests":0})); return
     if args.round_plan:
-        if not args.registration or not args.authority:
+        if args.provider != DEFAULT_PROVIDER or model_id != DEFAULT_MODEL or not args.registration or not args.authority:
             parser.error("round requires --registration and --authority")
         print(json.dumps(run_round(root,args.source.resolve(),args.registration.resolve(),json.loads(args.round_plan.read_text(encoding="utf-8")),args.authority),ensure_ascii=False)); return
     if args.caps:
-        if not args.registration or not args.authority:
-            parser.error("freeze requires --registration and --authority")
+        if (args.provider == DEFAULT_PROVIDER and not args.registration) or not args.authority:
+            parser.error("freeze requires --authority and the selected provider's registration")
         if args.task_family and args.arm != "B":
             parser.error("task-family requires the self-root B arm")
         if args.sources and not args.task_family:
             parser.error("--sources requires --task-family")
-        manifest = (freeze_task_family(root,[s.resolve() for s in (args.sources or [args.source])],args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority)
-                    if args.task_family else freeze(root,args.source.resolve(),args.registration.resolve(),json.loads(args.caps.read_text(encoding="utf-8")),args.authority,args.arm))
+        registration = args.registration.resolve() if args.registration else None
+        caps = json.loads(args.caps.read_text(encoding="utf-8"))
+        manifest = (freeze_task_family(root,[s.resolve() for s in (args.sources or [args.source])],registration,caps,args.authority,
+                                       args.provider,model_id,args.pi_config_dir)
+                    if args.task_family else freeze(root,args.source.resolve(),registration,caps,args.authority,args.arm,
+                                                    args.provider,model_id,args.pi_config_dir))
         print(json.dumps({"frozen":str(root),"units":len(manifest["units"])}))
     if args.run:
         print(json.dumps(run(root),ensure_ascii=False))
