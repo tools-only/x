@@ -725,6 +725,17 @@ export class NativeRuntime {
     // Any tool shape the guest accepts: run(args[, env]), main(...), handler(...) or a plain script.
     return content;
   }
+  async resolveSessionToolOperation(operation: any, signal?: AbortSignal) {
+    if (operation.session_ref === undefined) return operation;
+    const { session_ref: ref, description, ...rest } = operation;
+    if (rest.kind !== 'tool' || rest.op === 'restore' || rest.source !== undefined || rest.patch !== undefined ||
+        (rest.write !== undefined && rest.write !== 'replace')) throw Error('session_ref requires tool define/redefine with replacement semantics. Omit source and patch.');
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(ref)) throw Error('session_ref must name a Python function defined in this task session.');
+    if (!description?.trim() || description.length > 300 || /[\r\n]/.test(description))
+      throw Error('Provide a one-line description (1–300 characters) explaining what the tool does and when to use it.');
+    const source = await this.toolSource(undefined, ref, signal);
+    return { ...rest, source: `# program: on\n# description: ${description.trim()}\n${source}` };
+  }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
     // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.

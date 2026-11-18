@@ -385,19 +385,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       const path = a.kind === 'tool' ? `tools/${a.name}.py` : a.kind === 'prompt' ? `prompts/${a.name}.md`
         : a.kind === 'skill' ? `skills/${a.name}/SKILL.md` : a.kind === 'subagent' ? `agents/${a.name}.md` : `notes/memory/${a.name}.md`;
       try {
-        if (a.session_ref !== undefined) {
-          const { session_ref: ref, description, ...operation } = a;
-          if (operation.kind !== 'tool' || operation.op === 'restore' || operation.source !== undefined ||
-              operation.patch !== undefined || (operation.write !== undefined && operation.write !== 'replace')) {
-            throw Error('session_ref requires define/redefine of a tool with replacement semantics. Omit source and patch.');
-          }
-          if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(ref)) throw Error('session_ref must name a Python function defined in this task session.');
-          if (!description?.trim() || description.length > 300 || /[\r\n]/.test(description)) {
-            throw Error('Provide a one-line description (1–300 characters) explaining what the exported tool does and when to use it.');
-          }
-          const source = await runtime.toolSource(undefined, ref, signal);
-          a = { ...operation, source: '# program: on\n# description: ' + description.trim() + '\n' + source };
-        }
+        a = await runtime.resolveSessionToolOperation(a, signal);
         const input = evo ? normalizeOperation('component', a, undefined, { layer: evo.mech.l4 }) : a;
         assertNativeName(input.name, input.kind, path);
         const result = await agentSelf.reflectComponent({ ...input, baseRevision: evo?.pendingRevision ?? agentSelf.revision, level: 0, origin: { by: 'agent', decision: state.batch } });
