@@ -2153,14 +2153,25 @@ export class SelfRoot extends LiveAgentSelf {
     return { orchestration: 1, policy: Object.keys(this.policy).length, prompt: count('prompt'), skill: count('skill'), tool: count('tool'), memory: count('memory'), protected: 3 };
   }
   /** Compact task-facing view. Full canonical state remains available through read_self. */
-  executionView(input: { taskObservation?: unknown } = {}) {
+  executionView(input: { taskObservation?: unknown; taskMemory?: string } = {}) {
     const run = super.mirror().run;
     const contract = (this.current?.orchestration as any)?.contract ?? null;
+    const review = this.review;
+    const event = review && this.ledger.find(row => row.ref === review.event);
+    const facts = event?.value?.facts;
+    const summary = facts?.segment_summary && this.ledger.find(row => row.ref === facts.segment_summary);
     return {
       root_id: this.root_id,
       revision: this.serial,
       task: contract ? { goal: contract.task_goal, acceptance: contract.task_acceptance } : null,
       task_observation: input.taskObservation ?? this.options.taskRuntimeView?.() ?? null,
+      ...(input.taskMemory ? { working_memory: input.taskMemory } : {}),
+      ...(review ? { review: { trigger: review.boundary ?? event?.value?.type, event: review.event,
+        suspended: review.suspended, ledger_range: facts?.pass_window ?? facts?.window ?? summary?.value?.ledger,
+        segment: facts?.segment_summary, request_range: summary?.value?.requests,
+        requests: summary?.value?.process?.requests, input_tokens: summary?.value?.process?.input_tokens_sum,
+        due_windows: this.dueWindows,
+        detail: 'read_self(section="pin")' } } : {}),
       execution: {
         mode: this.currentMode,
         step: run.step,

@@ -100,3 +100,19 @@
 - 验证边界：本轮没有访问 run logs、没有运行测试或真实 Provider。静态检查已通过：本轮修改的 TypeScript 源文件及定向测试文件均通过 `node --experimental-transform-types --check`，`git diff --check` 通过。未运行测试或 Provider；合同迁移、无配额持续请求、SelfRoot 不自动派发 heartbeat/work_quantum，以及外层授权 runner 在边界停止的全链路仍待验证。
 
 范围澄清：SelfRoot 不再设置 request/token/time/USD/storage 硬配额，也不再按固定请求数触发 heartbeat/META 或因请求数强制结束 pass。保留 ARC adapter 中用户此前要求的“30 个环境动作无 pass 时复盘”；它是 ARC 任务层触发条件。保留 read_self 页大小、上下文策略裁剪及 provider 输出窗口等接口/传输控制，它们不消耗或终止 SelfRoot 运行配额。PPT manifest/runner 和 ARC runner 的外层授权预算继续有效。
+
+## 2026-11-19 补充 · ARC A/B/C 效率优化
+
+- 机会与命题：用户提供的 ar25/bp35/cd82 汇总显示，每个 `arc_action` 调用约有 6.5–8.1 次 Python 探测、8.2–10.2 次 provider 请求和 34–40 万 input tokens。当前无法从无本地日志确认每次探测的语义必要性；先把 CH 已有的观察事实实际送达，并缩小普通 SelfRoot 执行视图，再按动作区间记录成本。
+- A 实现：`src/autoresearch_pi/arc_thin_reuse_report.py` 新增 `action_intervals`，列出各已执行动作之后/下一动作之前的 Python 调用、能唯一归属的 provider 请求、报告 input/output tokens、provider elapsed 和首 stream 延迟；决策不能唯一映射到动作计数的 provider 请求显式放进 `unassigned_provider_requests`。缺失输入文件单独报告。墙钟区间、未关联请求和费用不可从现有数据推定。
+- B 实现：复用 `ARC_THIN_OBSERVATION=ch` 已有的 RECENT HISTORY、step、OBSERVATIONS、hex CURRENT STATE、动作/变化事实和关键帧图像；修复 SelfRoot 路径无条件用完整 `evo.mirror()` 覆盖工作集的问题。普通请求现在将 CH 观测交给 `evo.executionView()`，图片继续使用既有工作集；native extension 默认选 CH 观测，真实 runner 原已默认 CH，离线 query smoke 保持原样。现有变化事实是否能减少真实 Agent 的 Python 探测尚无 provider 证据。
+- C 实现：`SelfRoot.executionView({taskObservation})` 返回任务目标/验收、传入的环境观测、当前模式/步骤、最近动作与决策、活动组件索引、待激活变更和 `read_self` 精确入口。完整 ledger、policy、架构及组件仍留在 SelfRoot canonical state，可按需读取。
+- 生命周期与代价：每个普通 provider 请求仍携带执行视图和 CH 观测；不引入新模型请求、硬动作/请求门槛或第二份持久运行状态。完整 view 被 Agent 按需展开时，其后续请求成本仍需计量。
+- 验证：A 的 Python 编译、B/C TypeScript 语法检查及三项变更的 `git diff --check` 通过；未运行行为测试或真实 provider。功能方面，现有 CH observation path 接入 SelfRoot 投影；完整 Pi/bridge/provider 全链路、自主采用和净收益未验证。下一项可证伪检查是在同一模型/初态下记录动作后第一次 Python 是否重算已展示事实、动作间隔探测数、输入 token 和真实环境进展；再单独评价投影补读成本。
+- 关联 backlog：`docs/deferred-research-todos.md` A（adapter/runtime 边界）与 D（跨压缩认知连续性）保持开放；本次没有证明语义连续性或 CH 齐平。
+
+### 11 月 19 日：轻量动作上下文
+
+默认 SelfRoot/CH 普通轮以最近四个环境动作、当前观测和已有任务记忆代替跨轮工具对话。任务记忆投影使用 1,600 字符展示预算，完整记录可查 data/memory.md。当前决策的工具对话继续提供。复盘入口附触发事件、暂停步骤、证据窗口和已有分段统计，正文按引用读取。Python 工具描述缩短为一次调用处理一个行动判断及其可预见分支。上述变化均不新增模型调用。
+
+本地定向检查覆盖紧凑视图、首轮授权和 30 动作复盘间隔。实际 provider 请求大小、丢失未保存发现的风险、Python 调用频率及任务进展仍需在相同初态和模型下对比。若省下的输入被补读和重复探索抵消，应修订跨轮记忆投影。

@@ -26,7 +26,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { SelfRoot, hash } from './self_root.ts';
 import { ARC_SELF_ROOT_OPTIONS, arcMetrics, arcRunPosition, arcRuntimeView, arcSelfRootPaths, installArcSelfRootTools, loadOrCreateArcContract, selfRootToolSchema } from './self_root_arc.ts';
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, taskHistory, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { outcomeRow, predictionCounts, selfDigest, settlementRow, settlementText, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_PASS_LINE, SELF_SETTLEMENTS_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
 import { changedSlots, slotComponent, slotInventory, slotValues, type SlotValues } from "./arc_thin_selfslots.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
@@ -1461,7 +1461,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			const prompts = contextLayout ? Object.values(promptSections()).join("\n\n") : "";
 			if (prompts) out.push(["prompts", prompts]);
-			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), undefined, contestNotes()), ...rivals].join("\n")]);
+			out.push(["memory", [renderDecisionMemory(memory, trajectory.length, claimLines(), evo && chView ? 1600 : undefined, contestNotes()), ...(evo && chView ? [] : rivals)].join("\n")]);
 			const rules = ruleChecksText();
 			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
@@ -1562,7 +1562,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					evolution_pass: run.evoPass, observation_delivery: observationMode },
 				action_history_ref: 'read_self(section="ledger")',
 			});
-			body = JSON.stringify(evo.mirror(), null, 2);
+			const memoryText = retainedSections.memory;
+			body = JSON.stringify(evo.executionView(chView ? { taskObservation: stateText,
+				...(memoryText && memoryText !== "MEMORY: empty." ? { taskMemory: memoryText } : {}) } : {}));
 		}
 		try {
 			const row = {
@@ -1639,7 +1641,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const blocks: string[] = [];
 		let shown: Array<{ label: string; grid: number[][] }> = [];
 		if (!run.consolidating) {
-			blocks.push("## RECENT HISTORY\n" + renderRecentHistory(stepRecords(trajectory), HISTORY_MAX_CHARS));
+			const history = evo && trajectory.length > 4
+				? trajectory.slice(-4).map(actionLine).join("\n")
+				: renderRecentHistory(stepRecords(trajectory), HISTORY_MAX_CHARS);
+			blocks.push("## RECENT HISTORY\n" + history);
 			// CH's action_counter counts the starting RESET, so it is the number the next action gets.
 			blocks.push(`# Step: ${trajectory.length + 1}`);
 			const observed = buildObservationSection(decisionObservations);
@@ -4682,7 +4687,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 							"cell(12, a, b) only its lines a to b, and a call that repeats an earlier one, or some of its lines, is told so. " : "") +
 						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
 							"names and print only what you need to read; the final value is also _. " : "") +
-					"For one observation, run the independent checks you already know you need in one call (for example, counts, regions, bounds, or comparisons); keep intermediate values in session names and return only results that can change the next action. Make another call when a result creates a new hypothesis you could not have checked before. Saved tools run without this namespace."
+					"Check one action decision per cell, including foreseeable branches. Return the evidence that changes the choice. Saved tools run without this namespace."
 				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
 					"Returns what you print and the value of a final expression. Standard library only; no files or network.",
@@ -5235,7 +5240,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         ? 'Your reasoning is not read back to you after the call it was written for; your text, calls and results are. '
           + 'A <carry>premises / eliminated / probe / open</carry> block, in your text or your reasoning, is kept; what '
           + 'is not in it you will have to derive again.'
-        : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
+        : evo && chView ? 'Recent actions and recorded task memory carry across decisions.' : 'Your reasoning stays in view until the decision ends; earlier decisions keep your text, calls and results.',
       refine: criticOn ? `Refinements run in the background (level changes, missing goal tests, stalls, repeated work${refineTool ? ', refine(focus)' : ''}); each makes one edit to a prompt, memory entry, tool or skill (prompts/refine.md guides them) and consolidates the memory and strategy you write. ` : '',
       // Call points (A5), said once where the capabilities are.
       call_points: [refinePoints ? `Every ${REFINE_EVERY} actions a decision is a refine point: it acts after refine(focus).` : '',
@@ -5358,11 +5363,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const lastUser = native ? nativeDecisionStart(messages) : messages.findLastIndex((message) => message?.role === "user");
 		if (lastUser < 0) return undefined;
 		const user = messages[lastUser];
-		const earlier = taskHistory(messages.slice(0, lastUser));
 		// Native mode: earlier decisions are a transcript in front of the current head (freezeHistory), so they stay
 		// byte-identical and cacheable; ARC_THIN_NATIVE_HISTORY_CHARS > 0 puts a summary inside the head instead.
 		// A compaction summary Pi made stays in front either way.
-		const summarised = native && nativeHistoryChars > 0;
+		const compactArc = Boolean(evo && chView && !run.hookTurn && !run.consolidating);
+		const summarised = native && !compactArc && nativeHistoryChars > 0;
 		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser),
 			{ budget: nativeHistoryChars, resultChars: slot("history.result_chars", historyResultChars), fullResults: slot("history.full_results", 2),
 				...(workspace ? { save: saveHistoryResult } : {}) }) : undefined;
@@ -5371,7 +5376,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
 		const intervalReview = evo?.actionIntervalReviewState === 'active';
-		const headKey = `${decision}:${lastUser}:${Boolean(intervalReview)}`;
+		const headKey = `${decision}:${lastUser}:${evo ? [evo.revision, evo.mode, trajectory.length, intervalReview].join(':') : ''}`;
 		if (!native || run.headKey !== headKey) {
 			// Hooks first: what they write (files, memory) is what this decision's memory, views' readers, guards and
 			// predictors see, and what they return is shown with the state.
@@ -5388,8 +5393,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (evo) {
 			const current = arcTaskRuntimeView as any;
 			arcTaskRuntimeView = { ...current, context: { ...current?.context, capability_index: capabilities || undefined } };
-			const taskObservation = chView ? chObservation(ctx).text : undefined;
-			run.workingSet!.text = JSON.stringify(evo.executionView({ ...(taskObservation ? { taskObservation } : {}) }), null, 2);
 		}
 			run.head = {
 				...user,
@@ -5403,7 +5406,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		const head = { ...run.head, content: run.head.content.map((block: any) => ({ ...block })) };
 		const prefix = summarised ? messages.slice(0, lastUser).filter((message) => message?.role === "compactionSummary").slice(-1) : [];
-		const history = native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
+		const history = compactArc ? [] : native ? (summarised ? prefix : replayReasoning ? projectNativeHistory(messages.slice(0, lastUser), true)
 			: freezeHistory(messages.slice(0, lastUser), { resultChars: slot("history.result_chars", historyResultChars), collapseRepeats, references: workMemory, ...(workspace ? { save: saveHistoryResult } : {}) }))
       : continuity === "session" && !control ? historyMessages(messages, lastUser) : [];
 		// The current decision keeps its reasoning between tool rounds (Continual Harness preserves "the local reasoning
