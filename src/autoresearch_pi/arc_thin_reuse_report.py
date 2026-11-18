@@ -155,13 +155,8 @@ def _families(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _action_intervals(root: Path, trajectory: list[dict[str, Any]], python_rows: list[dict[str, Any]],
                       usage_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Attribute work to recorded action-count intervals; ambiguous links remain unassigned."""
+    """Attribute provider attempts to the trajectory count captured when each request was prepared."""
     request_rows = _rows(root / "harness" / "request-events.jsonl")
-    decision_actions: dict[str, set[int]] = {}
-    for row in python_rows:
-        if row.get("decision") is not None and isinstance(row.get("n"), int):
-            decision_actions.setdefault(str(row["decision"]), set()).add(row["n"])
-
     stages: dict[str, dict[str, dict[str, Any]]] = {}
     for row in request_rows:
         if row.get("request_id") and row.get("stage") in {"request_prepared", "first_stream_event", "request_settlement"}:
@@ -177,19 +172,21 @@ def _action_intervals(root: Path, trajectory: list[dict[str, Any]], python_rows:
         elapsed = finish.get("monotonic_ms", 0) - start.get("monotonic_ms", 0) if finish and isinstance(finish.get("monotonic_ms"), (int, float)) else None
         first_stream = first.get("monotonic_ms", 0) - start.get("monotonic_ms", 0) if first and isinstance(first.get("monotonic_ms"), (int, float)) else None
         item = {"decision": start.get("decision"), "kind": start.get("kind"),
+                "actions_completed_before_request": start.get("actions_completed_before_request"),
                 "status": finish.get("status", "unsettled"), "input_tokens": finish.get("input"),
                 "output_tokens": finish.get("output"), "total_tokens": finish.get("total"),
                 "elapsed_ms": round(elapsed, 1) if elapsed is not None else None,
                 "time_to_first_stream_ms": round(first_stream, 1) if first_stream is not None else None}
-        actions = decision_actions.get(str(start.get("decision")), set())
-        if len(actions) != 1:
-            item["attribution"] = "unknown: decision has no unique action-count mapping"
+        action_count = start.get("actions_completed_before_request")
+        if not isinstance(action_count, int) or action_count < 0:
+            item["attribution"] = "unknown: request was prepared without action-count telemetry"
             unassigned.append(item)
             continue
-        action_count = next(iter(actions))
         bucket = buckets.setdefault(action_count, {"requests": [], "input": 0, "output": 0, "known_tokens": 0,
-                                                   "elapsed_ms": 0.0, "elapsed_count": 0, "python_calls": 0})
+                                                   "elapsed_ms": 0.0, "elapsed_count": 0, "python_calls": 0,
+                                                   "statuses": {}})
         bucket["requests"].append(item)
+        bucket["statuses"][item["status"]] = bucket["statuses"].get(item["status"], 0) + 1
         for key in ("input", "output"):
             value = item[f"{key}_tokens"]
             if isinstance(value, (int, float)):
@@ -202,21 +199,24 @@ def _action_intervals(root: Path, trajectory: list[dict[str, Any]], python_rows:
     for row in python_rows:
         if isinstance(row.get("n"), int):
             buckets.setdefault(row["n"], {"requests": [], "input": 0, "output": 0, "known_tokens": 0,
-                                           "elapsed_ms": 0.0, "elapsed_count": 0, "python_calls": 0})["python_calls"] += 1
+                                           "elapsed_ms": 0.0, "elapsed_count": 0, "python_calls": 0,
+                                           "statuses": {}})["python_calls"] += 1
 
     action_counts = set(range(len(trajectory) + 1)) | set(buckets)
     intervals = []
     for action_count in sorted(action_counts):
         bucket = buckets.get(action_count, {"requests": [], "input": 0, "output": 0, "known_tokens": 0,
-                                            "elapsed_ms": 0.0, "elapsed_count": 0, "python_calls": 0})
+                                            "elapsed_ms": 0.0, "elapsed_count": 0, "python_calls": 0,
+                                            "statuses": {}})
         intervals.append({"actions_completed_before_interval": action_count,
                           "next_action": action_count + 1 if action_count < len(trajectory) else None,
                           "python_calls": bucket["python_calls"], "provider_requests": len(bucket["requests"]),
+                          "provider_requests_by_status": bucket["statuses"],
                           "reported_input_tokens": bucket["input"], "reported_output_tokens": bucket["output"],
                           "requests_with_known_usage": bucket["known_tokens"],
                           "provider_elapsed_ms_sum": round(bucket["elapsed_ms"], 1),
                           "provider_elapsed_ms_count": bucket["elapsed_count"], "request_details": bucket["requests"]})
-    return {"attribution": "Python action count is recorded at invocation. Provider usage/timing maps only when its decision has one unique action-count value; elapsed sums are provider time, not run wall time.",
+    return {"attribution": "Provider attempts map to the trajectory action count captured at request_prepared; batch actions are reflected by the trajectory count at the next request. Unsettled and failed attempts remain in their prepared interval; old rows without this field stay unassigned. Python counts are recorded at invocation. Elapsed sums are provider time, not run wall time.",
             "intervals": intervals, "unassigned_provider_requests": unassigned,
             "missing_data": [name for name, present in (("request-events.jsonl", bool(request_rows)),
                 ("python_calls.jsonl", bool(python_rows)), ("usage.jsonl", bool(usage_rows)), ("trajectory.jsonl", bool(trajectory))) if not present]}

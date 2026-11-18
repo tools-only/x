@@ -95,6 +95,33 @@ def test_use_ledger_keeps_unrecoverable_history_unknown_and_counts_replayed_tool
     assert live["tools_mounted"] == live["act_capable_count"] == live["opportunity_windows"] == 1
 
 
+def test_action_intervals_use_request_time_counts_and_keep_failed_or_unsettled_attempts(tmp_path):
+    import json
+    from autoresearch_pi.arc_thin_reuse_report import _action_intervals
+
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    requests = [
+        {"request_id": "before", "stage": "request_prepared", "kind": "parent", "decision": 1,
+         "actions_completed_before_request": 0, "monotonic_ms": 10},
+        {"request_id": "before", "stage": "request_settlement", "status": "failed", "monotonic_ms": 11},
+        {"request_id": "after-batch", "stage": "request_prepared", "kind": "parent", "decision": 1,
+         "actions_completed_before_request": 3, "monotonic_ms": 12},
+        {"request_id": "legacy", "stage": "request_prepared", "kind": "consult", "decision": 1,
+         "monotonic_ms": 13},
+    ]
+    (harness / "request-events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in requests), encoding="utf-8")
+    report = _action_intervals(tmp_path, [{"n": i} for i in range(3)],
+                               [{"decision": 1, "n": 0}, {"decision": 1, "n": 3}], [])
+    intervals = {row["actions_completed_before_interval"]: row for row in report["intervals"]}
+    assert intervals[0]["provider_requests"] == 1
+    assert intervals[0]["provider_requests_by_status"] == {"failed": 1}
+    assert intervals[3]["provider_requests"] == 1
+    assert intervals[3]["provider_requests_by_status"] == {"unsettled": 1}
+    assert len(report["unassigned_provider_requests"]) == 1
+    assert "without action-count telemetry" in report["unassigned_provider_requests"][0]["attribution"]
+
+
 def test_use_ledger_keeps_unrecoverable_history_unknown_and_counts_replayed_tool_calls(tmp_path):
     import json
     from autoresearch_pi.arc_thin_reuse_report import build_report

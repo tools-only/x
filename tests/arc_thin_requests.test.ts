@@ -25,6 +25,16 @@ test('request telemetry distinguishes prepared/stream/settlement and preserves u
   assert.equal(usageRecord({stopReason:'aborted',usage:{totalTokens:10,output:5}}).cost_status,'partial');
 });
 
+test('request preparation records the current completed-action count', () => {
+  const rows:any[]=[]; let actions=0;
+  const trace=new RequestTrace(row => rows.push(row), () => actions);
+  trace.start('parent',1);
+  actions=3;
+  trace.start('consult',2);
+  assert.equal(rows[0].actions_completed_before_request,0);
+  assert.equal(rows[1].actions_completed_before_request,3);
+});
+
 test('Pi completed zero placeholders cannot establish a reported zero cost',()=>{
   const record=usageRecord({stopReason:'stop',usage:{input:0,output:0,totalTokens:0}});
   assert.equal(record.status,'completed'); assert.equal(record.total,null);

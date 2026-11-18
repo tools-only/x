@@ -1,6 +1,16 @@
 /** Host-only request stages. No prompt, delta text, authentication or headers are logged. */
 import {randomUUID} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
+import {existsSync, readFileSync} from 'node:fs';
+import {join} from 'node:path';
+
+function actionsCompletedBeforeRequest():number|null {
+  const root=process.env.ARC_RUN_ROOT;
+  if (!root) return null;
+  const path=join(root,'harness','trajectory.jsonl');
+  if (!existsSync(path)) return 0;
+  return readFileSync(path,'utf8').split('\n').filter(Boolean).length;
+}
 
 export function usageRecord(message: any) {
   const u=message?.usage ?? {}, stop=message?.stopReason;
@@ -17,12 +27,13 @@ export class RequestTrace {
   private active = new Map<string, any>();
   private attempts = new Map<string,number>();
   private replies = new WeakMap<object,string>();
-  constructor(private emit:(row:any)=>void) {}
+  constructor(private emit:(row:any)=>void, private actionCount=actionsCompletedBeforeRequest) {}
   private event(row:any) { this.emit({t:new Date().toISOString(),monotonic_ms:performance.now(),...row}); }
   start(kind:string, decision:number):string {
     const request_id=randomUUID(), logical_request=`${kind}:${decision}`;
     const attempt=(this.attempts.get(logical_request) ?? 0)+1; this.attempts.set(logical_request,attempt);
-    const row={request_id,logical_request,attempt,kind,decision,stream_chars:0,stream_events:0,
+    const row={request_id,logical_request,attempt,kind,decision,
+      actions_completed_before_request:this.actionCount(),stream_chars:0,stream_events:0,
       delta_chars_by_type:{} as Record<string,number>,delta_events:0,last_delta_ms:null,last_delta_gap_ms:null,
       max_delta_gap_ms:0,next_progress_chars:512};
     this.active.set(request_id,row);
