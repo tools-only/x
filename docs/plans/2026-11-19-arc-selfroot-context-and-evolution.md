@@ -94,6 +94,7 @@
 - 本次全链路证据：SelfRoot ledger 在 30 个动作边界进入 `reflect`，创建 `action-interval:30` review；run summary 记录 3 个 evolution pass。memory 有 16 次写入，最终 4 条；skill 有 2 个版本且运行 2 次。与此同时 Python 仍累计 100 次，报告的 `repeats=0`、`answered_from_same_state=0`，history 技能读取为 0，说明已有资源确实运行或写入，但“探索结果变成可持续复用能力并减少探测”的自主采用和净收益仍未证明。summary 的决策级工作集统计为均值 9,895 字符（state 8,654、board 292、python 710、resources 215、spin 24），比用户描述的旧版约 80K 字符明显小；这证明本次上下文投影较紧凑，不证明任务效率已经齐平或通关策略有效。
 - 运行以 `provider_error` 终止，0 关卡不是自然完成或模型失败判定。最后 provider 错误为 HTTP 400 `Arrearage`（账户状态拒绝）；共 4 次失败请求。关闭记录显示 ARC bridge 正常关闭、scorecard verified、0 个 forced action，任务仍为 `NOT_FINISHED`。本机仅找到一个 AZ endpoint 凭据来源；该 endpoint 的账户拒绝请求。桌面 Provider Session 的 AZ 路由使用不同默认模型，不符合本轮明确的 Qwen 配置，因此没有擅自改模型重跑。该环境故障需要 AZ 账户恢复可用后才能继续验证 4-level 目标。
 - 验收结论按四类分开：功能和全链路方面，动作区间 30 的 reflect 触发与 bridge close 已有真实运行证据；自主采用方面，memory/skill 有写入和运行记录，但复用效果不足以确认；净收益方面，工作集和每动作 Python/request 数比旧报告低，但仍为 75 分钟 30 动作、0 通关，且跨 run 不可作因果比较；Provider 行为方面，Qwen 在运行末遭遇账户 `Arrearage`，因此 4-level 目标尚未验证。恢复 AZ 账户后，应从新的 ARC run root 以相同 AZ/Qwen/无上限配置重启，保留当前失败 run 作为在线轨迹，不覆盖或伪造续跑。
+- 账户状态复核与重试（`runs/su15-selfroot-optimized-20261119-restart3`）：新 run root 使用更新后的 HEAD `afdbc2d8`，明确配置仍为 AZ `qwen3.8-27b`，`max_actions=0`、决策/token/time/idle 上限均为 null。首轮 provider 请求仍返回同一 HTTP 400 `Arrearage`；runner 完成错误处理后以 `provider_error` 结束，bridge close 正常，1 个实际动作、0 关、5 次 provider 请求（1 次成功、4 次失败），约 183 秒。该重试验证账户尚未恢复；不能作为模型能力或 ARC 解题失败证据。恢复 AZ 账户状态是继续 4-level 真实运行的必要外部条件。
 
 ## 7. 实验协议与交付边界
 
