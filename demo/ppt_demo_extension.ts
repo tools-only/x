@@ -149,8 +149,20 @@ export default function pptDemo(pi: ExtensionAPI) {
   const persistLiveSelf = (event?: string, value?: unknown) => {
     const snapshot = agentSelf.snapshot();
     mkdirSync(dirname(liveSelfPath), { recursive: true });
-    writeFileSync(liveSelfPath + '.next', JSON.stringify(evo ? evo.export() : { snapshot, history: agentSelf.history() }, null, 2));
-    renameSync(liveSelfPath + '.next', liveSelfPath);
+    const body = JSON.stringify(evo ? evo.export() : { snapshot, history: agentSelf.history() }, null, 2);
+    const tmp = `${liveSelfPath}.${process.pid}.tmp`;
+    writeFileSync(tmp, body);
+    let renamed = false;
+    for (let attempt = 0; attempt < 6 && !renamed; attempt++) {
+      try { renameSync(tmp, liveSelfPath); renamed = true; }
+      catch (error) {
+        const code = (error as any)?.code;
+        if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') throw error;
+        const until = Date.now() + (attempt + 1) * 20;
+        while (Date.now() < until) { /* transient Windows lock on rename; brief yield before retry */ }
+      }
+    }
+    if (!renamed) writeFileSync(liveSelfPath, body);
     if (event) appendFileSync(join(root, 'harness', 'live_agent_self.jsonl'), JSON.stringify({ time: new Date().toISOString(), event, value, self_revision: agentSelf.revision, orchestration_revision: agentSelf.current.revision, step: agentSelf.step, components: agentSelf.allComponents().map((component: any) => ({ kind: component.kind, name: component.name, version: component.version, hash: component.hash, enabled: component.enabled })) }) + '\n');
   };
   // Evidence facts only: what has run since the last completed render. No gate, no instruction — the agent still
