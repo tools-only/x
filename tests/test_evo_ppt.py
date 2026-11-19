@@ -289,7 +289,7 @@ def test_task_family_freezes_ordered_episodes_with_staged_case_sources(tmp_path,
         units=evo_ppt.content_units((data/"material.txt").read_text(encoding="utf-8"))
         evo_ppt.append_frozen_units(data/"instructions.md",units)
         return {"arm":arm,"units":units,"sources":{f"data/{p.name}":evo_ppt.file_hash(p) for p in data.iterdir() if p.is_file()},
-                "contract":{"acceptance":{"checker_version":"literal-normalized-render-v2","expected_slides":15}}}
+                "contract":{"acceptance":{"checker_version":"literal-normalized-render-v3","expected_slides":15}}}
     monkeypatch.setattr(evo_ppt,"freeze",fake_freeze)
     root=tmp_path/"family"
     manifest=evo_ppt.freeze_task_family(root,list(cases),Path("unused"),{},"test authority")

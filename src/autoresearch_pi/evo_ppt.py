@@ -208,19 +208,19 @@ def freeze(root: Path, source: Path, registration: Path | None, caps: dict, auth
             "boundaries": list(CONTRACT_BOUNDARIES),
             "capabilities": ["read", "write", "edit", "ls", "grep", "python", "office.render", "office.look", "office.preview", "office.deliver", "acceptance", "submit_unit", "agent_tools"],
             "writable": ["components.tool", "components.prompt", "components.skill", "components.subagent", "components.memory", "policy", "orchestration"],
-            "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v2", "expected_slides":15},
+            "budget": caps, "acceptance": {"brief_sha256": sources["data/instructions.md"], "original_brief_sha256": file_hash(source / "production_brief.md"), "units_sha256": digest(units), "checker_version": "literal-normalized-render-v3", "expected_slides":15},
             "inherit_defaults": False, "segment": {"work_requests": 3}, "review": {"max_requests_without_change": 4}}
     if tuple(body["boundaries"]) != CONTRACT_BOUNDARIES:
         raise ValueError(f"frozen contract floor must be {list(CONTRACT_BOUNDARIES)}, got {body['boundaries']}")
     manifest = {"experiment_id": root.name, "arm": arm, "provider": provider, "model": model_id, "contract": {**body, "content_hash": digest(body)},
-                "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v2", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
+                "sources": sources, "units": units, "checker": {"version": "literal-normalized-render-v3", "sha256": file_hash(PROJECT / "demo/self_root_ppt.ts")}, "settings": settings,
                 "engineering_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
             "engineering_tag": "exact engineering commit above; local tag recorded by the runner", "seed_hashes": {p: file_hash(PROJECT / p) for p in [
                     "demo/self_root.ts", "demo/self_root_ppt.ts", "demo/pi_context_adapter.ts", "demo/provider_permit.ts", "demo/ppt_demo_extension.ts", "demo/live_orchestration_core.ts", "demo/prompts/ppt_demo_system.md", "demo/prompts/self_root_system.md", "demo/prompts/self_root_meta_system.md", "demo/arc_thin_native_runtime.ts", "demo/arc_thin_workspace.ts", "src/autoresearch_pi/ppt_demo_html.py", "src/autoresearch_pi/evo_ppt.py"]},
                 "comparison": ("Single bounded run on the explicitly selected model; no cross-model comparison claim"
                                if provider != DEFAULT_PROVIDER else
                                "A calibration excluded; B1/B2 same frozen source and seed; no automatic inheritance; stage2 conditional on autonomous-change/use evidence"),
-                "acceptance_limitations": "literal probes and renderer facts; semantic attribution, narrative, aesthetics and net benefit are not established"}
+                "acceptance_limitations": "literal probes, renderer warnings, and objective pixel-level visual facts (coverage, distinct-colors, luminance contrast); semantic attribution, narrative quality, visual persuasion and net benefit remain agent judgment and are not established"}
     if unlimited_tokens:
         manifest["token_budget"] = {"authorized_cap": None, "runtime_nonbinding_value": caps["tokens"],
             "maximum_permit_tokens_across_request_cap": caps["requests"] * settings["request_reserve"]["tokens"],
