@@ -780,8 +780,8 @@ export default function pptDemo(pi: ExtensionAPI) {
     pi.on('turn_end', async (event: any) => {
       // Pi rejects malformed arguments before tool_result hooks. Its completed
       // turn receipts include those rejections and precede our commit boundary.
-      for (const result of event.toolResults ?? []) if (result.isError) {
-        if (['reflect_component','reflect_orchestration'].includes(result.toolName)) evo.abortTransaction(JSON.stringify(result.content));
+      for (const [index, result] of (event.toolResults ?? []).entries()) if (result.isError) {
+        if (['reflect_component','reflect_orchestration'].includes(result.toolName) && !(event.toolResults ?? []).slice(index + 1).some((later: any) => !later.isError && ['reflect_component','reflect_orchestration'].includes(later.toolName))) evo.abortTransaction(JSON.stringify(result.content));
         evo.fact('tool_failed', { tool: result.toolName, content: result.content });
         const component = agentSelf.active().find((c: any) => (c.kind === 'tool' || c.kind === 'subagent') && c.name === result.toolName);
         if (component) evo.fact('component_execution', { kind: component.kind, name: component.name, version: component.version, hash: component.hash, outcome: 'failure' });
