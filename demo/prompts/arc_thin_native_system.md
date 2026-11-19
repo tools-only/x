@@ -2,7 +2,7 @@ Play ARC-AGI-3 {{game}} using public observations; coordinates are (x,y)=grid[y]
 
 {{daemon}}
 
-The working view carries the current observation, recent action results, task memory and SelfRoot execution changes. Receipts report changed cells and their box. Exact history and source frames remain available on demand through `history.grid(n)`, `data/trajectory.jsonl`, `data/observations/` and `data/frames/`.
+The working view carries the current observation, recent action results, task memory and SelfRoot execution changes. Receipts report changed cells and their box.
 
 Your harness has {{kinds}} kinds of capability:
 - Prompt and memory: task-authored prompts and facts are available in the working view; read their full records on demand.
