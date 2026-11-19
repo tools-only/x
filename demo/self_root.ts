@@ -17,6 +17,8 @@ const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], e
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide', 'decide_exit', 'decide_validation'];
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
+  metaFallback?: { unit: 'request' | 'action'; interval: number };
+  metaRouting?: 'sweep' | 'selective';
   /** Some task adapters record qualitative effects without opening numeric comparison windows. */
   validationWindows?: 'declared_effect' | 'explicit_predicate';
   processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
@@ -686,6 +688,10 @@ export class SelfRoot extends LiveAgentSelf {
     // nothing to carry. Stored verbatim on the close; the next pass entry renders it (clipped at render only).
     if (this.mech.meta && this.metaPassTrigger && this.inEvolutionReview && !this.inSweep) {
       schema.properties = { ...(schema.properties ?? {}), carry: { type: 'array', items: { type: 'string' }, description: 'Optional free-text notes for the next evolution pass, rendered verbatim at its entry: open questions, unfinished investigations, retained understanding.' } };
+      if (this.options.metaRouting === 'selective' && this.metaPassTrigger.round === 1) schema.properties.next_specialist = {
+        type: 'string', enum: ['none', ...META_SWEEP_SPECIALISTS.map(specialist => specialist.focus.toLowerCase())],
+        description: 'Open one focused pass, or resume the task with none.',
+      };
     }
     return schema;
   }
@@ -768,8 +774,12 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.mech.meta) {
       if (!this.inEvolutionReview) return META_STRATEGY;
       if (this.mech.sweep) {
-        if (this.inSweep) return `${META_PASS_SWEEP_STRATEGY}\n${META_SWEEP_LINE}`;
-        return `${META_PASS_SWEEP_STRATEGY}\n${META_SWEEP_ROUND1_LINE}`;
+        if (this.inSweep) return this.options.metaRouting === 'selective'
+          ? 'FOCUSED EVOLUTION PASS. Inspect this focus and make one justified change through reflection, or state no change. The task resumes after this turn.'
+          : `${META_PASS_SWEEP_STRATEGY}\n${META_SWEEP_LINE}`;
+        return this.options.metaRouting === 'selective'
+          ? 'EVOLUTION CHECK. Read the preceding task stage and the whole Agent in SelfRoot. Close with decide_exit(result.next_specialist="none" or one of prompt, context, skill, tool, subagent, memory, loop). The selected focus runs once, then the task resumes.'
+          : `${META_PASS_SWEEP_STRATEGY}\n${META_SWEEP_ROUND1_LINE}`;
       }
       // Non-sweep META retains the two-round induction/capability flow.
       return ((this.metaPassTrigger as any)?.round ?? 1) === 2
@@ -856,11 +866,31 @@ export class SelfRoot extends LiveAgentSelf {
     const stall = after.findIndex(r => r.type === 'action_transition_stalled');
     if (stall >= 0) { const row = after[stall]; return { reason: 'delivery_stall', window,
       facts: { trigger: 'delivery_stall', action: row.value?.action ?? null, status: row.value?.status ?? null, window } }; }
-    const executeRequests = after.filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
-    if (executeRequests >= 12 && !taskClosedAfterLastExecute)
-      return { reason: 'request_cadence_fallback', window,
-        facts: { trigger: 'request_cadence_fallback', execute_requests_since_last_evolution: executeRequests, interval: 12, window } };
+    const fallback = this.options.metaFallback ?? { unit: 'request', interval: 12 };
+    const count = fallback.unit === 'action'
+      ? after.filter(r => r.kind === 'fact' && this.options.actionReceiptTypes?.includes(r.type)).length
+      : after.filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
+    if (count >= fallback.interval && !taskClosedAfterLastExecute)
+      return fallback.unit === 'action'
+        ? { reason: 'action_cadence_fallback', window,
+          facts: { trigger: 'action_cadence_fallback', actions_since_last_evolution: count, interval: fallback.interval, window } }
+        : { reason: 'request_cadence_fallback', window,
+          facts: { trigger: 'request_cadence_fallback', execute_requests_since_last_evolution: count, interval: fallback.interval, window } };
     return null;
+  }
+  stageView(window: [number, number]) {
+    const rows = this.ledger.slice(window[0], window[1] + 1);
+    const requests = rows.filter(row => row.type === 'request_record' && row.value?.pin?.mode === 'execute');
+    const outcomes = rows.filter(row => row.type === 'unit_delivered' || row.type === 'task_outcome' || row.type === 'unit_outcome');
+    return {
+      window, requests: requests.length, task_actions: rows.filter(row => this.isWork(row)).length,
+      first_revision: requests[0]?.value?.pin?.revision ?? null, current_revision: this.serial,
+      changes: rows.filter(row => row.type === 'reflection_activated').map(row => ({ ref: row.ref, revision: row.value?.revision ?? null })),
+      outcomes: outcomes.slice(-3).map(row => ({ ref: row.ref, type: row.type, metrics: row.value?.metrics ?? null })),
+      parent_recorded_tokens: requests.reduce((total, row) => total + (Number(row.value?.tokens?.total) || 0), 0),
+      cost_incomplete: requests.some(row => row.value?.tokens?.status !== 'reported'),
+      position: this.options.runPosition?.() ?? null,
+    };
   }
   /** META pass evidence expansion (user decision 2026-11-17): one recorded ref resolved through the adapter.
    * The core knows no file layout; a missing ref is a value with state "missing", never a throw into the agent. */
@@ -932,6 +962,7 @@ export class SelfRoot extends LiveAgentSelf {
       // verbatim under the section budget; the mechanical transcription never selects by content.
       ...(round === 2 && prior ? [`ROUND 1: closed ${prior.closed} (${prior.outcome})${prior.reason ? `; reason: ${clip(String(prior.reason), 400)}` : ''}; carry: ${prior.carry?.length ? clip(prior.carry.join(' | '), 1200) : 'none'}`] : []),
       `WINDOW: ${n('request_record')} request(s), ${work} task action(s), ${n('tool_failed')} failed call(s), ${n('artifact_write')} artifact write(s), ${n('reflection_activated')} activation(s), ${images} image part(s) delivered; expand one request: read_self(section="evidence", ref="request:N")`,
+      ...(round === 1 ? [`AGENT_STAGE: ${clip(JSON.stringify(this.stageView(pass.window)), 650)}`] : []),
       `TRAJECTORY: ${trajNote}${trajectory.length ? `\n${trajectory.join('\n')}` : ''}`,
       `ARTIFACT: ${artifact}`,
       `SELF: revision ${this.revision}; components: ${clip(names, 220)}${more}; orchestration revision ${(this.current?.orchestration as any)?.revision ?? 1}; context order ${(this.policy.context?.order ?? []).join(',')}`,
@@ -1498,7 +1529,7 @@ export class SelfRoot extends LiveAgentSelf {
         this.fact('meta_pass_sweep_turn', { index: pass.sweep.index, focus: specialist?.focus ?? null, layer: specialist?.layer ?? null,
           request: this.request, outcome: refs.length ? 'change' : 'no_change', activation_refs: refs, rejected_writes: rejected });
         pass.sweep = { index: pass.sweep.index + 1, seen: this.reviewRequests, ledger: this.ledger.length };
-        if (pass.sweep.index >= META_SWEEP_SPECIALISTS.length) this.closeMechanically('sweep complete');
+        if (pass.selective || pass.sweep.index >= META_SWEEP_SPECIALISTS.length) this.closeMechanically('sweep complete');
       }
       if (this.review && this.request >= this.contract.budget.requests) {
         const skipped = META_SWEEP_SPECIALISTS.slice((this.metaPassTrigger as any).sweep.index).map(s => s.focus);
@@ -1511,7 +1542,7 @@ export class SelfRoot extends LiveAgentSelf {
     // Non-sweep META retains per-round request caps; sweep mode uses the seven-focus cap below.
     if (this.review && this.mech.meta && this.inEvolutionReview) {
       const capRound = (this.metaPassTrigger as any)?.round ?? 1;
-      const cap = this.inSweep ? META_SWEEP_SPECIALISTS.length : META_PASS_ROUND_CAPS[capRound - 1] ?? META_PASS_ROUND_CAPS[0];
+      const cap = this.inSweep ? (this.metaPassTrigger as any)?.selective ? 1 : META_SWEEP_SPECIALISTS.length : META_PASS_ROUND_CAPS[capRound - 1] ?? META_PASS_ROUND_CAPS[0];
       if (this.reviewRequests >= cap) {
         this.fact('meta_pass_capped', { review: this.review.id, requests: this.reviewRequests, cap, round: capRound, ...(this.inSweep ? { phase: 'sweep', specialist_index: (this.metaPassTrigger as any)?.sweep?.index } : {}) });
         this.closeMechanically('evolution pass request cap');
@@ -2030,16 +2061,19 @@ export class SelfRoot extends LiveAgentSelf {
     if (evolution && this.reviewChanged()) this.unresolvedReview = false;
     // The induction round opens either the existing capability round or the fixed M10 sweep at the next boundary.
     const passTrigger: any = this.metaPassTrigger;
+    const selectedSpecialist = this.options.metaRouting === 'selective'
+      ? META_SWEEP_SPECIALISTS.findIndex(specialist => specialist.focus.toLowerCase() === extra?.result?.next_specialist) : 0;
     const advance = evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1
+      && selectedSpecialist >= 0
       && (closedBy === 'agent' || closedBy === 'mechanical:evolution pass request cap');
     if (advance) {
       const result = (extra as any)?.result ?? null;
       const prior = { closed: row.ref, outcome, reason: result?.reason ?? null,
         carry: Array.isArray(result?.carry) ? result.carry.map((x: any) => String(x)) : null };
       if (this.mech.sweep) {
-        this.metaPassTrigger = { ...passTrigger, round: 2, phase: 'sweep', sweep: { index: 0, seen: 0, ledger: this.ledger.length }, prior };
+        this.metaPassTrigger = { ...passTrigger, round: 2, phase: 'sweep', selective: this.options.metaRouting === 'selective', sweep: { index: selectedSpecialist, seen: 0, ledger: this.ledger.length }, prior };
         this.fact('meta_pass_round', { from: 1, to: 'sweep', closure: row.ref, trigger: passTrigger.reason ?? null,
-          specialists: META_SWEEP_SPECIALISTS.map(s => s.focus), opens: 'next request boundary' });
+          specialists: this.options.metaRouting === 'selective' ? [META_SWEEP_SPECIALISTS[selectedSpecialist].focus] : META_SWEEP_SPECIALISTS.map(s => s.focus), opens: 'next request boundary' });
       } else {
         this.metaPassTrigger = { ...passTrigger, round: 2, prior };
         this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary' });
@@ -2049,7 +2083,7 @@ export class SelfRoot extends LiveAgentSelf {
     }
     this.review = undefined; this.currentMode = this.previousMode; if (!advance) this.metaPassTrigger = undefined;
     return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode,
-      ...(advance ? { next_round: this.mech.sweep ? { round: 'sweep', passes: META_SWEEP_SPECIALISTS.length, opens: 'next request boundary' } : { round: 2, of: 2, opens: 'next request boundary' } } : {}) };
+      ...(advance ? { next_round: this.mech.sweep ? { round: 'sweep', passes: this.options.metaRouting === 'selective' ? 1 : META_SWEEP_SPECIALISTS.length, opens: 'next request boundary' } : { round: 2, of: 2, opens: 'next request boundary' } } : {}) };
   }
   /** One mechanical closure (agent_end, crash, budget, second invalid exit). Never invents an Agent decision. */
   closeMechanically(reason: string, extra: any = {}) {

@@ -50,3 +50,28 @@ test('Kaggle M10 runs seven ordered hot-evolution turns after induction', async 
   assert.equal(self.review, undefined);
   assert.equal(self.export().root.ledger.filter((row: any) => row.type === 'meta_pass_sweep_turn').length, 7);
 });
+
+test('Kaggle selective Meta opens one focus and resumes task', async () => {
+  const self = new SelfRoot(contract(), undefined, validatePythonComponent, undefined, undefined, {
+    mechanisms: { meta: true, sweep: true }, metaRouting: 'selective',
+  } as any) as any;
+  const tick = () => self.boundary(() => undefined, () => undefined);
+  await tick();
+  await self.transaction({ baseRevision: 1, orchestration: {
+    revision: 1, roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }], decisions: [], transitions: [],
+    contract: { task_goal: 'Improve validation', task_acceptance: 'Record score',
+      loop_policy: { look_when: [{ on: 'segment_boundary', look: 'Compare results' }] } },
+  } });
+  await tick();
+  self.fact('request_record', { pin: { mode: 'execute', revision: 2 }, tokens: { total: 40, status: 'reported' } });
+  self.outcome({ source: 'kaggle_public_leaderboard', public_score: 0.8 });
+  await tick();
+  assert.equal(self.reviewExitSchema.properties.next_specialist.enum.includes('loop'), true);
+  assert.equal(self.stageView(self.metaPassTrigger.window).parent_recorded_tokens, 40);
+  self.exit({ result: { reason: 'research loop needs revision', next_specialist: 'loop' } });
+  await tick();
+  assert.equal(self.reviewSelfView().evolution_pass.sweep.focus, 'Loop');
+  self.pin();
+  await tick();
+  assert.equal(self.inSweep, false);
+});

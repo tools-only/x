@@ -96,7 +96,8 @@ export default function kaggleDemo(pi: ExtensionAPI) {
   contract.content_hash = selfRootHash(contract);
   const savedSelf = existsSync(liveSelfPath) ? JSON.parse(readFileSync(liveSelfPath, "utf8")) : undefined;
   const agentSelf = new SelfRoot(contract, savedSelf, validatePythonComponent, workspace, Number.MAX_SAFE_INTEGER, {
-    mechanisms: { meta: true, sweep: true }, reviewTools: ["read", "ls", "grep", "kaggle_status", "read_component", "run_harness_tool", "list_methods"],
+    mechanisms: { meta: true, sweep: true }, metaFallback: { unit: 'request', interval: 12 }, metaRouting: 'selective',
+    reviewTools: ["read", "ls", "grep", "kaggle_status", "read_component", "run_harness_tool", "list_methods"],
     reservedToolNames: capabilities, actionReceiptTypes: capabilities.filter(name => !["adapt", "explore", "read_self", "read_self_component", "reflect_component", "reflect_orchestration", "decide", "decide_exit", "decide_validation"].includes(name)),
     taskComplete: () => state.complete, finalDeliveryTools: ["finish"],
     runPosition: () => ({ submissions: (state.submissions ?? []).length,
@@ -146,7 +147,7 @@ export default function kaggleDemo(pi: ExtensionAPI) {
     };
     const contextGroups = (agentSelf.policy.context.order ?? ["prompts", "memory", "skills"]).map((key: string) => groups[key]).filter(Boolean);
     return [basePrompt, review ? (agentSelf.inSweep
-        ? "EVOLUTION SWEEP: the Kaggle task turn is suspended. The focus-specific material arrives in a request-scoped tail; use the live reflection tools in this Agent turn or conclude no-change in plain text. The host advances to the next focus after this response."
+        ? "EVOLUTION FOCUS: the Kaggle task turn is suspended. The focus-specific material arrives in a request-scoped tail; use the live reflection tools in this Agent turn or conclude no-change in plain text. The host resumes the task when this focus is complete."
         : "EVOLUTION PASS: the Kaggle task turn is suspended. Inspect the recorded submission, experiments, provider requests and active harness; then change the live Agent through reflect_component or reflect_orchestration when useful, and close the induction round with decide_exit. These writes are hot-applied before task work resumes.") : taskContext,
       `## LIVE AGENT SELF\nHarness components and orchestration are fields on this active Agent, not workspace files. reflect_component and reflect_orchestration atomically hot-modify them; the next provider request runs the new revision. Python tools are live tool components executed with run_harness_tool.\n\n${JSON.stringify(selfView)}`,
       `## ACTIVE HARNESS COMPONENTS\n${componentIndex()}`, agentSelf.policy.context.instruction,
