@@ -42,6 +42,8 @@ export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[
   contextItem?: (ref: string) => unknown;
   /** Adapter-declared run position facts for the pass entry (episode, step, delivered revision ...). Facts only. */
   runPosition?: () => unknown;
+  /** Adapter-declared task input identities and current environment state; facts only, with no inferred meaning. */
+  learningInputs?: () => unknown;
   /** Adapter resolver for read_self(section="evidence", ref, offset?): expands one recorded ref (request:N, artifact:vK).
    * A missing ref returns a value with state "missing"; the resolver never throws into the agent. */
   adapterEvidence?: (ref: string, offset?: number) => unknown;
@@ -150,7 +152,7 @@ export function entranceAskBlock(layer: boolean): string {
  * runner's task prompt and through its own orchestration contract. */
 export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. While a task is still active, an intermediate render/feedback checkpoint, an unresolved delivery stall, or sustained execution without artifact progress can open a bounded self-evolution pass. The current task pauses for that pass and resumes at the same step; evolution is not deferred until one task ends so the next can use it. Judgment stays with you.';
 /** META pass: the host opens an in-task checkpoint; the Agent judges and applies any harness change. */
-export const META_PASS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at an intermediate progress/feedback checkpoint, not completed; after this bounded pass, resume the same task at the same step. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads a component\'s source and retained revisions; reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit. Round 2 is seven focused self-evolution execution turns: analyze the focus, then apply a justified change through its reflection interface. If analysis needs a second request, it stays on the same focus; a successful hot modification or an explicit evidence-based no_change closes that focus. Resume this task after the seventh focus so later task work can use the active harness.';
+export const META_PASS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at an intermediate progress/feedback checkpoint, not completed; after this bounded pass, resume the same task at the same step. What exists: read_self(section="learning_environment", ref?) shows recorded conditions for learning and can anchor one exact event or artifact; read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads a component\'s source and retained revisions; reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit. Round 2 is seven focused self-evolution execution turns: analyze the focus, then apply a justified change through its reflection interface. If analysis needs a second request, it stays on the same focus; a successful hot modification or an explicit evidence-based no_change closes that focus. Resume this task after the seventh focus so later task work can use the active harness.';
 const META_SELECTIVE_STRATEGY = 'EVOLUTION CHECK DURING THE ACTIVE TASK. Read the current SelfRoot view and the preceding task stage. Close with decide_exit. Choose none to resume the task, or one specialist to inspect and modify. A selected specialist ends after its focused turn; then resume the task.';
 /** Two rounds (user decision 2026-11-17): induction and capability inference never share a round. Round 1 closes
  * with the agent's own reading of the window; round 2 consists of seven sequential, focus-specific turns. */
@@ -600,6 +602,7 @@ export class SelfRoot extends LiveAgentSelf {
   private heartbeatDue: number[] = [];
   private reviewRequests = 0;
   private metaPassTrigger?: { reason: string; facts: any; window: [number, number]; round?: number; specialistIndex?: number; prior?: any };
+  private learningReview?: { ref: string; request: number; ledger_window: [number, number]; since_review: string | null; status: string; unresolved: any[]; repairs: any[] };
   private reviewedQualityRefs = new Set<string>();
   private reviewObjectState: any = null;
   private pendingDelivery?: { run: () => Promise<any> };
@@ -645,7 +648,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.policy = copy(saved?.root?.policy ?? seedPolicy(contract.capabilities, options.reviewTools)); validatePolicy(this.policy, contract, this.outputLimit);
     if (saved?.root) {
       const r = saved.root;
-      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','heartbeatDue','reviewRequests','metaPassTrigger','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
+      for (const key of ['serial','request','ledger','lineage','definitions','windows','queue','currentMode','review','started','units','tokens','usd','paused','previousMode','activeReset','workRequests','heartbeatDue','reviewRequests','metaPassTrigger','learningReview','conditionSet','settlementCount','lastSettlementReview','taskEnded','taskEndPending','unresolvedReview','segmentStart','segmentRefs','contextByRequest'] as const) if (r[key] !== undefined) (this as any)[key] = copy(r[key]);
       if (r.reviewedQualityRefs !== undefined) this.reviewedQualityRefs = new Set(r.reviewedQualityRefs);
       this.consumed = new Set(r.consumed); this.providerCosts = new Set(r.providerCosts);
       if (r.daemonRecord) this.daemonRecord = copy(r.daemonRecord);
@@ -703,7 +706,7 @@ export class SelfRoot extends LiveAgentSelf {
       windows: this.windows, queue: this.queue, currentMode: this.currentMode, review: this.review,
       consumed: [...this.consumed], started: this.started, units: this.units, tokens: this.tokens, usd: this.usd,
       paused: this.paused, previousMode: this.previousMode, providerCosts: [...this.providerCosts], policy: this.policy,
-      workRequests: this.workRequests, reviewRequests: this.reviewRequests, metaPassTrigger: this.metaPassTrigger ?? null, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
+      workRequests: this.workRequests, reviewRequests: this.reviewRequests, metaPassTrigger: this.metaPassTrigger ?? null, learningReview: this.learningReview ?? null, reviewedQualityRefs: [...this.reviewedQualityRefs], daemonRecord: this.daemonRecord ?? null,
       conditionSet: this.conditionSet, settlementCount: this.settlementCount, lastSettlementReview: this.lastSettlementReview,
       taskEnded: this.taskEnded ?? null, taskEndPending: this.taskEndPending ?? null, unresolvedReview: this.unresolvedReview, segmentStart: this.segmentStart, segmentRefs: this.segmentRefs, contextByRequest: this.contextByRequest,
       activeReset: this.activeReset ?? null, resetInProgress: this.resetInProgress ?? null, pending: this.pending ? { revision: this.pending.revision, addresses: this.pending.addresses, status: 'intent', review: this.pendingReview ?? null } : null }) };
@@ -730,8 +733,9 @@ export class SelfRoot extends LiveAgentSelf {
     }
     return { rows, next: offset + rows.length < this.ledger.length ? offset + rows.length : null, total: this.ledger.length };
   }
-  detail(section: string, offset = 0, count = 20): any {
+  detail(section: string, offset = 0, count = 20, ref?: string): any {
     if (section === 'pin') return this.pinView();
+    if (section === 'learning_environment') return this.learningEnvironment(ref);
     if (section === 'self') return { ...this.mirror(), ledger: this.read(offset, count), conditions: { settlement_count: this.settlementCount, conditions: copy(this.conditionSet), published_steps: copy(FLOOR_STEPS) } };
     if (section === 'ledger') return this.read(offset, count);
     if (section === 'policy') return copy(this.policy);
@@ -748,6 +752,151 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'evidence') throw Error('evidence needs ref: read_self(section="evidence", ref="request:N" | "artifact:vK")');
     if (section === 'ledger' && (offset as any) === undefined) return this.read(0, count);
     throw Error('unknown self section');
+  }
+  /** A read-only map of the conditions in which this Agent can learn from task work.
+   * It points into the same contract, ledger and component pool; unknown semantic links stay unknown. */
+  learningEnvironment(ref?: string) {
+    const latestInput = this.ledger.findLast(r => r.type === 'provider_input');
+    const latestRequest = this.ledger.findLast(r => r.type === 'request_record');
+    const feedback = this.ledger.filter(r => ['unit_preview', 'acceptance_result', 'task_outcome', 'validation_delivered'].includes(r.type));
+    const components = this.active();
+    const exactRow = ref ? this.ledger.find(r => r.ref === ref) : undefined;
+    const evidence = ref && /^(request:\d+|artifact:v\d+)$/.test(ref) ? this.evidence(ref) : undefined;
+    const focusArtifactVersion = ref?.startsWith('artifact:v') && evidence?.state === 'recorded' ? Number(ref.slice('artifact:v'.length))
+      : Number(exactRow?.value?.artifactVersion ?? exactRow?.value?.receipt?.artifactVersion);
+    const focusArtifactHash = evidence?.render?.source_hash ?? exactRow?.value?.artifactHash ?? exactRow?.value?.receipt?.artifactHash;
+    const matchingActions = Number.isSafeInteger(focusArtifactVersion) && typeof focusArtifactHash === 'string'
+      ? this.snapshot().actions.filter((a: any) => a.artifactVersion === focusArtifactVersion && a.artifactHash === focusArtifactHash)
+      : [];
+    const association = { action_receipts: matchingActions.slice(-8).map((a: any) => ({ ref: a.ref, type: a.type,
+      artifactVersion: a.artifactVersion, artifactHash: a.artifactHash })),
+      state: matchingActions.length ? 'exact_version_and_hash' : 'unknown' };
+    const focus = ref === undefined ? null : exactRow
+      ? { ref, state: 'recorded', source: 'ledger', kind: exactRow.kind, type: exactRow.type,
+          request: exactRow.request, revision: exactRow.revision,
+          value_preview: JSON.stringify(exactRow.value ?? null).slice(0, 1200),
+          value_truncated: JSON.stringify(exactRow.value ?? null).length > 1200,
+          full: `read_self(section="ledger", offset=${this.ledger.indexOf(exactRow)}, count=1)`, association }
+      : evidence?.state === 'recorded'
+        ? { ref, state: 'recorded', source: 'adapter evidence', kind: 'host_record',
+            identity: ref.startsWith('artifact:') ? { render_revision: Number(ref.slice('artifact:v'.length)),
+              source_hash: evidence.render?.source_sha256 ?? evidence.render?.source_hash ?? null } : { request: evidence.request ?? null },
+            value_preview: JSON.stringify(evidence).slice(0, 1200),
+            value_truncated: JSON.stringify(evidence).length > 1200,
+            full: `read_self(section="evidence", ref="${ref}")`, association }
+        : evidence?.state === 'error' ? { ref, state: 'error', source: 'adapter evidence', error: evidence.error,
+            full: `read_self(section="evidence", ref="${ref}")` }
+        : { ref, state: 'missing', known_refs: 'read_self(section="ledger") or read_self(section="evidence", ref="request:N"|"artifact:vK")',
+          unknown: 'No exact recorded event or adapter evidence matched this ref.' };
+    return {
+      focus,
+      environment: { boundaries: copy(this.contract.boundaries), acceptance: copy(this.contract.acceptance),
+        declared_inputs: this.options.learningInputs?.() ?? null,
+        current_task_state: 'read_self(section="continuity")',
+        authority: 'Host contract and recorded task receipts; task facts not recorded here are unknown.' },
+      host_action: { available_tools: this.surface(), writable: copy(this.contract.writable), action_receipt_types: [...(this.knownActionTypes ?? [])].sort(),
+        task_actions: 'read_self(section="ledger")',
+        unknown: this.knownActionTypes?.size ? [] : ['No action receipt types declared by this adapter.'] },
+      observations: { recorded: this.ledger.some(r => ['provider_input', 'request_record', 'task_outcome', 'unit_preview'].includes(r.type)),
+        operating_facts: this.mech.observation ? this.observationDigest() : null,
+        detail: 'read_self(section="observation"|"segments"|"requests"|"ledger")',
+        unknown: latestInput ? [] : ['No provider input is recorded yet; delivered observations are unknown.'] },
+      resources: this.resources(),
+      context: { active_policy: 'read_self(section="policy")', latest_composition: latestRequest?.value?.composition ?? null,
+        latest_provider_input: latestInput?.ref ?? null, provider_delivery: latestInput ? 'host assembled input; remote delivery, model attention and semantic use unverified' : 'unknown',
+        omitted_item_recovery: 'read_self(section="context_item", ref)',
+        unknown: latestRequest ? [] : ['No request composition is recorded yet.'] },
+      feedback: { recorded_refs: feedback.slice(-12).map(r => ({ ref: r.ref, type: r.type })), total: feedback.length,
+        unknown: feedback.length ? ['Causal contribution of a self change to task quality is unknown.'] : ['No task feedback is recorded yet.'] },
+      assessment: this.learningAssessment(),
+      reuse: { components: components.map(c => ({ kind: c.kind, name: c.name, version: c.version })),
+        change_facts: this.metaAcceptance(), source: 'read_self(section="self") and read_self_component(kind,name,version?)',
+        semantic_use: 'unknown' },
+    };
+  }
+  /** Optional Agent judgment. Exact evidence is checked, but the judgment is never promoted to a host fact. */
+  assessLearning(value: any) {
+    if (!this.mech.meta) throw Error('learning assessment requires Meta');
+    if (value?.retire_ref !== undefined) {
+      const pending = this.learningAssessment();
+      if (Object.keys(value).length !== 1 || pending?.ref !== value.retire_ref) throw Error('retire_ref must name the pending learning assessment');
+      return this.fact('learning_assessment_retired', { assessment_ref: pending.ref });
+    }
+    if (!value || typeof value.finding !== 'string' || !value.finding.trim() || value.finding.length > 1200
+      || !Array.isArray(value.evidence_refs) || !value.evidence_refs.length || value.evidence_refs.length > 8
+      || !value.evidence_refs.every((ref: any) => typeof ref === 'string')
+      || (value.condition !== undefined && !['missing', 'inadequate', 'blind', 'late', 'usable'].includes(value.condition))
+      || (value.method !== undefined && (typeof value.method !== 'string' || value.method.length > 300))
+      || (value.method_version !== undefined && (typeof value.method_version !== 'string' || value.method_version.length > 100))
+      || (value.next_decision !== undefined && (typeof value.next_decision !== 'string' || value.next_decision.length > 500))
+      || (value.unknowns !== undefined && (!Array.isArray(value.unknowns) || value.unknowns.length > 8 || !value.unknowns.every((x: any) => typeof x === 'string' && x.length <= 300))))
+      throw Error('assessment needs a qualitative finding and 1-8 exact evidence_refs; condition, method, method_version, next_decision and unknowns are optional');
+    const evidence = value.evidence_refs.map((ref: string) => {
+      const row = this.ledger.find(r => r.ref === ref && r.kind === 'fact');
+      if (row) return { ref, source: 'ledger', type: row.type, revision: row.revision, record_hash: hash(row.value) };
+      const adapter = /^(request:\d+|artifact:v\d+)$/.test(ref) ? this.evidence(ref) : null;
+      if (adapter?.state === 'recorded') {
+        const artifact = /^artifact:v(\d+)$/.exec(ref);
+        if (artifact && (Number(adapter.render?.revision) !== Number(artifact[1])
+          || typeof (adapter.render?.source_sha256 ?? adapter.render?.source_hash) !== 'string'))
+          throw Error(`assessment evidence ${ref} lacks an exact render revision and source hash`);
+        return { ref, source: 'adapter', ...(artifact
+          ? { render_revision: Number(artifact[1]), source_hash: adapter.render.source_sha256 ?? adapter.render.source_hash }
+          : { request: adapter.request }), record_hash: hash(adapter) };
+      }
+      throw Error(`assessment evidence ${ref} is missing or is an Agent claim`);
+    });
+    return this.claim('learning_assessment', { finding: value.finding.trim(), condition: value.condition ?? null,
+      method: value.method ?? null, method_version: value.method_version ?? null, next_decision: value.next_decision ?? null,
+      evidence_refs: [...new Set(value.evidence_refs)], unknowns: value.unknowns ?? [], evidence, status: 'agent_claim' });
+  }
+  learningAssessment() {
+    if (!this.mech.meta) return null;
+    const row = this.ledger.findLast(r => r.type === 'learning_assessment');
+    if (!row) return null;
+    const exposure = this.ledger.findLast(r => r.type === 'learning_assessment_exposed' && r.value?.assessment_ref === row.ref);
+    const decision = this.ledger.findLast(r => r.type === 'learning_decision' && r.value?.assessment_ref === row.ref);
+    const retired = this.ledger.findLast(r => ['learning_assessment_retired', 'learning_assessment_followup'].includes(r.type) && r.value?.assessment_ref === row.ref);
+    if (decision || retired) return null;
+    return { ref: row.ref, ...copy(row.value), exposed_request: exposure?.value?.request ?? null,
+      delivery: exposure ? 'included in provider input; model attention and semantic use unverified' : 'pending next task request' };
+  }
+  /** Host-maintained resident review material; Agent still owns the judgment. */
+  private openLearningReview() {
+    if (!this.mech.meta) return null;
+    const previous = this.learningReview?.ref ?? null;
+    const start = previous ? (this.ledger.findIndex(r => r.ref === previous) + 1) : 0;
+    const unresolved = this.ledger.filter(r => r.type === 'learning_assessment' && !this.ledger.some(x =>
+      ['learning_decision', 'learning_assessment_retired', 'learning_assessment_followup'].includes(x.type) && x.value?.assessment_ref === r.ref));
+    const repairs = this.ledger.slice(start).filter(r => ['reflection_activated', 'activation_failed', 'tool_failed', 'learning_assessment_followup'].includes(r.type));
+    const review = { ref: `learning-review:${this.request}`, request: this.request, ledger_window: [start, this.ledger.length],
+      since_review: previous, status: 'judgment_required', unresolved: unresolved.map(r => ({ ref: r.ref, finding: r.value?.finding, condition: r.value?.condition })),
+      repairs: repairs.slice(-12).map(r => ({ ref: r.ref, type: r.type })) };
+    this.learningReview = review;
+    return review;
+  }
+  private learningReviewBlock() {
+    if (!this.mech.meta || !this.learningReview) return null;
+    return { ...copy(this.learningReview), environment_facts_ref: 'read_self(section="learning_environment")',
+      exact_evidence: 'read_self(section="learning_environment", ref?)',
+      required_judgment: 'usable, missing, inadequate, blind, late, or unknown',
+      instruction: 'This induction turn must inspect learning conditions, report a judgment with exact evidence_refs, and repair a condition when evidence warrants it. A 7-pass specialist turn remains for capability changes.' };
+  }
+  noteLearningExposure(ref: string, request: number) {
+    const pending = this.learningAssessment();
+    if (pending?.ref === ref && pending.exposed_request === null) this.fact('learning_assessment_exposed', { assessment_ref: ref, request });
+  }
+  noteLearningFollowup(tool: string) {
+    const pending = this.learningAssessment();
+    if (pending && pending.exposed_request !== null && this.request >= pending.exposed_request)
+      this.fact('learning_assessment_followup', { assessment_ref: pending.ref, exposed_request: pending.exposed_request,
+        request: this.request, tool, semantic_use: 'unknown' });
+  }
+  linkLearningDecision(ref: string, decision: any) {
+    const assessment = this.learningAssessment();
+    if (!assessment || assessment.ref !== ref || assessment.exposed_request === null) throw Error('assessment_ref must name a pending judgment exposed in an earlier provider input');
+    return this.fact('learning_decision', { assessment_ref: ref, decision_ref: decision.ref ?? null,
+      decision_id: decision.decisionId ?? null, status: 'agent_cited_after_exposure; semantic contribution unverified' });
   }
   /** Effective mechanism switches; the adapter may turn individual mechanisms off for ablation runs. */
   get mech(): Required<SelfRootMechanisms> {
@@ -1031,6 +1180,7 @@ export class SelfRoot extends LiveAgentSelf {
     return [
       `TASK GOAL: ${contract?.task_goal ?? '(empty - this design turn fills it)'}`,
       `TASK ACCEPTANCE: ${contract?.task_acceptance ?? '(empty - this design turn fills it)'}`,
+      'LEARNING ENVIRONMENT: inspect the recorded path from task environment through host actions, observations, resources and context to feedback and later reuse with read_self(section="learning_environment", ref?). The same root holds these facts; missing links and semantic use remain unknown. You may use existing reflection and task work to repair a condition when evidence warrants it.',
       ...(() => { const horizon = this.options.taskEpisodes?.(); return horizon && horizon.total > 1 ? [
         `TASK EPISODES: ${horizon.active} of ${horizon.total}. A transition to "complete" closes the active episode; the next episode's frozen task sources then replace data/ in this same root and serial session; the run ends when the last episode completes. Closed episodes do not reopen.`] : []; })(),
       ...objects,
@@ -1845,6 +1995,7 @@ export class SelfRoot extends LiveAgentSelf {
     try { object_state = this.options.observeCurrentArtifact?.() ?? null; } catch (error) { object_state = { refresh: { fresh: false, failed: true, error: String(error) } }; }
     this.reviewObjectState = object_state;
     if (this.inEvolutionReview) {
+      if (this.mech.meta && (this.metaPassTrigger as any)?.round === 1) this.openLearningReview();
       const shown = this.reviewView().quality_facts.map((x: any) => x.ref);
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
@@ -1931,7 +2082,7 @@ export class SelfRoot extends LiveAgentSelf {
       if (specialist.id === 'context') return e.kind === 'policy' && e.name === 'policy.context';
       return e.kind === 'orchestration' || (e.kind === 'policy' && e.name !== 'policy.context');
     }) : allEntries;
-    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: focusedEntries, ...(this.mech.l4 && !specialist ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(specialist ? 900 : 2000) } : {}), facts, memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")',
+    return { revision: this.serial, strategy: this.reviewStrategy(true), categories, entries: focusedEntries, ...(this.mech.l4 && !specialist ? { layers: this.layersView(declared) } : {}), ...(this.mech.observation ? { observation: this.observationText(specialist ? 900 : 2000) } : {}), facts, learning_environment: 'read_self(section="learning_environment", ref?)', ...(this.mech.meta && this.inEvolutionReview && !specialist ? { learning_conditions_review: this.learningReviewBlock() } : {}), memory_policy_fact: memories.length ? null : 'The current memory policy has no memory component to manage.', object_state: this.review ? this.reviewObjectState : null, due_windows: this.dueWindows, review_requests_so_far: this.reviewRequests, full: 'read_self(section="self")',
       ...(this.inEvolutionReview && this.mech.meta && this.metaPassTrigger ? { evolution_pass: { ...this.metaPassTrigger.facts, ...(pass.prior ? { prior: { closed: pass.prior.closed, outcome: pass.prior.outcome, reason: pass.prior.reason, carry: pass.prior.carry } } : {}), ...(specialist ? { specialist: specialist.id, specialist_index: (pass.specialistIndex ?? 0) + 1, specialist_count: META_PASS_SPECIALISTS.length, ...(specialist.id === 'context' ? { context_policy: policyValue(this.policy.context), last_request_composition: latestRequest?.value?.composition ?? null } : {}) } : {}), ...(this.review?.pass_entry ? { entry: this.review.pass_entry } : {}) } } : {}) };
   }
   /** EVO_L4: the four layers as coordinates - a regrouping of facts already recorded elsewhere; no new counters. */

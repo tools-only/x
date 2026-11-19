@@ -146,14 +146,14 @@ export function selfRootToolSchema(evo: SelfRoot, name: string): any {
   }
   if (name === 'decide_exit') return evo.exitOperationSchema;
   if (name === 'decide_validation') return evo.dueWindows.length ? providerOperationSchema('validation') : undefined;
-  if (name === 'decide') return DECIDE_SCHEMA;
+  if (name === 'decide') return decideSchema(evo.mech.meta);
   return null;
 }
-const DECIDE_SCHEMA = { type: 'object', properties: {
-  op: { type: 'string', enum: ['enter_mode', 'capsule', 'inherit', 'reset'], description: 'Omit for an ordinary task decision (decisionId, result).' },
+const decideSchema = (meta: boolean): any => ({ type: 'object', properties: {
+  op: { type: 'string', enum: ['enter_mode', 'capsule', 'inherit', 'reset', ...(meta ? ['assessment'] : [])], description: 'Omit for an ordinary task decision (decisionId, result).' },
   decisionId: { type: 'string' }, result: {}, mode: { type: 'string' }, value: { type: 'object' },
-  summary: { type: 'string', description: 'Optional reset note; the host continuity pack is built from the ledger.' } }, required: [] as string[], additionalProperties: false };
-const DECIDE_FIELDS = Object.keys(DECIDE_SCHEMA.properties);
+  ...(meta ? { assessment_ref: { type: 'string', description: 'Optional exact Agent learning assessment used for this task decision; it must have been exposed in an earlier request.' } } : {}),
+  summary: { type: 'string', description: 'Optional reset note; the host continuity pack is built from the ledger.' } }, required: [] as string[], additionalProperties: false });
 
 export function installSelfRootTools({ pi, evo, manifest, root, workspace, text, persist, episode = () => 1 }: any) {
   const active = () => typeof manifest === 'function' ? manifest() : manifest;
@@ -171,10 +171,10 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
   // Registered TypeBox shapes are permissive envelopes; the provider receives the descriptor schema
   // (ppt_demo_extension context_with_system) and dispatch re-checks it with normalizeOperation.
   const open = (keys: string[]) => Type.Object(Object.fromEntries(keys.map(k => [k, Type.Optional(Type.Any())])));
-  tool('read_self', 'Expand the same root: self (full mirror plus S_n/C_n), policy, contract, ledger pages (offset/count), definition (offset=revision), windows, conditions, lineage, continuity, segments (per-unit summaries), requests (per-request records), observation (recorded operating facts: repeats, costs, losses, rejections, trajectory, outcome paths), evidence (ref="request:N" | "artifact:vK": one recorded provider request, paged by offset, or one rendered artifact version) or context_item (ref: the full content of an item the context policy omitted; read-only). The packed evidence is a floor; full self and ledger remain accessible. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
+  tool('read_self', 'Expand the same root: learning_environment (how task environment, host action, observations, resources, context, feedback and component reuse connect; optional ref selects one exact ledger event, request or artifact and reports missing if unmatched), self (full mirror plus S_n/C_n), policy, contract, ledger pages (offset/count), definition (offset=revision), windows, conditions, lineage, continuity, segments (per-unit summaries), requests (per-request records), observation (recorded operating facts: repeats, costs, losses, rejections, trajectory, outcome paths), evidence (ref="request:N" | "artifact:vK": one recorded provider request, paged by offset, or one rendered artifact version) or context_item (ref: the full content of an item the context policy omitted; read-only). The packed evidence is a floor; full self and ledger remain accessible. op=replay runs only a pure capsule method in isolated WASI; no world replay.',
     Type.Object({ section: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 40 })),
       op: Type.Optional(Type.Literal('replay')), ref: Type.Optional(Type.String()), source: Type.Optional(Type.String()) }),
-    async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : a.section === 'evidence' ? evo.evidence(a.ref,a.offset ?? 0) : a.section === 'context_item' && a.ref ? evo.contextItem(a.ref) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20));
+    async (a: any) => a.op === 'replay' ? evo.replay(a.ref,a.source) : a.section === 'evidence' ? evo.evidence(a.ref,a.offset ?? 0) : a.section === 'context_item' && a.ref ? evo.contextItem(a.ref) : evo.detail(a.section ?? 'policy',a.offset ?? 0,a.count ?? 20,a.ref));
   const orchestration = operationContract('orchestration');
   tool(orchestration.name, orchestration.description, open([...Object.keys(orchestration.properties), 'evolution_layer']),
     (a: any) => evo.transaction(normalizeOperation('orchestration', a, undefined, { layer: evo.mech.l4 })));
@@ -189,13 +189,16 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
     const v = normalizeOperation('validation', a);
     return evo.interpret(v.window);
   });
-  tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts, versions and evidence refs.',
-    open(DECIDE_FIELDS), async (a: any, ctx: any) => {
-      const unknown = Object.keys(a ?? {}).filter(k => a[k] !== undefined && !DECIDE_FIELDS.includes(k));
-      if (unknown.length) throw Error(`decide: unknown field(s) ${unknown.join(', ')}; visible fields: ${DECIDE_FIELDS.join(', ')}`);
+  const decideFields = Object.keys(decideSchema(evo.mech.meta).properties);
+  tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts and versions.'
+    + (evo.mech.meta ? ' Optional assessment(value: finding and exact evidence_refs; condition/method/method_version/next_decision/unknowns may be added, or retire_ref). This is an Agent claim carried to one later task request.' : ''),
+    open(decideFields), async (a: any, ctx: any) => {
+      const unknown = Object.keys(a ?? {}).filter(k => a[k] !== undefined && !decideFields.includes(k));
+      if (unknown.length) throw Error(`decide: unknown field(s) ${unknown.join(', ')}; visible fields: ${decideFields.join(', ')}`);
       if (a.op === 'enter_mode') return evo.enterMode(a.mode);
       if (a.op === 'capsule') return evo.capsule(a.value);
       if (a.op === 'inherit') return evo.inherit(a.value ?? {});
+      if (a.op === 'assessment') return evo.assessLearning(a.value);
       if (a.op === 'reset') {
         const reset = await evo.requestReset();
         // Host continuity pack from the persisted ledger; the Agent note is optional semantic text.
@@ -212,7 +215,10 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       }
       if (a.op) throw Error('unknown decide operation');
       if (evo.reviewExitSchema) throw Error('task decisions resume after this review; close it with decide_exit');
+      if (a.assessment_ref && (evo.learningAssessment()?.ref !== a.assessment_ref || evo.learningAssessment()?.exposed_request === null))
+        throw Error('assessment_ref must name a pending judgment exposed in an earlier provider input');
       const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: [], result: a.result });
+      if (a.assessment_ref && decision.accepted) evo.linkLearningDecision(a.assessment_ref, decision);
       return { decision, transition: evo.advance() };
     });
   tool('acceptance', 'Observe the fixed acceptance checker on the latest rendered source. Returns literal coverage, source/renderer/checker hashes and unknowns; it does not decide quality or retain a self revision.',

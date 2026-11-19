@@ -41,6 +41,41 @@ def fixture_manifest():
             "checker": {"version": "v1", "sha256": hashlib.sha256((PROJECT / "demo/self_root_ppt.ts").read_bytes()).hexdigest()}, "settings": {}, "engineering_commit": "test"}
 
 
+def test_learning_environment_read_through_installed_pi(tmp_path):
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(fixture_manifest()), encoding="utf-8")
+    steps = [
+        {"name": "read_self", "arguments": {"section": "learning_environment"}},
+        {"name": "read_self", "arguments": {"section": "learning_environment", "ref": "ledger:0"}},
+        {"name": "read_self", "arguments": {"section": "learning_environment", "ref": "artifact:v999"}},
+    ]
+    command = [shutil.which("node"), str(PROJECT / "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"), "--mode", "rpc",
+               "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-builtin-tools",
+               "--extension", str(PROJECT / "demo/ppt_demo_extension.ts"), "--extension", str(PROJECT / "tests/pi_external_benchmark_provider.ts"),
+               "--provider", "offline-external-test", "--model", "scripted", "--session", str(tmp_path / "session.jsonl")]
+    env = {"PI_CODING_AGENT_DIR": str(tmp_path / ".pi-agent"), "PI_AUTORESEARCH_E2E_ROOT": str(tmp_path), "PPT_DEMO_ROOT": str(tmp_path),
+           "EVO_MANIFEST": str(path), "EVO_META": "1", "PPT_DEMO_DEADLINE": "4102444800000", "PPT_DEMO_BUDGET_USD": "1",
+           "PPT_DEMO_REQUEST_RESERVE_USD": "0.001", "PPT_DEMO_INPUT_USD_PER_MILLION": "0", "PPT_DEMO_OUTPUT_USD_PER_MILLION": "0",
+           "PI_EXTERNAL_STEPS": json.dumps(steps), "PI_EXTERNAL_USAGE_TOKENS": "1"}
+    with PiKernel(command, cwd=str(tmp_path), env=env, timeout=90) as kernel:
+        assert kernel.prompt("Inspect the task learning environment.").get("success") is not False
+        kernel.wait_for_agent_events(timeout=180)
+    contexts = [json.loads(line)["context"] for line in (tmp_path / "provider-contexts.jsonl").read_text(encoding="utf-8").splitlines()]
+    first = json.dumps(contexts[0])
+    assert "LEARNING ENVIRONMENT:" in first
+    assert 'read_self(section=\\\"learning_environment\\\"' in first
+    calls = [json.loads(line)["message"] for line in (tmp_path / "session.jsonl").read_text(encoding="utf-8").splitlines()
+             if json.loads(line).get("message", {}).get("role") == "toolResult" and json.loads(line)["message"].get("toolName") == "read_self"]
+    assert len(calls) >= 3
+    first_result = json.loads(calls[0]["content"][0]["text"])
+    assert "host_action" in first_result and "context" in first_result and "feedback" in first_result
+    assert first_result["environment"]["declared_inputs"]["source_hashes"] == {}
+    exact = json.loads(calls[1]["content"][0]["text"])["focus"]
+    assert exact["ref"] == "ledger:0" and exact["kind"] == "fact" and exact["state"] == "recorded"
+    missing = json.loads(calls[2]["content"][0]["text"])["focus"]
+    assert missing["ref"] == "artifact:v999" and missing["state"] == "missing"
+
+
 def test_same_root_pi_schema_mode_memory_tool_activation_and_failure(tmp_path):
     manifest = fixture_manifest()
     path = tmp_path / "manifest.json"

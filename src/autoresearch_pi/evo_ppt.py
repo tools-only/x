@@ -168,7 +168,8 @@ def renderer_preflight(root: Path):
 
 
 def freeze(root: Path, source: Path, registration: Path | None, caps: dict, authority: str, arm="B",
-           provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None):
+           provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None,
+           brief_addendum: str | None = None):
     root = root.resolve()
     if not root.is_relative_to(PROJECT):
         raise ValueError("experiment writes must remain in this worktree")
@@ -197,6 +198,9 @@ def freeze(root: Path, source: Path, registration: Path | None, caps: dict, auth
         (root / "workspace/AGENTS.md").unlink()
     units = content_units((root / "workspace/data/material.txt").read_text(encoding="utf-8"))
     append_frozen_units(root / "workspace/data/instructions.md", units)
+    if brief_addendum:
+        brief = root / "workspace/data/instructions.md"
+        brief.write_text(brief.read_text(encoding="utf-8") + "\n" + brief_addendum.strip() + "\n", encoding="utf-8")
     # The development AGENTS.md and constitution are never task context.
     sources = {f"data/{p.name}": file_hash(p) for p in (root / "workspace/data").iterdir() if p.is_file()}
     body = {"source": "user_contract", "authority": authority, "decisions": "FINAL 2.1 G1/G5/G7; explicit round authority above",
@@ -270,7 +274,8 @@ def case_assets(case: Path) -> Path:
 
 
 def freeze_task_family(root: Path, cases, registration: Path | None, caps: dict, authority: str,
-                       provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None):
+                       provider=DEFAULT_PROVIDER, model_id=DEFAULT_MODEL, pi_config_dir: Path | None = None,
+                       brief_addendum: str | None = None):
     """Freeze an ordered task family in one root. One case keeps the single-task manifest unchanged; more
     cases add a frozen episodes list: episode 1 is the live workspace, and each later episode's staged
     sources wait under cases/<id>/workspace/data until the agent's own transition to complete closes the
@@ -278,7 +283,7 @@ def freeze_task_family(root: Path, cases, registration: Path | None, caps: dict,
     assets = [case_assets(c) for c in ([cases] if isinstance(cases, Path) else list(cases))]
     if len({a.parent.name for a in assets}) != len(assets):
         raise ValueError("task family requires distinct case ids")
-    manifest = freeze(root, assets[0], registration, caps, authority, "B", provider, model_id, pi_config_dir)
+    manifest = freeze(root, assets[0], registration, caps, authority, "B", provider, model_id, pi_config_dir, brief_addendum)
     root = root.resolve()
     manifest["task_id"] = assets[0].parent.name
     manifest["comparison"] = "One authorized task; unit completion boundaries; no task pool or switching."
@@ -673,6 +678,7 @@ def main():
     parser.add_argument("--prepare-only",action="store_true",help="freeze draft task inputs and local rendering, without an authorized run manifest or any inference")
     parser.add_argument("--round-plan",type=Path,help="JSON: total_caps, calibration_caps, b_caps; all within the named numeric authorization")
     parser.add_argument("--task-family",action="store_true",help="freeze the tagged PPT task-family pool; does not launch unless --run is also given")
+    parser.add_argument("--brief-addendum",type=Path,help="optional task-prompt text appended to data/instructions.md before freeze; recorded in the manifest hash")
     args = parser.parse_args()
     model_id = args.model or (DEFAULT_MODEL if args.provider == DEFAULT_PROVIDER else "gpt-6-luna")
     root = args.root.resolve()
@@ -708,10 +714,11 @@ def main():
             parser.error("--sources requires --task-family")
         registration = args.registration.resolve() if args.registration else None
         caps = json.loads(args.caps.read_text(encoding="utf-8"))
+        brief_addendum = args.brief_addendum.read_text(encoding="utf-8") if args.brief_addendum else None
         manifest = (freeze_task_family(root,[s.resolve() for s in (args.sources or [args.source])],registration,caps,args.authority,
-                                       args.provider,model_id,args.pi_config_dir)
+                                       args.provider,model_id,args.pi_config_dir,brief_addendum)
                     if args.task_family else freeze(root,args.source.resolve(),registration,caps,args.authority,args.arm,
-                                                    args.provider,model_id,args.pi_config_dir))
+                                                    args.provider,model_id,args.pi_config_dir,brief_addendum))
         print(json.dumps({"frozen":str(root),"units":len(manifest["units"])}))
     if args.run:
         print(json.dumps(run(root),ensure_ascii=False))

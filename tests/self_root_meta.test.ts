@@ -22,6 +22,100 @@ const design = { ...seed, contract: taskSide };
 const fields = readFileSync(new URL('../demo/prompts/self_root_meta_fields.md', import.meta.url), 'utf8');
 const recordableTool = async (_path: string, _source: string) => ({ kind: 'tool', name: 'deck_check', description: 'fixture', enabled: true, program: true });
 
+test('learning environment points to exact recorded facts and keeps missing links unknown', async () => {
+  const s = make({ meta: true }, { learningInputs: () => ({ source_hashes: { 'data/input.txt': 'frozen-hash' } }),
+    adapterEvidence: (ref: string) => ref === 'artifact:v4'
+      ? { ref, state: 'recorded', render: { revision: 4, source_hash: 'exact-hash' } }
+      : ref === 'request:5' ? { ref, state: 'error', error: 'fixture read failed' } : { ref, state: 'missing' } });
+  await tick(s);
+  const initial = s.detail('learning_environment');
+  assert.equal(initial.environment.declared_inputs.source_hashes['data/input.txt'], 'frozen-hash');
+  assert.ok(initial.host_action.writable.includes('policy'));
+  assert.match(initial.observations.unknown.join(' '), /unknown/);
+  assert.match(initial.feedback.unknown.join(' '), /No task feedback/);
+  assert.match(s.metaBoard(), /read_self\(section="learning_environment"/);
+  const fact = s.fact('unit_preview', { artifactVersion: 4, artifactHash: 'exact-hash', note: 'x'.repeat(3000) });
+  const focused = s.detail('learning_environment', 0, 20, fact.ref).focus;
+  assert.equal(focused.state, 'recorded');
+  assert.equal(focused.kind, 'fact');
+  assert.equal(focused.type, 'unit_preview');
+  assert.equal(focused.value_truncated, true);
+  assert.match(focused.full, /read_self\(section="ledger", offset=\d+, count=1\)/);
+  assert.equal(s.detail('learning_environment', 0, 20, 'ledger:missing').focus.state, 'missing');
+  assert.equal(s.detail('learning_environment', 0, 20, 'request:999').focus.state, 'missing');
+  assert.equal(s.detail('learning_environment', 0, 20, 'request:5').focus.state, 'error');
+  s.recordAction('office.render', { artifactVersion: 4, artifactHash: 'exact-hash' }, true, true);
+  const artifact = s.detail('learning_environment', 0, 20, 'artifact:v4').focus;
+  assert.deepEqual(artifact.identity, { render_revision: 4, source_hash: 'exact-hash' });
+  assert.equal(artifact.association.state, 'exact_version_and_hash');
+  assert.equal(artifact.association.action_receipts[0].type, 'office.render');
+  assert.ok(s.reviewSelfView().learning_environment.includes('learning_environment'));
+});
+
+test('optional qualitative trial finding reaches a later task request and retires after task work', async () => {
+  const s = make({ meta: true }, { adapterEvidence: (ref: string) => ref === 'artifact:v2'
+    ? { ref, state: 'recorded', render: { revision: 2, source_hash: 'v2' } } : { ref, state: 'missing' } });
+  const acceptance = s.fact('task_outcome', { unit: 'whole_deck', status: 'accepted', artifact: { revision: 2 } });
+  assert.throws(() => s.assessLearning({ finding: 'The title is crowded', evidence_refs: ['artifact:v999'] }), /missing/);
+  const previous = s.claim('capsule', { guess: true });
+  assert.throws(() => s.assessLearning({ finding: 'Guess', evidence_refs: [previous.ref] }), /Agent claim/);
+  const claim = s.assessLearning({ finding: 'The title is crowded although literal acceptance passed',
+    evidence_refs: ['artifact:v2', acceptance.ref], condition: 'inadequate', method: 'render and inspect', method_version: 'artifact:v2',
+    next_decision: 'Revise the title width before another render', unknowns: ['Readability across display sizes is unknown'] });
+  assert.equal(claim.kind, 'claim');
+  assert.equal(s.learningAssessment().ref, claim.ref);
+  assert.equal(s.learningAssessment().exposed_request, null);
+  s.noteLearningFollowup('write');
+  assert.equal(count(s, 'learning_assessment_followup'), 0, 'task action before exposure cannot consume a claim');
+  const pin = s.pin();
+  s.noteLearningExposure(claim.ref, pin.request);
+  assert.equal(s.learningAssessment().exposed_request, pin.request);
+  s.noteLearningFollowup('write');
+  assert.equal(s.learningAssessment(), null);
+  const followup = all(s).findLast((r: any) => r.type === 'learning_assessment_followup');
+  assert.equal(followup.value.semantic_use, 'unknown');
+  assert.equal(followup.value.assessment_ref, claim.ref);
+  assert.equal(s.detail('learning_environment').feedback.recorded_refs.at(-1).ref, acceptance.ref);
+  const replacement = s.assessLearning({ finding: 'The revised title needs comparison', evidence_refs: [acceptance.ref] });
+  s.noteLearningExposure(replacement.ref, s.pin().request);
+  assert.throws(() => s.linkLearningDecision(claim.ref, { ref: 'decision-1' }), /pending judgment/);
+  const linked = s.linkLearningDecision(replacement.ref, { ref: 'decision-2', decisionId: 'continue' });
+  assert.equal(linked.value.assessment_ref, replacement.ref);
+  assert.equal(s.learningAssessment(), null);
+  const retired = s.assessLearning({ finding: 'No longer relevant', evidence_refs: [acceptance.ref] });
+  assert.equal(s.assessLearning({ retire_ref: retired.ref }).value.assessment_ref, retired.ref);
+  assert.equal(s.learningAssessment(), null);
+  const off = make({ meta: false });
+  assert.throws(() => off.assessLearning({ finding: 'x', evidence_refs: [acceptance.ref] }), /requires Meta/);
+  assert.equal(off.learningAssessment(), null);
+});
+
+test('resident learning conditions review opens at induction and carries unresolved findings forward', async () => {
+  const s = make({ meta: true }, { metaFallback: { unit: 'request', interval: 1 } });
+  s.fact('meta_t0_design', { status: 'changed', gate: 'open' });
+  const outcome = s.fact('task_outcome', { unit: 'whole_deck', status: 'accepted' });
+  const claim = s.assessLearning({ finding: 'feedback only checks literal acceptance, not visual quality',
+    evidence_refs: [outcome.ref], condition: 'inadequate' });
+  s.pin('task');
+  s.cost({ input: 10, output: 5 }, 100, 0, true);
+  await tick(s);
+  assert.ok(s.hasReview);
+  const block = s.reviewSelfView().learning_conditions_review;
+  assert.ok(block, 'induction self view carries the resident review block');
+  assert.equal(block.status, 'judgment_required');
+  assert.equal(block.since_review, null);
+  assert.match(block.required_judgment, /usable/);
+  assert.match(block.required_judgment, /inadequate/);
+  assert.match(block.required_judgment, /late/);
+  assert.match(block.instruction, /induction turn/);
+  assert.equal(block.unresolved.length, 1);
+  assert.equal(block.unresolved[0].ref, claim.ref);
+  assert.equal(block.unresolved[0].condition, 'inadequate');
+  assert.match(block.environment_facts_ref, /learning_environment/);
+  const off = make({ meta: false });
+  assert.equal(off.reviewSelfView().learning_conditions_review, undefined);
+});
+
 test('reflect_orchestration uses one explicit edit/replace field and decodes one JSON object layer', async () => {
   const schema = providerOperationSchema('orchestration', undefined, seed);
   assert.ok(!('orchestration_patch' in schema.properties));

@@ -99,6 +99,10 @@ export default function pptDemo(pi: ExtensionAPI) {
       runPosition: () => ({ episode: manifest?.episodes && manifest.episodes.length > 1 ? { active: state.episode, total: manifest.episodes.length } : null,
         artifact_revision: state.revision ?? null, delivered_revision: state.deliveredRevision ?? null,
         last_render: state.lastFeedback ? { revision: state.lastFeedback.revision, warnings: Array.isArray(state.lastFeedback.warnings) ? state.lastFeedback.warnings.length : state.lastFeedback.warnings ?? null } : null }),
+      learningInputs: () => ({ source_hashes: activeManifest()?.sources ?? {}, source_location: 'workspace data/',
+        current_artifact: sourceFacts(workspace), last_render: state.lastFeedback
+          ? { revision: state.lastFeedback.revision, source_hash: state.lastFeedback.source_hash, source_path: state.lastFeedback.source_path }
+          : null }),
       adapterEvidence: (ref: string, offset = 0) => {
         const page = 16000;
         const rowsOf = (name: string) => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) : [];
@@ -220,6 +224,10 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (evo) {
       if (artifactWrite && !result?.isError) evo.fact('artifact_write', artifactWrite);
       evo.fact('tool_result', { tool: tool.name, action: evo.actionName(tool.name, args[1]), mode: evo.mode, is_error: Boolean(result?.isError), input_hash: hash(args[1]), result, duration_ms: Date.now()-began });
+      if (evo.mech.meta && evo.mode === 'execute' && !result?.isError
+        && (['write', 'edit', 'python', 'submit_unit'].includes(tool.name) || Boolean(executingComponent)
+          || (tool.name === 'office' && ['render', 'preview', 'deliver'].includes(args[1]?.op))))
+        evo.noteLearningFollowup(tool.name === 'office' ? `office.${args[1].op}` : tool.name);
       if (executingComponent) evo.fact('component_execution', { kind: executingComponent.kind, name: executingComponent.name, version: executingComponent.version, hash: executingComponent.hash, outcome: result?.isError ? 'failure' : 'success' });
       if (tool.name === 'read_self_component' && args[1]?.kind === 'skill') evo.fact('component_body_read', { kind: 'skill', name: args[1].name, version: args[1].version ?? agentSelf.active().find((c: any) => c.kind === 'skill' && c.name === args[1].name)?.version ?? null, outcome: result?.isError ? 'failure' : 'success' });
       await evo.event(result?.isError ? 'tool_failed' : 'tool_succeeded',`tool:${args[0]}`, { tool: tool.name, input_hash: hash(args[1]), duration_ms: Date.now()-began });
@@ -832,12 +840,18 @@ export default function pptDemo(pi: ExtensionAPI) {
         });
         const taskInstructions = evo.inCapabilityReview ? '' : existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md') : '';
         const ctx = evo.policy.context;
+        const pendingLearning = evo.mech.meta && evo.mode === 'execute' ? evo.learningAssessment() : null;
+        const learningHandoff = pendingLearning?.exposed_request === null ? { ref: pendingLearning.ref, finding: pendingLearning.finding,
+          condition: pendingLearning.condition, method: pendingLearning.method, method_version: pendingLearning.method_version,
+          next_decision: pendingLearning.next_decision, evidence_refs: pendingLearning.evidence_refs, unknowns: pendingLearning.unknowns,
+          provenance: 'Agent judgment; cited records are host facts, but this interpretation and its usefulness are unverified' } : null;
         const selfView = evo.inEvolutionReview
           ? [JSON.stringify(evo.reviewSelfView()), JSON.stringify(await evo.projection())]
           : [JSON.stringify({ root_id: evo.root_id, revision: evo.revision, mode: evo.mode, step: evo.step,
             in_review: false, pending: evo.detail('pin').activation_intent ?? null, resources: evo.resources(),
             ...(evo.mech.observation ? { observation: evo.observationDigest() } : {}),
-            ...(evo.mech.meta ? { self_state: evo.selfChangeDigest(), self_evolution: evo.metaBoard() } : {}),
+            ...(evo.mech.meta ? { self_state: evo.selfChangeDigest(), self_evolution: evo.metaBoard(),
+              ...(learningHandoff ? { learning_handoff: learningHandoff } : {}) } : {}),
             read_full: 'read_self(section="self")', read_policy: 'read_self(section="policy")' })];
         const specialistTurn = evo.isMetaSpecialistTurn;
         const selfTail = ctx.self_view?.placement === 'tail' || specialistTurn;
@@ -888,6 +902,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         plan.composition.receipt_matches_sent_text = true;
         evo.recordContext(plan.composition, { ...plan.receipt, delivered_hash: plan.composition.delivered_hash, delivered_chars: deliveredText.length });
         evo.fact('provider_input', { pin, phase: state.phase ?? null, schema_hash: hash(system.toolsAdded), operation_schemas: Object.fromEntries(system.toolsAdded.filter((t: any) => selfRootToolSchema(evo, t.name)).map((t: any) => [t.name, hash(t.parameters)])), tools: system.toolsAdded.map((t: any) => t.name), context_hash: hash(delivered), delivered_chars: deliveredText.length, context_policy: plan.receipt, reasoning_selection: ctx.reasoning ?? 'all', component_delivery: componentDelivery, memory_versions: componentDelivery.filter((c: any) => c.kind === 'memory').map((c: any) => ({ name:c.name,version:c.version })), complete_input_ref: 'harness/provider-requests.jsonl' });
+        if (learningHandoff && deliveredText.includes(`"learning_handoff":{"ref":"${learningHandoff.ref}"`)) evo.noteLearningExposure(learningHandoff.ref, pin.request);
         persistLiveSelf();
         return { messages: assembled };
       } catch (error) {
