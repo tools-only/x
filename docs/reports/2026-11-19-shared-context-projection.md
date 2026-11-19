@@ -6,7 +6,7 @@ The Kaggle run's execution and evolution requests carried a median 67,721 and 79
 
 ## Scope and integration
 
-`demo/self_root_context.ts` is task-neutral. The PPT and Kaggle adapters call it at their existing context hooks. Kaggle retains its task-specific output and reasoning trimming before shared projection, removes a duplicate copy of competition instructions and skill index, and records provider payload composition. The projector does not change the durable Pi session or SelfRoot ledger. It keeps the latest user and custom state, and drops tool results whose calls were archived.
+`demo/self_root_context.ts` is task-neutral. This branch wires the PPT adapter to its existing context hook. The Kaggle branch separately wires its task-specific output and reasoning trimming to this shared projector, removes duplicate competition instructions and a skill index, and records provider payload composition. The projector does not change the durable Pi session or SelfRoot ledger. It keeps the initial task request and latest custom state, and drops tool results whose calls were archived.
 
 ## Evaluation boundary
 
