@@ -151,7 +151,7 @@ HEAD `c22aecec`（PPT `python` 工具增加 `save` 参数，镜像 ARC native ru
 
 **下一因素（单因素）**：deliver-gate 的完成路径。当前 `office.deliver`→complete 使 agent 为刷新 receipt 反复 render 同一 artifact（m21 在 revision 30 被人工停止）。修复方向：让 host 对“同 artifact 的再次 deliver”直接给可判定的结果（幂等或明确拒绝），或放宽“receipt 必须同一 turn”的约束，使 agent 不必重复 render 就能完成交付。之后同配置再跑一次，确认能 clean 完成交付且能力组件被后续任务语义使用。
 
-## 8. 修复（2026-11-20，deliver-gate 完成路径，未重跑）
+## 8. 修复（2026-11-20，deliver-gate 完成路径，evo-m22 已验证）
 
 从 m21 `session.jsonl` 的拒绝回执与 `live_agent_self.jsonl` 的 orchestration 快照定位到两个真实断点（不是 agent 猜测的“same-turn 新鲜度”规则）：
 
@@ -165,4 +165,9 @@ HEAD `c22aecec`（PPT `python` 工具增加 `save` 参数，镜像 ARC native ru
 
 **功能验证（免费，本地）**：`tests/live_orchestration_core.test.ts` 8/8、`tests/self_root.test.ts` 29/29、`tests/self_root_meta.test.ts` 21/21 通过；直接复现 `deliver_review`（无 path/equals 的 decision 过渡）经 `decide` + `advance` 推进到 `ship`。`tests/ppt_demo_live_orchestration.test.ts` 的 1 例失败为既有的旧 `reflect_orchestration`（缺 `mode`）schema 漂移，与本次改动无关。
 
-**待验证（付费，未运行）**：同 m20/m21 配置冻结新 root 重跑，确认 `deliver_review`→`ship`→`office.deliver`→`complete` 干净收尾（`stop: delivered`、`deliveredRevision`、无相同 hash 的重复 render 循环），且能力组件（如 `deck_fix_loop` memory）被后续任务语义使用。
+**运行验证（付费，evo-m22，2026-11-20）**：同 m20/m21 配置冻结新 root `runs/evo-m22-deliver-gate-20261120`（az/glm-5.3-flash、`--arm B`、无请求/时间上限、brief addendum 含视觉传达目标）重跑，结果：
+
+- `stop: delivered`，10/10 units `delivered`，30/30 `literal_matches` 命中且 `citation_found` 全真，`warnings: []`；73 请求 / 2.4M tokens / $0.32 / 1315s。
+- 6 次 render（rev1–6）`source_hash` 均不同，无 m21 式同 hash 重复 render 循环；`deliver_review`→`ship`→`office.deliver` 全链路干净收尾（receipt `revision: 6`）。
+- 常驻学习条件审查多轮触发：`summary.json` 的 `reviews` 含 8 次 `evolution_review` reflect 开关，`learning_assessment` claim 判定 `condition: usable`（ledger:233/390/436）。
+- 自进化产出并交付能力组件 `ppt_baseline_guidance`（prompt v2）：`runtime_activations` 的 `reflection_activated` 绑定该组件且 hash 与 `delivery/harness.json` 一致（`857826f2…`）；后续 slide 修复遵循其 checker 字面量约定（`$1,389` 而非 `$1,389M` 等），语义使用成立。
