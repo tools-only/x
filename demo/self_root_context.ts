@@ -14,6 +14,7 @@ export function projectAgentHistory(messages: Messages, workspace: Workspace, ke
   const cutoff = assistantIndices[archivedAssistants];
   const prefix = messages.slice(0, cutoff);
   const archive = workspace.saveResult(JSON.stringify(prefix));
+  const firstUser = prefix.find(message => message.role === "user");
   const lastUser = prefix.findLast(message => message.role === "user");
   const lastSystem = prefix.findLast(message => message.role === "system");
   const custom = new Map<string, Messages[number]>();
@@ -25,6 +26,7 @@ export function projectAgentHistory(messages: Messages, workspace: Workspace, ke
   const marker = { role: "user" as const, content: [{ type: "text" as const,
     text: `Earlier conversation: ${archive.ref} (sha256=${archive.hash}). Read recorded evidence when needed.` }], timestamp: Date.now() };
   return [...(lastSystem ? [lastSystem] : []), marker,
-    ...(lastUser && !linked.some(message => message.role === "user") ? [lastUser] : []),
+    ...(firstUser ? [firstUser] : []),
+    ...(lastUser && lastUser !== firstUser && !linked.some(message => message.role === "user") ? [lastUser] : []),
     ...custom.values(), ...linked] as Messages;
 }
