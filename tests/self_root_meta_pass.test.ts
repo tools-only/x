@@ -86,6 +86,59 @@ test('META pass: a stalled delivery transition and recorded stagnation each open
   assert.equal(capped.review, undefined, 'a few requests are not stagnation');
 });
 
+test('META cadence follows the task adapter unit and interval', async () => {
+  const requests = make({ meta: true }, { metaFallback: { unit: 'request', interval: 3 } });
+  await tick(requests);
+  await requests.transaction({ baseRevision: 1, orchestration: design });
+  for (let request = 1; request <= 2; request++) requests.fact('request_record', { request, pin: { mode: 'execute' } });
+  assert.equal(requests.metaPassDue(), null);
+  requests.fact('request_record', { request: 3, pin: { mode: 'execute' } });
+  assert.deepEqual(requests.metaPassDue()?.facts, {
+    trigger: 'request_cadence_fallback', execute_requests_since_last_evolution: 3, interval: 3, window: [3, 5],
+  });
+
+  const actions = make({ meta: true }, {
+    metaFallback: { unit: 'action', interval: 2 }, actionReceiptTypes: ['arc_action'],
+  });
+  await tick(actions);
+  await actions.transaction({ baseRevision: 1, orchestration: design });
+  for (let request = 1; request <= 5; request++) actions.fact('request_record', { request, pin: { mode: 'execute' } });
+  assert.equal(actions.metaPassDue(), null);
+  actions.fact('arc_action', { n: 1 });
+  assert.equal(actions.metaPassDue(), null);
+  actions.fact('arc_action', { n: 2 });
+  assert.equal(actions.metaPassDue()?.facts.trigger, 'action_cadence_fallback');
+  assert.equal(actions.metaPassDue()?.facts.actions_since_last_evolution, 2);
+});
+
+test('selective Meta resumes or opens only the chosen specialist', async () => {
+  const create = async () => {
+    const self = make({ meta: true }, { metaRouting: 'selective' });
+    await tick(self);
+    await self.transaction({ baseRevision: 1, orchestration: design });
+    self.fact('request_record', { request: 1, pin: { mode: 'execute', revision: 2 }, tokens: { total: 100, status: 'reported' } });
+    self.fact('action_transition_stalled', { action: 'office.deliver' });
+    await tick(self);
+    return self;
+  };
+  const resume = await create();
+  assert.equal(resume.reviewExitSchema.properties.next_specialist.enum.includes('loop'), true);
+  assert.equal(resume.stageView(resume.metaPassDue()?.window ?? [3, 4]).parent_recorded_tokens, 100);
+  resume.exit({ result: { reason: 'continue task', next_specialist: 'none' } });
+  await tick(resume);
+  assert.equal(resume.review, undefined);
+
+  const focused = await create();
+  const closed = focused.exit({ result: { reason: 'workflow has no feedback point', next_specialist: 'loop' } });
+  assert.deepEqual(closed.next_round.specialists, ['loop']);
+  await tick(focused);
+  assert.equal(focused.reviewSelfView().evolution_pass.specialist, 'loop');
+  focused.fact('meta_specialist_no_change', { reason: 'no safe edit' });
+  focused.closeMechanically('review_unresolved');
+  await tick(focused);
+  assert.equal(focused.review, undefined);
+});
+
 test('META pass: each round is bounded; the induction cap opens round 2, the capability cap closes the pass', async () => {
   const s = await designed();
   s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
