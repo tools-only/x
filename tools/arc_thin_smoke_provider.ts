@@ -937,7 +937,15 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
 			else {
-				planned = SCRIPT[step];
+				if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo-meta-core') {
+					planned = /SPECIALIST \w+ \(\d\/7\)/.test(head)
+						? { kind: 'decide', text: 'no_change: No evidence supports a change in this focus.' }
+						: head.includes('ROUND 1 OF 2')
+							? { kind: 'decide', calls: [['decide_exit', { result: { reason: 'Observed one action.', carry: ['Keep the current strategy.'] } }]] }
+							: { kind: 'decide', calls: [step === 1
+									? ['request_evolution', { focus: 'Check the first action.' }]
+								: ['arc_action', { action: 'ACTION1', note: 'Advance after observation.' }]] };
+				} else planned = SCRIPT[step];
 				if (planned && (planned.kind === "consolidate") === consolidating) step += 1;
 				else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop') planned = { kind: 'decide', text: 'Script complete; stop normally.' };
 				else planned = consolidating

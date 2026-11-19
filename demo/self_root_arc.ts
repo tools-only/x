@@ -32,7 +32,7 @@ export function loadOrCreateArcContract(root: string, capabilities: string[]): S
     decisions: 'The Agent chooses task actions, component changes, orchestration, context use, and whether to validate a declared effect.',
     readonly_reason: 'Environment observations and action results are recorded facts; the runner owns bridge execution and budgets.',
     boundaries: [...FLOOR], capabilities: [...new Set(capabilities)],
-    writable: ['components.prompt', 'components.skill', 'components.tool', 'components.memory', 'policy', 'orchestration'],
+    writable: ['components.prompt', 'components.skill', 'components.tool', 'components.subagent', 'components.memory', 'policy', 'orchestration'],
     acceptance: { terminal_states: ['WIN', 'GAME_OVER', 'FINISHED'], task_metrics: 'recorded ARC task and environment facts only' },
     inherit_defaults: false,
   };
@@ -44,8 +44,9 @@ export function loadOrCreateArcContract(root: string, capabilities: string[]): S
     if (saved.content_hash === contract.content_hash) return saved;
     const legacyBody = { ...savedBody } as Record<string, unknown>;
     delete legacyBody.budget;
-    const previousWithoutTools = { ...proposed, writable: proposed.writable.filter(address => address !== 'components.tool') };
-    if (hash(legacyBody) !== contract.content_hash && hash(legacyBody) !== hash(previousWithoutTools))
+    const previous = { ...proposed, writable: proposed.writable.filter(address => address !== 'components.subagent') };
+    const previousWithoutTools = { ...previous, writable: previous.writable.filter(address => address !== 'components.tool') };
+    if (hash(legacyBody) !== contract.content_hash && hash(legacyBody) !== hash(previous) && hash(legacyBody) !== hash(previousWithoutTools))
       throw Error(`ARC SelfRoot contract differs from current capabilities: ${paths.contract}`);
     migrateArcContractHash(paths.state, saved.content_hash, contract.content_hash);
     writeFileSync(paths.contract + '.next', JSON.stringify(contract, null, 2));

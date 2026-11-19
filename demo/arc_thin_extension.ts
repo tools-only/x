@@ -280,6 +280,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const carryFieldChars = Math.max(80, Math.floor(Number(process.env.ARC_THIN_CARRY_FIELD_CHARS ?? NATIVE_CARRY_CHARS)));
   const archiveResults = process.env.ARC_THIN_ARCHIVE_RESULTS === '1';
 	const control = process.env.ARC_THIN_VARIANT === "control";
+	const evoMetaCore = process.env.ARC_THIN_CORE === "1";
 	const selfRootEnabled = native && !control && process.env.ARC_THIN_SELFROOT !== '0';
 	const legacySelfLoopEnabled = native && !control && !selfRootEnabled && process.env.ARC_THIN_SELFLOOP === '1';
 	// SelfRoot owns self-evolution in the native path. Keep the previous ledger/critic/refiner loop available only
@@ -894,7 +895,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	  const paths = arcSelfRootPaths(runRoot);
 	  const saved = existsSync(paths.state) ? JSON.parse(readFileSync(paths.state, 'utf8')) : undefined;
 	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS,
-	    mechanisms: { meta: process.env.ARC_THIN_META === '1' }, metaAtStart: false,
+	    mechanisms: { meta: evoMetaCore || process.env.ARC_THIN_META === '1' }, metaAtStart: false,
+	    ...(evoMetaCore ? { metaRouting: 'sweep', metaActionCheckpoints: true } as const : {}),
 	    runPosition: () => arcRunPosition(observation, trajectory.length, decision), taskRuntimeView: () => arcTaskRuntimeView });
 	  selfRootPersist = () => { writeFileSync(paths.state + '.next', JSON.stringify(evo!.export(), null, 2)); renameSync(paths.state + '.next', paths.state); };
 	}
@@ -1586,6 +1588,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		try {
 			const row = {
 				decision, consolidating: run.consolidating, ...(run.levelReview ? { level_review: true } : {}),
+				...(evoMetaCore && evo?.inEvolutionReview ? { evo_meta_review: true } : {}),
 				...(evo?.actionIntervalReviewState === 'active' ? { self_root_interval_review: true } : {}),
 				...(run.stallReview ? { stall_review: true } : {}), ...(run.evoPass ? { evo_pass: true, evo_focus: run.evoFocus, evo_focus_index: run.evoFocusIndex } : {}), actions: trajectory.length, observation_delivery: observationMode,
 				sections: Object.fromEntries([...sections, ["state", stateText] as [string, string], ...(spin ? [["spin", spin] as [string, string]] : []),
@@ -2003,7 +2006,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // Keep the core list fixed; newly saved tools and subagents enter on the next provider request.
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
       pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory',
-        ...(evo ? ['python'] : agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'read', 'write', 'edit', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? ['request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
+        ...(evo ? ['python'] : agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'read', 'write', 'edit', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? [evoMetaCore ? 'request_evolution' : 'request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : []), ...(evo ? ARC_SELFROOT_TOOLS : [])]);
       return;
     }
@@ -4078,6 +4081,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const expect = ledgerOn && !control && params.predict?.text ? params.predict.text : "";
 		const by = via ? `${via} action` : "arc_action";
 		let value: Record<string, any>;
+		if (evoMetaCore && evo?.inEvolutionReview) throw new Refusal('The game is paused during an evolution review.');
 		if (evo) evo.assertActionAllowed(via === 'python' ? 'python.env_act' : 'arc_action');
 		if (params.action === 'RESET' && evo) {
 			try { await evo.event('before_active_reset', `reset:${trajectory.length + 1}`, { position: arcRunPosition(observation, trajectory.length, decision) }); selfRootPersist?.(); }
@@ -4465,11 +4469,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
             append('self_harness_hook.jsonl', { event: 'skip', decision, reason_code: params.reason_code });
             return text(`Skip: ${params.reason_code}`, undefined, true);
           }) });
-        pi.registerTool({ name: 'request_adapt', label: 'Request ADAPT',
-          description: 'Queue ADAPT at the next settled task boundary. You can still act in this turn.',
+        pi.registerTool({ name: evoMetaCore ? 'request_evolution' : 'request_adapt', label: evoMetaCore ? 'Request evolution' : 'Request ADAPT',
+          description: evoMetaCore ? 'Request an Evo Meta review at the next request boundary. State the reason.'
+            : 'Queue ADAPT at the next settled task boundary. You can still act in this turn.',
           parameters: Type.Object({ focus: Type.String({ minLength: 3, maxLength: 500 }) }),
-          execute: guardTool('request_adapt', async (params: { focus: string }) => {
+          execute: guardTool(evoMetaCore ? 'request_evolution' : 'request_adapt', async (params: { focus: string }) => {
             if (run.hookTurn) throw new Refusal('ADAPT cannot request another ADAPT');
+            if (evoMetaCore && evo) {
+              if (evo.inEvolutionReview) throw new Refusal('An evolution review is already active.');
+              const request = evo.fact('evolution_requested', { focus: params.focus, action_at: trajectory.length });
+              selfRootPersist?.();
+              return text('Evo Meta review requested.', { ref: request.ref });
+            }
             const id = randomBytes(8).toString('hex');
             append('adapt_requests.jsonl', { event: 'requested', id, focus: params.focus, decision, action_at: trajectory.length });
             return text(`ADAPT request ${id} queued for the next settled task boundary. Continue the task turn.`);
@@ -5233,8 +5244,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				pendingObservations.unshift(initialReset.observation);
 			}
 			// What happened since the last decision's prompt is this decision's OBSERVATIONS SINCE LAST QUERY.
-			decisionObservations = pendingObservations;
-			pendingObservations = [];
+			if (!evoMetaCore || !evo?.inEvolutionReview) {
+				decisionObservations = pendingObservations;
+				pendingObservations = [];
+			}
 		}
 		if (!run.daemonResponse && !run.hookTurn) {
 		refreshActionSurface();
@@ -5406,7 +5419,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// Native mode: earlier decisions are a transcript in front of the current head (freezeHistory), so they stay
 		// byte-identical and cacheable; ARC_THIN_NATIVE_HISTORY_CHARS > 0 puts a summary inside the head instead.
 		// A compaction summary Pi made stays in front either way.
-		const compactArc = Boolean(evo && chView && !run.hookTurn && !run.consolidating);
+		const compactArc = Boolean(evo && chView && !run.hookTurn && (evoMetaCore || !run.consolidating));
 		const summarised = native && !compactArc && nativeHistoryChars > 0;
 		const summary = summarised ? summarizeHistory(messages.slice(0, lastUser),
 			{ budget: nativeHistoryChars, resultChars: slot("history.result_chars", historyResultChars), fullResults: slot("history.full_results", 2),
@@ -5416,7 +5429,15 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		// per request (run time left, last request size, refreshed memory) dropped the cache hit rate to ~1% on
 		// 2026-10-14. Changes made during the decision reach the agent in the results of the calls that made them.
 		const intervalReview = evo?.actionIntervalReviewState === 'active';
-		const headKey = `${decision}:${lastUser}:${evo ? [evo.revision, evo.mode, trajectory.length, intervalReview].join(':') : ''}`;
+		const metaReview = evoMetaCore && evo?.inEvolutionReview;
+		if (evoMetaCore && evo) {
+			const active = pi.getActiveTools();
+			const tools = metaReview
+				? [...new Set([...active.filter(name => ['read', 'python', 'memory', 'skill', 'run_skill'].includes(name)), ...evo.surface()])].filter(name => name !== 'arc_action')
+				: active.filter(name => name !== 'decide_exit');
+			pi.setActiveTools(tools);
+		}
+		const headKey = `${decision}:${lastUser}:${evo ? [evo.revision, evo.mode, evo.reviewId, trajectory.length, intervalReview].join(':') : ''}`;
 		if (!native || run.headKey !== headKey) {
 			// Hooks first: what they write (files, memory) is what this decision's memory, views' readers, guards and
 			// predictors see, and what they return is shown with the state.
@@ -5433,11 +5454,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (evo) {
 			const current = arcTaskRuntimeView as any;
 			arcTaskRuntimeView = { ...current, context: { ...current?.context, capability_index: capabilities || undefined } };
-			const taskObservation = chView ? chObservation(ctx).text : undefined;
+			const taskObservation = metaReview ? '' : chView ? chObservation(ctx).text : undefined;
 			const viewInput = compactArc && taskObservation ? { taskObservation } : chView ? { taskObservation: '' } : {};
 			const view = evo.executionView({ ...viewInput, taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> });
 			const { task_observation, ...selfView } = view;
-			const selfText = JSON.stringify(selfView, null, 2);
+			const selfText = evoMetaCore ? JSON.stringify(selfView) : JSON.stringify(selfView, null, 2);
 			run.workingSet!.text = compactArc
 				? [typeof task_observation === 'string' ? task_observation : '', selfText].filter(Boolean).join('\n\n')
 				: [run.workingSet!.text, selfText].filter(Boolean).join('\n\nSELFROOT EXECUTION VIEW\n');
@@ -5445,9 +5466,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			run.head = {
 				...user,
 				content: [
-				{ type: "text", text: run.hookTurn ? `${run.phasePrompt ?? messageText(user)}\n\n${hookFacts}` : `${intervalReview ? "SelfRoot evolution review after 30 environment actions. Inspect the recorded facts, revise your harness if useful, and close with decide_exit to resume play." : run.phasePrompt ?? messageText(user)}\n\n${run.workingSet!.text}${!evo && capabilities ? '\n\n' + capabilities : ''}` },
-					...((!run.hookTurn || agentNativeProgramLoop) ? (run.workingSet?.images ?? (run.workingSet?.image ? [run.workingSet.image] : [])) : []),
-					...(!run.hookTurn && run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
+				{ type: "text", text: run.hookTurn ? `${run.phasePrompt ?? messageText(user)}\n\n${hookFacts}` : `${metaReview ? evo!.reviewStrategy(true) : intervalReview ? "SelfRoot evolution review after 30 environment actions. Inspect the recorded facts, revise your harness if useful, and close with decide_exit to resume play." : run.phasePrompt ?? messageText(user)}\n\n${run.workingSet!.text}${!evo && capabilities ? '\n\n' + capabilities : ''}` },
+					...((!metaReview && (!run.hookTurn || agentNativeProgramLoop)) ? (run.workingSet?.images ?? (run.workingSet?.image ? [run.workingSet.image] : [])) : []),
+					...(!metaReview && !run.hookTurn && run.workingSet!.tail ? [{ type: "text", text: run.workingSet!.tail }] : []),
 				],
 			};
 			run.headKey = headKey;
@@ -5594,7 +5615,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (evo) {
 			try {
 				selfRootRequestStarted = Date.now();
-				const pin = evo.pin(run.consolidating ? 'review' : 'task');
+				const pin = evo.pin(run.consolidating || evo.inEvolutionReview ? 'review' : 'task');
 				const payload = event.payload ?? {};
 				const messages = Array.isArray(payload.messages) ? payload.messages : Array.isArray(payload.input) ? payload.input : [];
 				const deliveredChars = messages.reduce((sum: number, item: any) => sum + JSON.stringify(item).length, 0);
@@ -5684,6 +5705,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	pi.on("message_end", guard("message_end", (event: any) => {
 		const message = event.message;
 		if (message?.role !== "assistant") return undefined;
+		if (evoMetaCore && message.stopReason === 'stop') evo?.noteSpecialistResponse(message);
 		responsesContinuation.accept(message);
 		run.assistantMessages += 1;
 		run.endedAt = Date.now();

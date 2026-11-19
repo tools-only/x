@@ -1062,6 +1062,27 @@ def _evo_pass_stats(harness: Path) -> dict[str, Any] | None:
     """What each evolution pass cost and how it closed — the change receipts its decision recorded, or its explicit
     `NO HARNESS CHANGE` reason — plus how many passes left a carried tail; None when no pass ran. Every value is a
     row the extension already wrote (working_set, usage, harness_changes, harness_decisions)."""
+    state_path = harness.parent / "self_root" / "state.json"
+    if state_path.exists():
+        ledger = json.loads(state_path.read_text(encoding="utf-8")).get("root", {}).get("ledger", [])
+        turns = [row for row in ledger if row.get("type") == "meta_specialist_turn_closed"]
+        if turns:
+            requests = {row.get("request"): row for row in ledger if row.get("type") == "request_record"
+                        and row.get("value", {}).get("pin", {}).get("mode") == "reflect"}
+            def cost(request: int) -> int | None:
+                tokens = requests.get(request, {}).get("value", {}).get("tokens", {})
+                return int(tokens.get("input", 0)) + int(tokens.get("output", 0)) if tokens.get("status") == "reported" else None
+            return {
+                "profile": "evo_meta_seven_focuses",
+                "induction": [{"request": row.get("request"), "budget_tokens": cost(row.get("request"))}
+                              for row in ledger if row.get("type") == "meta_pass_round"],
+                "turns": [{"request": row.get("request"), "focus": row.get("value", {}).get("specialist"),
+                           "index": row.get("value", {}).get("index"), "budget_tokens": cost(row.get("request")),
+                           "outcome": row.get("value", {}).get("outcome"),
+                           "no_change": row.get("value", {}).get("no_change_reason")}
+                          for row in turns],
+                "sweeps_closed": sum(row.get("type") == "meta_specialist_sweep_closed" for row in ledger),
+            }
     passes = sorted({int(row["decision"]) for row in _read_jsonl(harness / "working_set.jsonl")
                      if row.get("evo_pass") and row.get("decision") is not None})
     if not passes:
@@ -2110,6 +2131,14 @@ def run_arc_thin_e2e(
             pi_env.setdefault("ARC_THIN_OBSERVATION", "query")
         pi_env.update(extension_env or {})
         pi_env["ARC_THIN_IMAGE_INPUT"] = "1" if "image" in settings["input_modalities"] else "0"
+        # Keep historical profiles reachable for diagnostic fixtures.
+        evo_meta_core = active_extension.name == "arc_thin_extension.ts" and foundation == "native" and variant == "treatment" and not self_baseline and not typescript_phase_owner and (
+            pi_provider != "offline-arc-thin-smoke" or (extension_env or {}).get("ARC_THIN_CORE") == "1"
+        )
+        pi_env["ARC_THIN_CORE"] = "1" if evo_meta_core else "0"
+        if evo_meta_core:
+            pi_env.update(ARC_THIN_SELFROOT="1", ARC_THIN_LEGACY_HARNESS="0", ARC_THIN_OBSERVATION="ch",
+                          ARC_THIN_HARNESS_TURN="0", ARC_THIN_GUARDS="0", ARC_THIN_HOOKS="0")
         self_root_enabled = foundation == "native" and variant != "control" and pi_env.get("ARC_THIN_SELFROOT") != "0"
         legacy_harness_enabled = not self_root_enabled or pi_env.get("ARC_THIN_LEGACY_HARNESS") == "1"
         pi_env["ARC_THIN_SELFROOT"] = "1" if self_root_enabled else "0"
@@ -2187,6 +2216,7 @@ def run_arc_thin_e2e(
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
             "self_root": self_root_enabled, "legacy_harness": legacy_harness_enabled,
+            "evolution_profile": "evo_meta_seven_focuses" if evo_meta_core else None,
             "daemon": daemon_enabled, "process_evidence": pi_env["ARC_THIN_PROCESS"] == "1",
             "reflective_auto_compute_ms": float(pi_env.get("REFLECTIVE_AUTO_COMPUTE_MS", "0")) if reflective_path else None,
             "self_baseline": self_baseline,
@@ -2206,7 +2236,7 @@ def run_arc_thin_e2e(
             "guards": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_GUARDS") == "1",
             "hooks": foundation == "native" and variant == "treatment" and pi_env.get("ARC_THIN_HOOKS") == "1",
             "selfloop": selfloop,
-            "evo_pass": evo_pass_on, "evo_stagnation_after": evo_stagnation,
+            "evo_pass": evo_pass_on or evo_meta_core, "evo_stagnation_after": evo_stagnation,
             # Where the active prompts are (docs/plans/2026-10-21-context-layout.md): "head" opens each decision's head
             # with them and ends it with the agent's own record on the board; "system" keeps them as system-prompt
             # sections (ARC_THIN_CONTEXT_LAYOUT=0, the legacy foundation and the control variant).
@@ -2741,7 +2771,7 @@ def run_arc_thin_e2e(
                     pending_inspect_to_call = ""
                     restart_note = ""
                     working_log = harness / "working_set.jsonl"
-                    check_interval_pass = self_root_enabled and action_count >= 30
+                    check_interval_pass = evo_meta_core or (self_root_enabled and action_count >= 30)
                     working_offset = working_log.stat().st_size if check_interval_pass and working_log.exists() else 0
                     events = recover_length(prompt, safe_turn(prompt))
                     summary["decisions"] += 1
@@ -2754,13 +2784,14 @@ def run_arc_thin_e2e(
                         if check_interval_pass and working_log.exists():
                             with working_log.open("rb") as stream:
                                 stream.seek(working_offset)
-                                interval_turn = any(json.loads(line).get("self_root_interval_review") for line in stream if line.strip())
+                                interval_turn = any(row.get("evo_meta_review") or row.get("self_root_interval_review")
+                                                    for row in (json.loads(line) for line in stream if line.strip()))
                         if interval_turn:
                             summary["evo_passes"] += 1
                         else:
                             no_action_streak += 1
                             summary["no_action_decisions"] += 1
-                    if single_loop and not reflective_path and not length_stopped(events) and _environment_errors(harness) == environment_before:
+                    if single_loop and not evo_meta_core and not reflective_path and not length_stopped(events) and _environment_errors(harness) == environment_before:
                         requests = _read_jsonl(harness / "adapt_requests.jsonl")
                         handled = {str(row.get("id")) for row in requests if row.get("event") == "handled"}
                         pending = [row for row in requests if row.get("event") == "requested" and str(row.get("id")) not in handled]

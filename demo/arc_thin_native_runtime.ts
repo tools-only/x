@@ -400,7 +400,7 @@ export class NativeRuntime {
   private decision() { return this.host.decision?.() ?? 0; }
   private registryComponents(active = true): Component[] {
     const reflected = (active ? this.host.reflectedSelf?.active() ?? [] : this.host.reflectedSelf?.candidates() ?? [])
-      .filter((component: Component) => component.kind === 'tool' && !(component as any).guard && !component.mount?.length && !component.path.startsWith('observers/'));
+      .filter((component: Component) => component.kind === 'subagent' || component.kind === 'tool' && !(component as any).guard && !component.mount?.length && !component.path.startsWith('observers/'));
     const rows = [...(active ? this.host.self.active() : this.host.self.candidates()), ...reflected];
     return [...new Map(rows.map((component: Component) => [component.path, component])).values()];
   }
@@ -1347,7 +1347,7 @@ export class NativeRuntime {
     }));
   }
   private async consult(args: { agent: string; question: string; refs?: string[] }, signal: AbortSignal | undefined, ctx: ExtensionContext) {
-    const agent = this.host.binder.active().find(c => c.kind === 'subagent' && c.name === args.agent);
+    const agent = this.registryComponents().find(c => c.kind === 'subagent' && c.name === args.agent);
     if (!agent || !ctx.model) throw Error(`no active subagent ${args.agent}; subagents: ${this.host.binder.active().filter(c => c.kind === 'subagent').map(c => c.name).join(', ') || 'none'}`);
     const allowed = agent.tools ?? []; const refs = [...(agent.refs ?? []), ...(args.refs ?? [])];
     const tools: any[] = []; const runTools = new Map<string, (args: any) => Promise<any>>();
