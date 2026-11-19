@@ -125,3 +125,13 @@
 - **功能正确：通过。** 定向 Node 测试 27 项通过，覆盖原有 CH 观测基线、追加帧且不替换末帧、零/一格预算、无有效中间帧、批次最多一张补帧、SelfRoot 超过四步后仍见颜色转移、实际模型消息同时含三张 PNG，以及 Python 中完整动画入口。TypeScript 语法检查和 `git diff --check` 通过。
 - **全链路可达：部分通过。** 逐格差分追补后的 `runs/arc-observation-evidence-20261119d/summary.json` 经生产 Pi/bridge + mock ARC SDK + scripted provider smoke 完成 3 动作、0 provider error、正常关闭，但该脚本场景无多帧动画。三 PNG、SelfRoot 最新动作的逐格差分和 Python 动画入口由生产 extension + mock HTTP bridge 的集成测试验证；实际 Pi 请求中的三 PNG 尚未单独验收。
 - **自主采用：未验证。净收益：未验证。** 未启动新付费 Provider 运行，不能推断 Python 调用会减少或 Su15 关卡效果改善。下一次 AZ/Qwen 稳定运行须同时核对展示的帧是否被 Agent 用于下一动作、历史差分是否替代补读、每动作总 input/output/cache、图像与墙钟以及通关进展；保留合理的精确计算调用。延后事项 A 的 adapter/runtime 边界与 D 的跨轮认知连续性仍开放。
+
+## 10. Python 沙箱函数自动纳入 SelfRoot 能力（2026-11-19）
+
+- **真实失败与窄命题。** Su15 `restart2` 的 100 次 Python 调用中没有一次保存为工具；一次性计算多、独立发布路径长，沙箱中定义的函数与 SelfRoot 组件生命周期脱节。若 Agent 在成功的 Python cell 中定义带通用签名及用途/适用范围说明的函数，runtime 在同一次调用后自动登记为 SelfRoot tool，则可免去另一次发布决策，并让后续新状态直接复用它。若后续真实运行仍未创建、调用或减少重复探测，该命题不成立。
+- **范围与代价。** 只自动登记顶层 `def name(args, env)` 且有用途和适用范围 docstring、自足依赖的函数；普通表达式、打印、临时变量及其他函数仍属于沙箱。沿现有 Python guest 的导出/依赖报告、组件校验、SelfRoot 版本和调用记账，不增加后台模型或额外 Provider 请求。普通视图只给工具名、版本、功能和适用范围；源码按需读取，Python session 不再单独常驻展开。自动登记不等于实际采用。函数参数在入口校验一次；runtime 校验签名、可解析依赖与装载。
+- **闭环与退役。** 创建成功后的短索引进入下一普通决策；Agent 调用已登记工具，真实任务行动与反馈沿既有 ledger 回到固定 pass turn。pass 审阅装载、调用、失败和后续结果，可修订或撤下；不自动把计算结果当作外部行动的验证。沙箱是执行层，代码归 SelfRoot tool 组件，临时输出归本次工具回执，任务认识归 memory，不产生普通 artifact。
+- **有界评估。** 本轮做定向功能测试及 fee-free 全链路 smoke；检查创建、重定义、依赖/说明拒绝、源码按需、视图精简和工具可调用。真实 AZ/Qwen 运行须在账户稳定且获授权预算后，以现有 su15 设置审阅创建→调用→后续动作链，比较 Python/Provider 次数、父子 token/动作、耗时与进展；脚本 smoke 不证明自主采用或净收益。
+- **功能正确：通过。** `tests/arc_thin_python_auto_component.test.ts` 验证符合契约的函数自动登记、下一请求调用、重定义为 v2、参数错误反馈、普通视图只见功能/适用范围；未说明和依赖临时 session 变量的函数留在沙箱且有拒绝回执。`tests/arc_thin_native_context.test.ts` 和 `tests/self_root_arc.test.ts` 同跑共 14 项通过；改动 TypeScript 的 Node 语法检查及 `git diff --check` 通过。仓库未安装 TypeScript compiler，`npx tsc` 不可用。另一次运行原有 `tests/arc_thin_native_runtime.test.ts` 时有 13 个旧 fixture 因未向必需的 host `self` 字段传值而报错；本节以新的真实 SelfRoot 定向测试和 Pi smoke 验证本次路径，未将旧 fixture 失败解释为新功能回归。
+- **全链路可达：通过，限脚本环境。** [自动组件 smoke](../../runs/arc-python-auto-component-smoke3-20261119/summary.json) 使用生产 Pi/bridge、mock ARC SDK、scripted provider；Python 定义 `double` 后，SelfRoot 普通视图只显示 `double v1` 的功能/适用范围，后续 Pi provider schema 包含工具，实际调用返回 `{"value":8}`，2 个环境动作、0 provider error、正常关闭。首次 smoke 揭示同一 Pi turn 中函数尚未激活时调用会报 `Tool double not found`；脚本修正为在下一决策调用，并把断言加强为必须成功执行。装载时序是当前 SelfRoot 的 turn 边界，回执需明确这一点。
+- **自主采用：未验证。净收益：未验证。** 脚本只证明接线，不证明真实 Qwen 会主动编写通用函数、复用它或减少 Python/Provider 往返，也不证明任务进展。后续 AZ/Qwen 运行须按本节预定协议核对；本轮未启动付费 Provider。

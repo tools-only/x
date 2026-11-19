@@ -6,7 +6,7 @@ The working view carries the current observation, recent action results, task me
 
 Your harness has {{kinds}} kinds of capability:
 - Prompt and memory: task-authored prompts and facts are available in the working view; read their full records on demand.
-- Tool: Python is a persistent sandbox; `env.act(action, x, y, predict)` can act when available. `promote` or `save_tool` publishes a session function as a native callable tool.
+- Tool: {{python}}
 - Skill: {{skill}}
 - Subagent: agents/<name>.md can be consulted with `consult(agent, question, refs)`; subagents cannot act.
 Writes are versioned; `env.restore(path, version)` restores a prior version.

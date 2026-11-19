@@ -1483,7 +1483,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			if (rules) out.push(["rules", rules]);
 			// What the python session holds, so the agent uses those names instead of re-reading or recomputing them.
 			const held = sessionView ? nativeRuntime?.sessionView() ?? "" : "";
-			if (held) out.push(["python", held]);
+			if (held && !evo) out.push(["python", held]);
 			if (historyText) out.push(["history", historyText]);
 			// ARC_THIN_OBSERVATION=ch: a decision's actions are CH's RECENT HISTORY, in the observation below; a review keeps
 			// its own material (the actions since the last review, or the level record).
@@ -4710,7 +4710,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			name: "python",
 			label: "Python",
 			description: native
-				? "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
+				? evo ? "Run code in the persistent Python sandbox. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. " +
+					(chView ? 'state["observations"][i]["frame"] contains full frames; state["recent_trajectory"] contains action records. ' : '')
+				: "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
 					(chView ? "state[\"observations\"][i][\"frame\"] holds each recent action's full animation; state[\"recent_trajectory\"] holds action records. " : "") +
 					"Returns what you print and the " +
 					"value of a final expression. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
@@ -5289,6 +5291,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       hook: hooksOn ? ' def after(state, t) runs after every action, before your next decision, on the transition a hypothesis check(t) gets: ' +
         'it may write notes/ and artifacts/ files (artifacts/<name>.json reaches all your code as artifacts[name]) and call env.remember, ' +
         'never act; what it returns is shown with the state.' : '',
+      python: agentNativeProgramLoop ? 'Named programs are created with save_program and run in a fresh sandbox on the current state; source is read on demand.'
+        : evo ? 'Python is a persistent sandbox. A documented def name(args, env) becomes a versioned SelfRoot tool automatically; see the Python tool contract. Source is read on demand.'
+        : 'Python is a persistent sandbox; `env.act(action, x, y, predict)` can act when available. `promote` or `save_tool` publishes a session function as a native callable tool.',
       skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {

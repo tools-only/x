@@ -914,6 +914,9 @@ def _export_session_function(req, env):
     if node.args.kwarg: passed.append("**args.get(" + repr(node.args.kwarg.arg) + ", {})")
     invocation = target + '(' + ', '.join(passed) + ')'
     return {'ok': True, 'value': {'name': name, 'source': source, 'parameters': parameters,
+        'docstring': ast.get_docstring(node) or '',
+        'tool_signature': parameters == ['args', 'env'] and not (node.args.posonlyargs or node.args.defaults or
+            node.args.vararg or node.args.kwonlyargs or node.args.kwarg or node.args.kw_defaults),
         'promote_source': prototype, 'invocation': invocation,
         'session_dependencies': session_dependencies, 'runtime_inputs': dynamic_inputs,
         'other_globals': other_globals, 'unresolved_names': unresolved,

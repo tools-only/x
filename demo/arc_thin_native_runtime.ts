@@ -800,6 +800,7 @@ export class NativeRuntime {
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     const savedExpectation = save !== undefined && !readonly ? splitHarnessExpectation(code) : undefined;
     if (savedExpectation) code = savedExpectation.source;
+    const definitionsBefore = new Map(session?.payload().defs ?? []);
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
     // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.
     const parent = !readonly && session === this.session && this.host.workMemory !== false;
@@ -863,6 +864,43 @@ export class NativeRuntime {
     const outcome = session?.commit(result.session, live);
     // A checkpoint that did not load must not stay half-restored in the kernel: the next call starts from the rollback.
     if (live && outcome?.event === 'rolled_back') { this.kernel!.kill('its checkpoint did not load'); session!.kernelEnded(); }
+    // A conforming function definition is the Agent's publication intent. Export and bind it in the same
+    // sandbox call; ordinary scratch cells and session values remain transient execution state.
+    if (this.host.reflectedSelf && session === this.session && result.ok && outcome?.committed && !readonly && !save) {
+      for (const [name, source] of session!.payload().defs) {
+        if (source === definitionsBefore.get(name) || !/^def\s+\w+\s*\(\s*args\s*,\s*env\s*\)/m.test(source)) continue;
+        try {
+          const input = { ...this.snapshot(), mode: 'session_export', function: name, session: session!.payload(),
+            session_names: session!.names() } as ReturnType<NativeRuntime['snapshot']> & Record<string, any>;
+          const exported = this.kernel ? await this.executeKernel(input, signal, undefined) : await this.execute(input, signal);
+          if (!exported.ok) throw Error(String(exported.error ?? 'session function export failed'));
+          const info = exported.value as { source: string; docstring: string; tool_signature: boolean;
+            session_dependencies: string[]; other_globals: string[]; unresolved_names: string[]; runtime_inputs: string[] };
+          if (!info.tool_signature) throw Error('expected exactly (args, env) without additional parameters or defaults');
+          const lines = info.docstring.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+          const purpose = lines[0];
+          const applies = lines.find(line => /^Applies:\s*\S/i.test(line));
+          if (!purpose || /^Applies:/i.test(purpose) || !applies) throw Error('docstring needs a purpose and an Applies: scope line');
+          const missing = [...info.session_dependencies, ...info.other_globals, ...info.unresolved_names, ...info.runtime_inputs];
+          if (missing.length) throw Error(`make dependencies explicit in args/env: ${missing.join(', ')}`);
+          const description = `${purpose} ${applies}`.replace(/[\r\n]+/g, ' ').slice(0, 300);
+          const body = name === 'run' ? info.source : `${info.source}\n\ndef run(args, env):\n    return ${name}(args, env)\n`;
+          const reflected = await this.reflectSource(`tools/${name}.py`, `# program: on\n# description: ${description}\n${body}`);
+          receipts.push(`${name}: automatically staged as a SelfRoot tool for the next decision; ${description}`);
+          this.host.log('component_runs.jsonl', { kind: 'python_component', name, path: `tools/${name}.py`,
+            version: reflected.component?.version, session_version: outcome.version, decision: this.decision(),
+            n: this.host.actionCount(), ok: true });
+          this.host.componentEvent?.('python_component', { name, path: `tools/${name}.py`, version: reflected.component?.version,
+            session_version: outcome.version, status: 'staged' });
+        } catch (error) {
+          const reason = String((error as Error)?.message ?? error).slice(0, 240);
+          receipts.push(`${name}: kept in Python session, not mounted (${reason})`);
+          this.host.log('component_runs.jsonl', { kind: 'python_component', name, session_version: outcome.version,
+            decision: this.decision(), n: this.host.actionCount(), ok: false, error: reason });
+          this.host.componentEvent?.('python_component', { name, session_version: outcome.version, status: 'not_mounted', reason });
+        }
+      }
+    }
     const kernel = live ? (result as any).kernel as { fresh: boolean; previousExit?: string; ended?: string } | undefined : undefined;
     const sessionNotes = [
       kernel?.fresh && kernel.previousExit ? `(new python kernel: the previous one ended (${kernel.previousExit}); the session was restored from its checkpoint v${session!.version} before this call)` : '',
@@ -907,7 +945,9 @@ export class NativeRuntime {
         windowCalls >= 3 && !this.windowCheckHinted.has(windowKey)) {
       this.windowCheckHinted.add(windowKey);
       windowCheck = `WINDOW CHECK: ${windowCalls} Python calls since action #${windowAtStart}. Briefly compare what they established and what remains uncertain. ` +
-        'If the next test is clear, act without deeper review. Investigate a real contradiction, blocker or tool failure. Save checked reusable logic, then call the saved version instead of rebuilding it.';
+        (this.host.reflectedSelf
+          ? 'If the next test is clear, act without deeper review. A documented named function is mounted automatically; call the mounted tool instead of rebuilding it.'
+          : 'If the next test is clear, act without deeper review. Investigate a real contradiction, blocker or tool failure. Save checked reusable logic, then call the saved version instead of rebuilding it.');
       this.host.log('component_runs.jsonl', { kind: 'window_check', level: this.host.level(), n: windowAtStart, decision, calls: windowCalls });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.

@@ -489,6 +489,12 @@ elif script == 'meta':
     assert summary['stall_reviews'] == 2 and summary['actions'] == summary['actions_on_bridge'] == 5, summary
     print(json.dumps({'meta_checks': {'contract_names_hook': True, 'hooks_hosted': hooks, 'level_map': level_map, 'guarded': guards,
                                       'backfilled': True, 'expect_returned': True, 'played': played}}), flush=True)
+elif script == 'auto-component':
+    assert any(any(tool.get('name') == 'double' for tool in request.get('tools', [])) for request in parent_requests), 'automatically mounted tool must reach Pi provider schema'
+    assert 'Double a supplied number. Applies: numeric inputs.' in shown_history, 'compact SelfRoot view must show purpose and scope'
+    assert any(result.get('tool') == 'double' and not result.get('is_error') and '8' in result.get('text', '')
+               for request in parent_requests for result in request.get('last_tool_results', [])), 'the mounted tool must execute successfully'
+    assert summary['actions'] >= 2 and summary['provider_errors'] == 0, summary
 else:
     assert "COUNTEREXAMPLE" in text and "EDITED_NOTE" in text
     assert "read-only" in text and "invalid workspace path" in text

@@ -294,6 +294,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 ## 后续更新
 
+2026-11-19 A/D 补记：Python session 中符合通用契约的 Agent 具名函数已在同一次沙箱调用后自动登记到 SelfRoot tool，普通视图只显示功能、适用范围和版本；生产 Pi/bridge + mock ARC SDK + scripted provider 证明下一决策可调用。沙箱属于 Agent runtime，函数源码属于能力组件，未改变环境 adapter。跨压缩后的语义连续性、真实模型自主复用和净收益未验证；A、D 待办保持开放。见[同一变更记录 §10](plans/2026-11-19-arc-selfroot-context-and-evolution.md#10-python-沙箱函数自动纳入-selfroot-能力2026-11-19)。
+
 2026-11-02 第一阶段 MEMORY-A1：真实 `self-harness-bounded-20261102-103200` 中 ADAPT 写入 memory，runtime 持久化且下一 TASK 工作集包含 memory section；下一行动没有遵循该条 memory 的具体建议，日志无法判定是否有意修订或语义采用，实际 provider 请求内容也未单独留证。后续核对真实输入与下一轮判断/行动/反馈，合理不使用单列；收益声明需对照。此项仍开放，见[第一阶段记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-第一阶段真实路径补记)。
 
 2026-11-02 按需 ADAPT 真实运行遗留：scripted provider 路径到达 TASK request → ADAPT skip → TASK，证明接线；OpenRouter/Nemotron 真实 `ls20` 样本取消 token 上限后运行 635 秒、1 动作时因连续决策恢复额度耗尽停止，未见 `request_adapt`，因此自主触发与真实 TASK→ADAPT→TASK 均未验证。另有 3 次 decision timeout、2 次恢复、3 次中断请求用量未知。待追踪：provider schema 中请求工具是否可见；超时与恢复耗尽原因及中断重复执行边界；配置规则独立触发与生效；ADAPT 修改进入并改变后续 TASK；manual/on-demand 对 after_batch 的任务进展与父子成本对照；终态/预算/失败等边界回归。下一次真实 provider 运行需单独预算授权。详见[同一计划记录](plans/2026-11-02-minimal-self-harness-agent-system.md#2026-11-02-真实运行结果与待追踪项)及[验收分析指南](self-harness-test-acceptance-guide.md)。

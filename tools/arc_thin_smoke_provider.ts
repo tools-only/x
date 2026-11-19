@@ -255,6 +255,17 @@ const FOUNDATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['read', { path: 'data/frames/1.json' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'later parent' }]] },
 ];
+const AUTO_COMPONENT_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [
+    ['python', { code: 'def double(args, env):\n    """Double a supplied number.\n    Applies: numeric inputs.\n    """\n    value = args["value"]\n    if not isinstance(value, (int, float)):\n        raise ValueError("value must be numeric")\n    return {"value": value * 2}' }],
+    ['arc_action', { action: 'ACTION1' }],
+  ] },
+  { kind: 'decide', text: 'Definition and first action recorded.' },
+  { kind: 'decide', calls: [['double', { args: { value: 4 } }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', text: 'Saved tool result and second action recorded.' },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+];
 const QUERY_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: '[grid[3].index(9), len(state["frames"])]' }],
     ...(process.env.ARC_HARNESS_CRITIC !== 'disabled' ? [['refine', { focus: 'query observation diagnostic' }] as [string, Record<string, unknown>]] : [])] },
@@ -584,6 +595,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'auto-component' ? AUTO_COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "environment" ? ENVIRONMENT_SCRIPT
 	: process.env.ARC_THIN_SMOKE_SCRIPT === "selfharness" ? SELF_HARNESS_SCRIPT
