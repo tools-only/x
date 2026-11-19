@@ -1361,7 +1361,7 @@ export class NativeRuntime {
         tools.push({ name, description: fileTool.description, parameters: fileTool.parameters });
         runTools.set(name, args => fileTool.execute('consult', args, signal, undefined, ctx));
       } else if (name === 'python') {
-        tools.push({ name, description: 'Read-only one-off Python', parameters: Type.Object({ code: Type.String() }) });
+        tools.push({ name, description: 'Read-only one-off Python. Batch independent checks from the same observation in one call; keep intermediate results in session names and return only evidence that could change the next decision. Call again only when a result creates a new checkable hypothesis. One-off analysis code does not need to be saved or published.', parameters: Type.Object({ code: Type.String() }) });
         runTools.set(name, args => this.python(args.code, signal, true, undefined, childSession));
       } else {
         const c = this.registryComponents().find(c => c.kind === 'tool' && c.name === name && !c.path.startsWith('observers/'));

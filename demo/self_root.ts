@@ -1626,29 +1626,50 @@ export class SelfRoot extends LiveAgentSelf {
     const passWindow = Array.isArray(facts.pass_window) ? facts.pass_window : Array.isArray(facts.window) ? facts.window : undefined;
     const range = summary?.value?.ledger ?? passWindow;
     const rows = Array.isArray(range) ? this.ledger.slice(range[0], range[1] + 1) : [];
-    const item = (r: Row) => ({ ref: r.ref, type: r.type, value: copy(r.value) });
     const processTypes = new Set(['request_record', ...PROCESS_FACT_TYPES]);
-    const processFacts = rows.filter(r => processTypes.has(r.type)).map(item);
+    const processFacts = rows.filter(r => processTypes.has(r.type)).map(r => ({ ref: r.ref, type: r.type,
+      ...(r.type === 'request_record' ? { request: r.value.request, usage: copy(r.value.usage ?? null), tokens: copy(r.value.tokens ?? null),
+        stop: r.value.stop ?? null, latency_ms: r.value.latency_ms ?? null } : {}) }));
     const summaryValue = summary?.value ?? { process: {}, metrics: [] };
     const processMetrics = Object.entries(summaryValue.process ?? {}).map(([name, value]) => ({ name: `process.${name}`, value, ref: summary?.ref ?? null }));
     const acceptance = (summaryValue.metrics ?? []).filter((m: any) => typeof m.name === 'string' && m.name.startsWith('acceptance.')).map((m: any) => ({ ...copy(m), denominator: m.name.endsWith('_found') ? (summaryValue.metrics ?? []).find((x: any) => x.name === m.name.replace('_found', '_total'))?.value ?? null : undefined, ref: summary?.ref ?? null }));
-    const toolEvents = rows.filter(r => r.type === 'event' && ['tool_succeeded', 'tool_failed', 'tool_cancelled'].includes(r.value?.type))
-      .map(r => ({ ref: r.ref, type: r.value.type, facts: copy(r.value.facts) }));
+    const toolEvents = rows.filter(r => r.type === 'event' && ['tool_succeeded', 'tool_failed', 'tool_cancelled'].includes(r.value?.type));
+    const failedTools = new Map<string, { tool: string; count: number; refs: string[]; last_error?: string }>();
+    for (const r of toolEvents.filter(r => r.value.type === 'tool_failed' || r.value.type === 'tool_cancelled')) {
+      const tool = String(r.value.facts?.tool ?? 'unknown');
+      const item = failedTools.get(tool) ?? { tool, count: 0, refs: [] };
+      item.count++;
+      item.refs.push(r.ref);
+      const error = r.value.facts?.error ?? r.value.facts?.reason;
+      if (error !== undefined) item.last_error = String(error).slice(0, 240);
+      failedTools.set(tool, item);
+    }
     const boundaries = rows.filter(r => r.type === 'event' && ['unit_completed', 'work_quantum', 'settlement'].includes(r.value?.type))
-      .map(r => ({ ref: r.ref, type: r.value.type, facts: copy(r.value.facts) }));
-    const receipts = rows.filter(r => (this.options.processFactTypes ?? []).includes(r.type)).map(item);
-    const selfActivity = rows.filter(r => ['reflection_activated', 'reflection_noop', 'review_closed'].includes(r.type)).map(item);
-    const qualityFacts = rows.filter(r => r.type === 'task_outcome').map(r => ({ ref: r.ref, value: copy(r.value) }));
+      .map(r => ({ ref: r.ref, type: r.value.type }));
+    const receipts = rows.filter(r => (this.options.processFactTypes ?? []).includes(r.type)).map(r => ({ ref: r.ref, type: r.type }));
+    const selfActivity = rows.filter(r => ['reflection_activated', 'reflection_noop', 'review_closed'].includes(r.type)).map(r => ({ ref: r.ref, type: r.type }));
+    const qualityFacts = rows.filter(r => r.type === 'task_outcome').map(r => ({ ref: r.ref, value: {
+      ...Object.fromEntries(Object.entries(r.value).filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value))
+        .map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 240) : value])),
+      ...(Array.isArray(r.value.metrics) ? { metrics: copy(r.value.metrics) } : {}),
+    } }));
     const due = (facts.due_windows ?? []).map((id: string) => {
       const window = this.windows.find(w => w.id === id);
       return window ? { id, delivered: copy(window.delivered ?? null) } : { id, delivered: null };
     });
-    const allFacts = rows.filter(r => r.kind === 'fact').map(item);
+    const allFacts = rows.filter(r => r.kind === 'fact').map(r => ({ ref: r.ref, type: r.type }));
     const requests = rows.filter(r => r.type === 'request_record').map(r => ({ ref: r.ref, request: r.value.request, usage: copy(r.value.usage ?? null), usd: r.value.usd_estimate ?? null }));
     const omitted_context = rows.flatMap(r => (r.value?.composition?.omitted_items ?? []).map((x: any) => ({ ...copy(x), request_ref: r.ref })));
     const legalMetrics = [...new Map((summaryValue.metrics ?? []).filter(isMetric).map((m: Metric) => [`${m.name}|${m.scope ?? 'segment'}`, { name: m.name, scope: m.scope ?? 'segment' }])).values()];
-    if (this.pendingDelivery || this.options.pendingDeliveryState?.()) allFacts.push({ ref: `pending-delivery:${this.request}`, type: 'pending_final_delivery', value: { state: 'pending', action: this.pendingDeliveryName ?? 'final delivery' } });
-    return { process_facts: processFacts, tool_events: toolEvents, boundaries, receipts_probes: receipts,
+    if (this.pendingDelivery || this.options.pendingDeliveryState?.()) allFacts.push({ ref: `pending-delivery:${this.request}`, type: 'pending_final_delivery' });
+    const factCounts = { ledger_rows: rows.length, facts: rows.filter(r => r.kind === 'fact').length,
+      process_facts: processFacts.length, requests: rows.filter(r => r.type === 'request_record').length,
+      task_results: qualityFacts.length, tool_events: toolEvents.length, failed_tools: [...failedTools.values()].reduce((n, x) => n + x.count, 0),
+      receipts: receipts.length, boundaries: boundaries.length };
+    return { trigger_facts: copy(facts), fact_counts: factCounts,
+      ledger_range: Array.isArray(range) ? { offset: range[0], count: Math.max(0, range[1] - range[0] + 1), read: 'read_self(section="ledger", offset, count)' } : null,
+      process_facts: processFacts, tool_events: toolEvents.map(r => ({ ref: r.ref, type: r.value.type })),
+      failed_tool_summary: { count: [...failedTools.values()].reduce((n, x) => n + x.count, 0), tools: [...failedTools.values()] }, boundaries, receipts_probes: receipts,
       quality_facts: qualityFacts, fact_table: { process_metrics: processMetrics, unit_acceptance: acceptance, request_costs: requests, omitted_context, pending_delivery: Boolean(this.pendingDelivery || this.options.pendingDeliveryState?.()), legal_predicate_metrics: legalMetrics },
       self_activity: selfActivity, due_window_deliveries: due, all_facts: allFacts };
   }
@@ -2147,6 +2168,18 @@ export class SelfRoot extends LiveAgentSelf {
   }
   async runPendingDelivery() { if (!this.pendingDelivery || this.review || this.queue.length) return undefined; const pending = this.pendingDelivery; this.pendingDelivery = undefined; this.pendingDeliveryName = undefined; this.options.onPendingDelivery?.(false); return pending.run(); }
   needsQualityReview() { return this.ledger.some(r => r.type === 'task_outcome' && !this.reviewedQualityRefs.has(r.ref)); }
+  /** Host adapters pass their own limits before dispatch; ARC's pin remains uncapped. */
+  guard(storageBytes: number, b?: { requests: number; tokens: number; usd: number; seconds: number; storage_bytes: number }) {
+    this.storageBytes = storageBytes;
+    if (!b) return;
+    if (this.request >= b.requests || this.tokens >= b.tokens || this.usd >= b.usd ||
+        (Date.now() - this.started) / 1000 >= b.seconds || this.storageBytes >= b.storage_bytes) {
+      this.closeMechanically('hard budget');
+      this.fact('budget_stop', this.resources());
+      this.taskEnd('budget stop');
+      throw Error('authorized budget exhausted');
+    }
+  }
   pin(kind = 'task') {
     this.request++;
     if (this.review) this.reviewRequests++;
