@@ -130,3 +130,23 @@ HEAD `0939c8e3`（含常驻学习条件审查、`read_self(section="learning_env
 | 净收益 | 部分验证 | 对比 m15 | 交付 literal/citation 由缺到全；但能力级 harness 组件未产出，净收益未闭合 |
 
 **下一因素（单因素）**：给 PPT `python` 工具补齐会话函数保存通道（`save` 参数或 `promote_session_function` 等价），使 `reflect_component(kind="tool", session_ref=…)` 可解析；并让 `submit_unit` 在首次 render 前不 ENOENT（host 预建 `exports/` 或优雅返回“需先 render”）。之后同配置再跑一次确认，观察是否出现 `tools/*.py` 组件及后续语义使用。
+
+## 7. 运行验证二（2026-11-20，evo-m21，save 修复后）
+
+HEAD `c22aecec`（PPT `python` 工具增加 `save` 参数，镜像 ARC native runtime 的 `python(code, save=)` 通道）。root `runs/evo-m21-tool-save-20261120`，配置与 m20 相同（无上限 + 视觉 brief）。运行到 revision 30 后人工停止（原因见下），未产生终局 `summary.json`。
+
+**结果**
+
+- 能力级自进化首次出现非 seed 组件：agent 创建并 4 次修订 `deck_fix_loop` memory（`notes/memory/deck_fix_loop.md`，v1→v4）。内容为可复用的 render→look→fix→deliver 工作流，含带账本引用的具体规则（`found:false` 作工作队列；编辑批前 grep oldText；render 每周期一次；deliver 走 review decision；decision 需 wiring 且 evidence 需新鲜 receipt；literal 覆盖不等于语义正确）。`reflection_activated` 地址为 `components.memory.deck_fix_loop`，证明组件被激活。
+- 归属诚实说明：本次 memory 组件走的是 `reflect_component(kind="memory", source=…)`，该路径在 m20 已可用；`save` 参数本次未被使用（无 `python(save=…)` 调用、无 `tools/*.py`）。因此 memory 组件的出现来自 agent 自身行为/常驻审查，而非 `save` 修复的直接因果。
+- 交付未完成：revision 22→30 的 `source_hash` 与 `visual_metrics` 逐帧相同（`86755539…`），agent 反复 render 同一份未变 HTML。这是 deliver-gate 摩擦：`office.deliver`→complete 的 decision 要求 render/look receipt 在同一 request turn 且为当前 artifact，agent 为刷新 receipt 陷入重复 render 循环，最终未完成交付。
+- 新发现的校验摩擦：`reflect_component` 对 memory 组件带 `description` 字段时报 `reflect_component: description requires a tool source or session_ref`（`harness/lifecycle.jsonl`，self_revision 2），agent 去字段重试后成功。错误信息只针对 tool，对非 tool 组件有误导性。
+
+**证据层级更新（m21）**
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 自主采用 | 已验证（能力级） | az / glm-5.3-flash，evo-m21 | 非 seed 组件 `deck_fix_loop` memory 创建+激活+4 次修订，含账本引用 |
+| 净收益 | 部分验证 | 对比 m20 | 能力级组件从无到有；但交付未完成、save 未使用，净收益未闭合 |
+
+**下一因素（单因素）**：deliver-gate 的完成路径。当前 `office.deliver`→complete 使 agent 为刷新 receipt 反复 render 同一 artifact（m21 在 revision 30 被人工停止）。修复方向：让 host 对“同 artifact 的再次 deliver”直接给可判定的结果（幂等或明确拒绝），或放宽“receipt 必须同一 turn”的约束，使 agent 不必重复 render 就能完成交付。之后同配置再跑一次，确认能 clean 完成交付且能力组件被后续任务语义使用。
