@@ -162,6 +162,7 @@ export function selfRootToolSchema(evo: SelfRoot, name: string): any {
 const decideSchema = (meta: boolean): any => ({ type: 'object', properties: {
   op: { type: 'string', enum: ['enter_mode', 'capsule', 'inherit', 'reset', ...(meta ? ['assessment'] : [])], description: 'Omit for an ordinary task decision (decisionId, result).' },
   decisionId: { type: 'string' }, result: {}, mode: { type: 'string' }, value: { type: 'object' },
+  evidenceRefs: { type: 'array', items: { type: 'string' }, description: 'Exact action receipt refs (e.g., action-49, action-50) returned by office.render and office.look; cite them here to satisfy the decision\'s declared evidence requirements. Optional for self operations.' },
   ...(meta ? { assessment_ref: { type: 'string', description: 'Optional exact Agent learning assessment used for this task decision; it must have been exposed in an earlier request.' } } : {}),
   summary: { type: 'string', description: 'Optional reset note; the host continuity pack is built from the ledger.' } }, required: [] as string[], additionalProperties: false });
 
@@ -200,7 +201,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
     return evo.interpret(v.window);
   });
   const decideFields = Object.keys(decideSchema(evo.mech.meta).properties);
-  tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts and versions.'
+  tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). For a task decision whose orchestration evidence requires office.render or office.look, pass evidenceRefs with the exact action-N refs returned by those office calls; the host checks them against the live receipts. Host supplies receipts and versions.'
     + (evo.mech.meta ? ' Assessment(value: finding, condition, evidence_refs) records a learning-conditions judgment; required to close the Meta induction round, optional otherwise. condition usable or unknown may omit evidence_refs, otherwise cite 1-8 exact refs; method/method_version/next_decision/unknowns may be added, or retire_ref. This is an Agent claim carried to one later task request.' : ''),
     open(decideFields), async (a: any, ctx: any) => {
       const unknown = Object.keys(a ?? {}).filter(k => a[k] !== undefined && !decideFields.includes(k));
@@ -227,7 +228,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
       if (evo.reviewExitSchema) throw Error('task decisions resume after this review; close it with decide_exit');
       if (a.assessment_ref && (evo.learningAssessment()?.ref !== a.assessment_ref || evo.learningAssessment()?.exposed_request === null))
         throw Error('assessment_ref must name a pending judgment exposed in an earlier provider input');
-      const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: [], result: a.result });
+      const decision = evo.decide({ decisionId: a.decisionId, actor: 'agent', evidenceRefs: Array.isArray(a.evidenceRefs) ? a.evidenceRefs : [], result: a.result });
       if (a.assessment_ref && decision.accepted) evo.linkLearningDecision(a.assessment_ref, decision);
       return { decision, transition: evo.advance() };
     });

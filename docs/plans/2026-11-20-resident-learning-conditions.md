@@ -150,3 +150,19 @@ HEAD `c22aecec`（PPT `python` 工具增加 `save` 参数，镜像 ARC native ru
 | 净收益 | 部分验证 | 对比 m20 | 能力级组件从无到有；但交付未完成、save 未使用，净收益未闭合 |
 
 **下一因素（单因素）**：deliver-gate 的完成路径。当前 `office.deliver`→complete 使 agent 为刷新 receipt 反复 render 同一 artifact（m21 在 revision 30 被人工停止）。修复方向：让 host 对“同 artifact 的再次 deliver”直接给可判定的结果（幂等或明确拒绝），或放宽“receipt 必须同一 turn”的约束，使 agent 不必重复 render 就能完成交付。之后同配置再跑一次，确认能 clean 完成交付且能力组件被后续任务语义使用。
+
+## 8. 修复（2026-11-20，deliver-gate 完成路径，未重跑）
+
+从 m21 `session.jsonl` 的拒绝回执与 `live_agent_self.jsonl` 的 orchestration 快照定位到两个真实断点（不是 agent 猜测的“same-turn 新鲜度”规则）：
+
+1. **evo `decide` 工具丢弃 evidenceRefs**：`demo/self_root_ppt.ts` 的 `decideSchema` 没有 `evidenceRefs` 字段，且 handler 硬编码 `evo.decide({ ..., evidenceRefs: [] })`。因此任何要求 `office.render` / `office.look` 证据的 decision（m21 的 `deliver_review`）永远 `missing evidence office.render`，agent 反复 render 未变 HTML 也无法满足。
+2. **decision 过渡缺 `on.equals` 永不匹配**：`LiveOrchestrationSession.advance()` 用 `same(pointer(result, on.path), on.equals)` 匹配 decision 过渡；agent 自写的 `refine_to_ship` 只写 `on:{type:"decision",id:"deliver_review"}`（无 path/equals），`same(result, undefined)` 恒 false，证据即使齐也不会推进到 `ship`。
+
+**修复（单因素，host 承载拼接/匹配）**：
+
+- `self_root_ppt.ts`：`decideSchema` 暴露 `evidenceRefs`（string 数组），handler 传 `a.evidenceRefs`；工具描述写明引用 `office.render`/`office.look` 返回的 `action-N` 回执。
+- `live_orchestration_core.ts`：decision 过渡在未声明 `equals` 时视为“任意已校验结果即通过”，即 `on.equals === undefined ? true : same(pointer(result, on.path), on.equals)`。
+
+**功能验证（免费，本地）**：`tests/live_orchestration_core.test.ts` 8/8、`tests/self_root.test.ts` 29/29、`tests/self_root_meta.test.ts` 21/21 通过；直接复现 `deliver_review`（无 path/equals 的 decision 过渡）经 `decide` + `advance` 推进到 `ship`。`tests/ppt_demo_live_orchestration.test.ts` 的 1 例失败为既有的旧 `reflect_orchestration`（缺 `mode`）schema 漂移，与本次改动无关。
+
+**待验证（付费，未运行）**：同 m20/m21 配置冻结新 root 重跑，确认 `deliver_review`→`ship`→`office.deliver`→`complete` 干净收尾（`stop: delivered`、`deliveredRevision`、无相同 hash 的重复 render 循环），且能力组件（如 `deck_fix_loop` memory）被后续任务语义使用。

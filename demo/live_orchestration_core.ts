@@ -272,7 +272,8 @@ export class LiveOrchestrationSession {
     const definition = this.current.orchestration;
     if (!latest || this.consumedDecisions.has(latest.ref) || latest.revision !== this.current.revision || latest.step !== this.activeStep || latest.generation !== this.stepGeneration)
       return { status: 'stalled' as const, step: this.activeStep, reason: 'no fresh decision for current step and revision', editable_content: this.decisionTemplate() };
-    const matching = definition.transitions.filter(t => t.from === this.activeStep && t.on.type === 'decision' && latest.decisionId === t.on.id && same(pointer(latest.result, t.on.path), t.on.equals)
+    const matching = definition.transitions.filter(t => t.from === this.activeStep && t.on.type === 'decision' && latest.decisionId === t.on.id
+      && (t.on.equals === undefined ? true : same(pointer(latest.result, t.on.path), t.on.equals))
       && this.requiresMatched(t.requires, latest.evidenceRefs));
     if (matching.length !== 1) return { status: 'stalled' as const, step: this.activeStep, reason: matching.length ? 'ambiguous transition' : 'no transition matches current decision and evidence', editable_content: this.decisionTemplate() };
     const transition = matching[0];
