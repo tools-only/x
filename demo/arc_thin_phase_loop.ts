@@ -17,10 +17,7 @@ const DEFAULT: AdaptConfig = {
   mode: 'on_demand', checkpoint_every_batches: 6,
   rules: [{ event: 'prediction_miss', count: 2, within_actions: 8 }],
 };
-const TASK_PROMPT = 'Decide the next action. Briefly check this window\'s recent trajectory: what changed and what remains uncertain? ' +
-  'If there is no real blocker, contradiction, or tool failure, act on the clearest next test without extended analysis. ' +
-  'When a registered saved tool fits the analysis or next move you are about to do, call it by its name with current args now; ' +
-  'use its result to choose the next action. If it does not fit, continue directly or revise it.';
+const TASK_PROMPT = 'Decide the next action.';
 
 function validateConfig(value: any): AdaptConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||

@@ -66,12 +66,7 @@ DAEMON_RECOVERY_PROMPT = (
     "writes. Do not repeat changes or take an environment action. Finish with daemon_reply(summary, publish=path) "
     "for one staged component, or omit publish for justified no_change. Include unresolved work; then stop."
 )
-WINDOW_DECIDE_PROMPT = (
-    "Decide the next action. Briefly check this window's recent trajectory: what changed and what remains uncertain? "
-    "If there is no real blocker, contradiction, or tool failure, act on the clearest next test without extended analysis. "
-    "When a registered saved tool fits the analysis or next move you are about to do, call it by its name with current args now; "
-    "use its result to choose the next action. If it does not fit, continue directly or revise it."
-)
+WINDOW_DECIDE_PROMPT = DECIDE_PROMPT
 NO_ACTION_PROMPT = (
     "Decide the next action. Your previous decision ended without arc_action; "
     "end this one with exactly one arc_action."

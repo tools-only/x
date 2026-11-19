@@ -4702,9 +4702,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					(selfBaseline ? "In Self-baseline, author and check a parameterized logic prototype before binding live session values at its call site. promote_session_function(function=\"name\") returns an existing session function's source and external-name report; adapt it before publishing with self_component. " : "") +
 						(workMemory ? "Each result starts with the call's address, [P12]; cell(12) runs that call's code again on the current state, " +
 							"cell(12, a, b) only its lines a to b, and a call that repeats an earlier one, or some of its lines, is told so. " : "") +
-						(pythonKernel ? "The session is a live kernel: what you define stays in memory across calls and decisions, so keep data in " +
-							"names and print only what you need to read; the final value is also _. " : "") +
-					"Check one action decision per cell, including foreseeable branches. Return the evidence that changes the choice. Saved tools run without this namespace."
+						(pythonKernel ? "The session is a live kernel: definitions and names persist across calls and decisions; the final value is also _. " : "")
 				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
 					"Returns what you print and the value of a final expression. Standard library only; no files or network.",

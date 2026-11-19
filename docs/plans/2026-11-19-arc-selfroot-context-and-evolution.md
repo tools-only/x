@@ -105,3 +105,12 @@
 - 净收益：预算获授权后，在运行前固定任务集（含留出任务）、模型、thinking、并发、动作与时间预算、独立重复数和停止规则。先用当前版本作基线，再逐步启用上述改动。与 CH 比较使用独立在线运行，各自经历一条不可回退的轨迹。
 - 效率判据：同计量口径的每个实际环境动作总 token 与整场墙钟时间/动作均不高于 CH，并同时检查固定时间及动作预算下的关卡进展、重复无效动作、失败和补读。计入父子、复盘、失败请求和末段，缓存和未知用量单列。零动作运行单报总成本和失败原因。只取得历史参考时，只报告相对于约 30.5k tokens/动作、72 秒/动作的结果。若双方均零关，吞吐达标可以报告，通关能力改善仍未知。
 - 当前证据：本文件交付设计。已有紧凑投影的局部检查记录在迁移记录中。完整的功能、全链路、自主采用、CH 效率齐平均待按上述协议验证。[延后事项 A 和 D](../deferred-research-todos.md) 的 adapter 职责和跨压缩认知连续性继续开放。
+
+## 8. 普通决策提示减负（2026-11-19）
+
+- **真实机会与窄命题。** AZ/Qwen 的 su15 `restart2` 在 30 个动作间调用 Python 100 次；逐段代码显示大量历史帧和网格取证。当前生效的 Python 工具描述要求“每个 cell 检查一个动作决策及可预见分支”，runner 每轮又要求回看变化、未知和已保存工具。这些文字给每次决策增加了程序性任务。移除指令后，Agent 仍能访问相同观测和工具，但不再由常驻提示要求逐项核查；是否减少 Python 往返、总 token 和动作间耗时，需要真实模型验证。若探测频率不变或任务进展退化，则该命题不成立。
+- **范围与成本。** Python schema 只保留会话名称、返回值、保存和调用语义，删掉逐格决策核查、回报决策证据及 Python 数据保存建议。runner 和 TypeScript phase loop 的普通 Task 提示统一为 `Decide the next action.`；恢复提示、pass turn 和实际工具权限不变。Native system 保留一处历史/原始帧按需入口，CH 合同不重复路径；将“中间帧有区别便包含”改成当前渲染器确实保证的“可能包含”。没有新增常驻字段、门禁或管理轮。Agent 仍通过既有观测、回执与按需读取获得证据，后续真实动作的反馈仍进入既有工作视图。
+- **有界评估。** 本轮只做免费验证；不因 prompt 改字而启动新的付费 ARC run。下一次稳定的 AZ/Qwen 普通运行，在既有 Su15 配置和相同计量口径下，比对每动作 Python/Provider 次数、input/output/cache、墙钟、有效动作及关卡进展，并审阅有价值的 Python 使用与漏用。在线 ARC 不可回退；跨 run 仅作方向性比较，净收益需独立重复及预定预算/停止规则。AZ `Arrearage` 间歇故障仍会使样本无法判定模型行为。
+- **功能正确：通过。** `tests/arc_thin_native_context.test.ts` 10 项、`tests/test_arc_thin_decide_prompt.py` 1 项通过；TypeScript 语法和 Python 编译通过。检查了 CH 合同与 Native system 装配后历史路径只出现一次，普通提示为单句。
+- **全链路可达：通过，限脚本环境。** `runs/arc-prompt-trim-20261119/summary.json`：生产 Pi/bridge、mock ARC SDK、scripted provider，3 个动作、0 provider error、正常 bridge close。首个真实组装请求的 `current` 以单句决策提示开头，Python schema 不含逐格核查要求，system 中 `data/trajectory.jsonl` 只出现一次。此 smoke 未启用 CH 合同，CH 装配只由定向测试覆盖。
+- **自主采用：未验证。净收益：未验证。** 脚本 provider 不反映真实 Qwen 的探测选择；本次不能声称 Python 使用量已经下降、CH 观测缺口已经解决，或 ARC 通关改善。延后事项 A 的 adapter 职责边界、D 的跨轮认知质量保持开放。

@@ -2,16 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
-import { renderPrompt } from '../demo/prompt_loader.ts';
+import { loadPrompt, renderPrompt } from '../demo/prompt_loader.ts';
 
 test('native production instructions expose compact observations and defer capability choices to the Agent', () => {
   const prompt = readFileSync(new URL('../demo/prompts/arc_thin_native_system.md', import.meta.url), 'utf8');
   assert.match(prompt, /working view carries the current observation, recent action results, task memory and SelfRoot execution changes/);
   assert.match(prompt, /the Agent decides whether to create, call, revise or retire one/);
   assert.doesNotMatch(prompt, /Say what each action should do before it is played|call its same-named Task tool/);
-  const assembled = renderPrompt('arc_thin_native_system.md', { game: 'test', acting: 'test', observation: 'test', carry: '', predict_on: 'test', list_stop: '', daemon: '', refine: '', call_points: '', arc: '' });
+  const assembled = renderPrompt('arc_thin_native_system.md', { game: 'test', acting: 'test', observation: 'test', carry: '', predict_on: 'test', list_stop: '', daemon: '', refine: '', call_points: '', arc: loadPrompt('arc_thin_native_ch_arc.md') });
   assert.match(assembled, /Python is a persistent sandbox/);
-  assert.match(assembled, /Full history remains available through `history\.grid\(n\)`/);
+  assert.equal(assembled.split('data/trajectory.jsonl').length - 1, 1);
+  assert.match(assembled, /source frames remain available on demand through `history\.grid\(n\)`/);
+  assert.match(assembled, /selected intermediate frames may also appear/);
   assert.match(assembled, /the Agent decides whether to create, call, revise or retire one/);
 });
 
