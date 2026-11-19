@@ -53,7 +53,7 @@ test('orchestration edit upserts by exact ID and rejected step references return
   } } }), (error: any) => {
     assert.equal(error.surface.current_revision, activeRevision);
     assert.deepEqual(error.surface.valid_step_ids, ['work','review']);
-    assert.deepEqual(error.surface.transaction, { status: 'rejected_not_activated', current_revision: activeRevision, candidate_revision: activeRevision, response_chain: 'aborted' });
+    assert.deepEqual(error.surface.transaction, { status: 'rejected_not_activated', current_revision: activeRevision, candidate_revision: activeRevision, response_chain: 'retry_allowed' });
     assert.match(error.surface.correction, /valid step IDs \[work, review\]/);
     return true;
   });

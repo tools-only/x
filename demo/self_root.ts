@@ -195,7 +195,7 @@ export function operationContract(kind: OperationKind) {
     properties: { metric: { type: 'string' }, direction: { type: 'string', enum: ['increase','decrease'] }, segment: { type: 'string', enum: ['last','mean'] }, scope: { type: 'string' } }, required: ['metric','direction','segment'], additionalProperties: false };
   if (kind === 'review') return { name: 'decide_exit', description: 'Finish the current review after the host-visible review work is complete.', properties: { reason }, required: [] as string[] };
   if (kind === 'validation') return { name: 'decide_validation', description: 'Read the due window; missing or provisional comparisons remain unresolved.', properties: { window: { type: 'string' } }, required: [] as string[] };
-  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent. Python session functions can be exported as tools with session_ref and description.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','subagent','memory'] }, name: { type: 'string' }, source: { type: 'string' }, session_ref: { type: 'string', description: 'For tools, export a self-contained function from the Python session. It must accept (args, env). Omit source and patch.' }, description: { type: 'string', description: 'Required with session_ref. One-line description of the exported tool.' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: successPredicate, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
+  if (kind === 'component') return { name: 'reflect_component', description: 'Change one component of this Agent. Tool source is wrapped with required program metadata by the host; Python session functions can be exported with session_ref and description.', properties: { op: { type: 'string', enum: ['define','redefine','restore'] }, kind: { type: 'string', enum: ['tool','prompt','skill','subagent','memory'] }, name: { type: 'string' }, source: { type: 'string' }, session_ref: { type: 'string', description: 'For tools, export a self-contained function from the Python session. It must accept (args, env). Omit source and patch.' }, description: { type: 'string', description: 'Tool description; required with session_ref, optional with source.' }, version: { type: 'integer', minimum: 1 }, write: { type: 'string', enum: ['replace','append','patch'], description: 'How source lands on the current value: replace (default), append, or patch.' }, patch: { type: 'array', items: { type: 'object', properties: { find: { type: 'string' }, replace: { type: 'string' } }, required: ['find','replace'], additionalProperties: false }, description: 'Literal find/replace edits applied to the current source when write=patch.' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: successPredicate, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: ['op','kind','name'] };
   const context = { type: 'object', properties: { order: { type: 'array', items: { type: 'string' } }, instruction: { type: 'string' }, reasoning: { type: 'string', enum: ['all','latest','none'] }, history: { type: 'object' }, tool_results: { type: 'object' }, tool_args: { type: 'object' }, self_view: { type: 'object' }, prompt_layout: { type: 'object', properties: { volatile_tail: { type: 'string', enum: ['self_view','projection','both'] } }, additionalProperties: false } }, additionalProperties: false };
   const policy = { type: 'object', properties: { modes: { type: 'object' }, routes: { type: 'array' }, methods: { type: 'object' }, memory: { type: 'object' }, memory_strategy: { type: 'object' }, context, request: { type: 'object' }, review: { type: 'object' } }, additionalProperties: false };
   return { name: 'reflect_orchestration', description: 'Apply orchestration edits/replacement, an atomic typed policy merge patch, component changes, or restore. For workflow edits use orchestration:{mode:"edit",steps_by_id:{...},transitions_by_id:{...}}; omitted IDs are retained. Use mode:"replace" only with all roles, slots, steps, decisions and transitions. A legal change is pinned before the next request.', properties: { orchestration: orchestrationSchema(), policy, components: { type: 'array', items: { type: 'object' } }, restore: { type: 'integer', minimum: 1 }, restore_scope: { type: 'array', items: { type: 'string' }, description: 'Addresses the restore is intended to revert; the host reports every other address the restore would also change.' }, carry: { type: 'object' }, stepMap: { type: 'object' }, evidence_refs: { type: 'array', items: { type: 'string' } }, success_predicate: successPredicate, expected_effect: { type: 'string', description: 'Recorded effect you expect from this change; declaring one opens a validation window.' } }, required: [] as string[] };
@@ -234,7 +234,7 @@ export function normalizeOperation(kind: OperationKind, args: any, modeExitSchem
     if (!ok || (spec.enum && !spec.enum.includes(v))) throw Error(`${operationContract(kind).name}: invalid ${key}${spec.enum ? `; one of ${spec.enum.join(', ')}` : ''}`);
   }
   if (kind === 'component' && a.session_ref !== undefined && (a.kind !== 'tool' || a.op === 'restore' || typeof a.source === 'string' || a.patch !== undefined || (a.write !== undefined && a.write !== 'replace') || typeof a.description !== 'string' || !a.description.trim())) throw Error('reflect_component: session_ref requires a tool define/redefine, replacement semantics, and a description; omit source and patch');
-  if (kind === 'component' && a.session_ref === undefined && a.description !== undefined) throw Error('reflect_component: description is only valid with session_ref');
+  if (kind === 'component' && a.session_ref === undefined && a.description !== undefined && (a.kind !== 'tool' || a.op === 'restore' || !a.description.trim())) throw Error('reflect_component: description requires a tool source or session_ref');
   if (kind === 'component' && a.op !== 'restore' && typeof a.source !== 'string' && a.session_ref === undefined && !(a.write === 'patch' && Array.isArray(a.patch) && a.patch.length)) throw Error('reflect_component: define/redefine needs source (or write:patch with a patch array, or a tool session_ref)');
   if (kind === 'component' && a.patch !== undefined && (!Array.isArray(a.patch) || a.patch.some((p: any) => !p || typeof p.find !== 'string' || typeof p.replace !== 'string'))) throw operationError('patch must be an array of {find, replace} string pairs', kind, a, { invalid: ['patch'] });
   if (kind === 'component' && a.op === 'restore' && a.version === undefined) throw Error('reflect_component: restore needs version');
@@ -337,6 +337,16 @@ export function compileOrchestrationIntent(def: any, knownActions?: ReadonlySet<
   const recordable = knownActions?.size ? ` Action receipt types this runtime records: ${[...knownActions].sort().join(', ')}.` : '';
   const decisionOf = (stepId: any) => { const s = steps.find(x => x?.id === stepId); return s?.decision ? decisions.find(x => x?.id === s.decision) : undefined; };
   const actionsOf = (stepId: any) => { const a = steps.find(x => x?.id === stepId)?.actions; return Array.isArray(a) ? a : []; };
+  for (const decision of decisions) {
+    if (!decision || !Array.isArray(decision.evidence) || decision.evidence.length) continue;
+    const incoming = transitions.filter(t => t?.to === steps.find(s => s?.decision === decision.id)?.id && t.on?.type === 'action');
+    const types = [...new Set(incoming.map(t => t.on.action))];
+    if (types.length === 1 && (!knownActions?.size || knownActions.has(types[0]))) {
+      decision.evidence = [{ type: types[0] }];
+      compiled.push({ step: steps.find(s => s?.decision === decision.id)?.id, field: `decisions.${decision.id}.evidence`, value: copy(decision.evidence) });
+    } else throw operationError(`decision ${decision.id} needs evidence from a recorded action; incoming action receipt types: ${types.join(', ') || 'none'}.${recordable}`, 'orchestration', def, {
+      invalid: [`decisions.${decision.id}.evidence`], correction: `Supply evidence:[{type:"<recorded receipt type>"}] for decision ${decision.id}; use an action receipt the decision can actually inspect.${recordable}` });
+  }
   for (const t of transitions) {
     if (!t || typeof t !== 'object') continue;
     const dec = decisionOf(t.from);
@@ -570,7 +580,7 @@ export class SelfRoot extends LiveAgentSelf {
   private currentMode = 'execute';
   private review?: any;
   private pending?: { candidate: LiveAgentSelf; policy: Policy; revision: number; addresses: string[]; windows: any[]; source?: number; baseStateHash: string; declaredLayers?: Record<string, string> };
-  private chainFailed = false;
+  private abortGeneration = 0;
   private paused = false;
   private requestPin?: any;
   private started = Date.now();
@@ -1129,18 +1139,17 @@ export class SelfRoot extends LiveAgentSelf {
     this.fact('meta_t0_design', { revision: this.pending?.revision ?? this.serial, status: result?.status ?? 'changed', addresses: result?.addresses ?? null, gate: 'open', contract });
   }
   abortTransaction(error: unknown, tool?: string) {
-    this.pending = undefined; this.pendingReview = undefined;
+    this.abortGeneration++;
     // A rejected self-operation is the signal the agent named as missing. M3 (2026-11-16): seven refused read/reflect
     // calls were answered with a same-turn correction and recorded nothing, so the self-state digest's
     // refused_self_operations stayed empty while the agent was in fact being refused. Record the same tool_failed
     // shape the other failure paths write, so one reader covers both.
     if (tool) this.fact('tool_failed', { tool, error: String(error) });
-    if (!this.chainFailed) this.fact('transaction_failed',{error:String(error),status:'entire response chain aborted'});
-    this.chainFailed = true;
+    this.fact('transaction_failed',{error:String(error),status:'operation rejected; same-turn retry allowed'});
   }
   private async prepareTransaction(input: { baseRevision?: number; components?: any[]; orchestration?: any; policy?: Policy; carry?: any; stepMap?: any; restore?: number; restore_scope?: string[]; expected_effect?: string; evidence_refs?: string[]; success_predicate?: any; evolution_layer?: string }) {
+    const generation = this.abortGeneration;
     try {
-      if (this.chainFailed) throw Error('transaction chain already failed');
       if (input.baseRevision !== undefined && input.baseRevision !== this.pendingRevision) throw Error(`stale revision; expected ${this.pendingRevision}`);
       // EVO_L4: optional declared layer per changed address; recorded and echoed, never inferred.
       const declaredLayers: Record<string, string> = {};
@@ -1208,6 +1217,12 @@ export class SelfRoot extends LiveAgentSelf {
           value.source = src;
         }
         else if (c.kind === 'memory' && c.op === 'redefine' && c.write === undefined && policy.memory.write === 'append') value.source = `${currentSource() ?? ''}\n${c.source}`;
+        if (this.mech.compiler && c.kind === 'tool' && c.op !== 'restore' && typeof value.source === 'string' && !value.session_ref) {
+          const head = value.source.split(/\r?\n/).slice(0, 10);
+          const needsProgram = !head.some(line => line.trim() === '# program: on');
+          const needsDescription = typeof c.description === 'string' && c.description.trim() && !head.some(line => line.startsWith('# description:'));
+          if (needsProgram || needsDescription) value.source = `# program: on\n${needsDescription ? `# description: ${c.description.trim().replace(/[\r\n]+/g, ' ')}\n` : ''}${value.source}`;
+        }
         // Hash gate: a source identical to the current version does not bump the version or open a window.
         if (this.mech.compiler && c.op === 'redefine' && currentSource() === value.source) { skippedUnchanged.push(componentAddress(c.kind, c.name)); continue; }
         declareLayer(componentAddress(c.kind, c.name), c.evolution_layer);
@@ -1236,7 +1251,7 @@ export class SelfRoot extends LiveAgentSelf {
               const currentRevision = this.revision;
               throw operationError(`transition "${itemId}" has ${field}=${JSON.stringify(target)} but that step does not exist`, 'orchestration', input, {
                 invalid: [path], correction: `Use one of valid step IDs [${validStepIds.join(', ')}] for ${field}${field === 'to' ? ' (or "complete" to finish)' : ''}, then resubmit. The candidate was not activated; the current definition is still active.`,
-                current_revision: currentRevision, valid_step_ids: validStepIds, transaction: { status: 'rejected_not_activated', current_revision: currentRevision, candidate_revision: candidate.revision, response_chain: 'aborted' },
+                current_revision: currentRevision, valid_step_ids: validStepIds, transaction: { status: 'rejected_not_activated', current_revision: currentRevision, candidate_revision: candidate.revision, response_chain: 'retry_allowed' },
               });
             }
           }
@@ -1273,7 +1288,7 @@ export class SelfRoot extends LiveAgentSelf {
         const facts = new Set(this.reviewView().all_facts.map((r: any) => r.ref));
         input.evidence_refs = [...new Set(supplied.filter((ref: string) => facts.has(ref)))];
       }
-      if (this.chainFailed) throw Error('response chain failed while candidate was being validated');
+      if (generation !== this.abortGeneration) throw Error('reflection aborted while candidate was being validated');
       const revision = this.pendingRevision + 1;
       this.pendingReview = this.review?.id ?? this.pendingReview;
       const knownMetrics = this.ledger.filter(r => r.type === 'task_outcome' && r.revision <= this.serial)
@@ -1390,7 +1405,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.pending) return;
     const p = this.pending, old = this.baseSaved(), oldPolicy = this.policy, oldSerial = this.serial, onReflection = this.onReflection;
     if (hash(old.snapshot) !== p.baseStateHash) {
-      this.pending = undefined; this.chainFailed = false;
+      this.pending = undefined;
       this.fact('activation_failed',{ error:'pinned state changed after reflection; retry migration against current state', revision:this.serial });
       if (this.pendingReview && !this.review) this.fact('review_activation_interrupted', { review: this.pendingReview, outcome: 'not_activated', reason: 'activation failed' });
       this.pendingReview = undefined;
@@ -1504,7 +1519,6 @@ export class SelfRoot extends LiveAgentSelf {
   async boundary(applySurface: (tools: string[]) => void, persist: () => void) {
     if (this.paused) throw Error('inconsistent/paused');
     this.activatePending(applySurface, persist);
-    this.chainFailed = false;
     // META pass cap (2026-11-17): a host-opened pass is bounded; at the cap it closes mechanically as recorded
     // facts and the task resumes. The pass never owns the run, and the closure never invents an agent judgment.
     // The induction round is agent-closed. A specialist focus is an execution turn: reflection/no_change closes
@@ -1883,7 +1897,7 @@ export class SelfRoot extends LiveAgentSelf {
       const current = active.filter(c => c.kind === kind);
       const names = [...new Set(current.map(c => c.name))];
       if (!names.length) names.push(`${kind}_candidate`);
-        return names.map(name => { const c = current.find(x => x.name === name); const row: any = entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true, chars: c.source?.length ?? null, current_source: 'read_self_component(kind, name)' } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['first ten lines must contain # program: on'] : ['non-empty source'], example: c ? { op: 'redefine', kind, name } : { op: 'define', kind, name, source: minimalComponentSource(kind, name) } }); if (this.mech.a4 && !c) row.candidate = true; return row; });
+    return names.map(name => { const c = current.find(x => x.name === name); const row: any = entry(name, kind, `${kind} component`, c ? { version: c.version, source_hash: hash(c.source).slice(0, 12), active: true, chars: c.source?.length ?? null, current_source: 'read_self_component(kind, name)' } : { active: false }, this.contract.writable.includes(`components.${kind}`), { ops: ['reflect_component'], source_requirements: kind === 'tool' ? ['host adds # program: on when omitted'] : ['non-empty source'], example: c ? { op: 'redefine', kind, name } : { op: 'define', kind, name, source: minimalComponentSource(kind, name) } }); if (this.mech.a4 && !c) row.candidate = true; return row; });
     });
     const policyValue = (v: any) => { const s = JSON.stringify(v); return s.length <= 400 ? copy(v) : { keys: Object.keys(v ?? {}), chars: s.length, full: 'read_self(section="policy")' }; };
     const policyEntries = Object.keys(this.policy).map(name => entry(`policy.${name}`, 'policy', name, policyValue((this.policy as any)[name]), this.contract.writable.includes('policy'), { ops: ['reflect_orchestration'], example: { policy: { [name]: '<merge patch onto the current value>' } } }));
