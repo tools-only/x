@@ -519,7 +519,7 @@ def run(root: Path, *, round_deadline: float | None = None):
                     break
                 saved = json.loads((root / ".harness/live-self.json").read_text(encoding="utf-8"))
                 ledger = saved.get("root",{}).get("ledger",[])
-                if state.get("complete") and not saved.get("root",{}).get("queue"):
+                if not saved.get("root",{}).get("queue") and (state.get("complete") or saved.get("root",{}).get("taskEnded")):
                     result["stop"] = "delivered"
                     break
                 resets = [r for r in ledger if r["type"] == "active_reset_authorized" and r["ref"] not in handled_resets]

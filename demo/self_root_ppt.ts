@@ -191,7 +191,7 @@ export function installSelfRootTools({ pi, evo, manifest, root, workspace, text,
   });
   const decideFields = Object.keys(decideSchema(evo.mech.meta).properties);
   tool('decide', 'Task decision (decisionId, result) or a self operation: enter_mode(mode), capsule(value), inherit(value: applicability, optional counterexamples), reset(optional summary). Host supplies receipts and versions.'
-    + (evo.mech.meta ? ' Optional assessment(value: finding and exact evidence_refs; condition/method/method_version/next_decision/unknowns may be added, or retire_ref). This is an Agent claim carried to one later task request.' : ''),
+    + (evo.mech.meta ? ' Assessment(value: finding, condition, evidence_refs) records a learning-conditions judgment; required to close the Meta induction round, optional otherwise. condition usable or unknown may omit evidence_refs, otherwise cite 1-8 exact refs; method/method_version/next_decision/unknowns may be added, or retire_ref. This is an Agent claim carried to one later task request.' : ''),
     open(decideFields), async (a: any, ctx: any) => {
       const unknown = Object.keys(a ?? {}).filter(k => a[k] !== undefined && !decideFields.includes(k));
       if (unknown.length) throw Error(`decide: unknown field(s) ${unknown.join(', ')}; visible fields: ${decideFields.join(', ')}`);

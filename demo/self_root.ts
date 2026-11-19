@@ -814,7 +814,7 @@ export class SelfRoot extends LiveAgentSelf {
         semantic_use: 'unknown' },
     };
   }
-  /** Optional Agent judgment. Exact evidence is checked, but the judgment is never promoted to a host fact. */
+  /** Agent judgment. The Meta induction round requires one before decide_exit. Exact evidence is checked, but the judgment is never promoted to a host fact. */
   assessLearning(value: any) {
     if (!this.mech.meta) throw Error('learning assessment requires Meta');
     if (value?.retire_ref !== undefined) {
@@ -822,16 +822,20 @@ export class SelfRoot extends LiveAgentSelf {
       if (Object.keys(value).length !== 1 || pending?.ref !== value.retire_ref) throw Error('retire_ref must name the pending learning assessment');
       return this.fact('learning_assessment_retired', { assessment_ref: pending.ref });
     }
+    const condition: string | null = value?.condition ?? null;
+    const lenient = condition === 'usable' || condition === 'unknown';
+    const refs: string[] = Array.isArray(value?.evidence_refs) ? value.evidence_refs : [];
+    const refsValid = (value?.evidence_refs === undefined || Array.isArray(value.evidence_refs)) && refs.every((ref: any) => typeof ref === 'string')
+      && (lenient ? refs.length <= 8 : refs.length >= 1 && refs.length <= 8);
     if (!value || typeof value.finding !== 'string' || !value.finding.trim() || value.finding.length > 1200
-      || !Array.isArray(value.evidence_refs) || !value.evidence_refs.length || value.evidence_refs.length > 8
-      || !value.evidence_refs.every((ref: any) => typeof ref === 'string')
-      || (value.condition !== undefined && !['missing', 'inadequate', 'blind', 'late', 'usable'].includes(value.condition))
+      || !refsValid
+      || (value.condition !== undefined && !['missing', 'inadequate', 'blind', 'late', 'usable', 'unknown'].includes(value.condition))
       || (value.method !== undefined && (typeof value.method !== 'string' || value.method.length > 300))
       || (value.method_version !== undefined && (typeof value.method_version !== 'string' || value.method_version.length > 100))
       || (value.next_decision !== undefined && (typeof value.next_decision !== 'string' || value.next_decision.length > 500))
       || (value.unknowns !== undefined && (!Array.isArray(value.unknowns) || value.unknowns.length > 8 || !value.unknowns.every((x: any) => typeof x === 'string' && x.length <= 300))))
-      throw Error('assessment needs a qualitative finding and 1-8 exact evidence_refs; condition, method, method_version, next_decision and unknowns are optional');
-    const evidence = value.evidence_refs.map((ref: string) => {
+      throw Error('assessment needs a qualitative finding and exact evidence_refs (0-8 when condition is usable or unknown, otherwise 1-8); condition, method, method_version, next_decision and unknowns are optional');
+    const evidence = refs.map((ref: string) => {
       const row = this.ledger.find(r => r.ref === ref && r.kind === 'fact');
       if (row) return { ref, source: 'ledger', type: row.type, revision: row.revision, record_hash: hash(row.value) };
       const adapter = /^(request:\d+|artifact:v\d+)$/.test(ref) ? this.evidence(ref) : null;
@@ -846,9 +850,9 @@ export class SelfRoot extends LiveAgentSelf {
       }
       throw Error(`assessment evidence ${ref} is missing or is an Agent claim`);
     });
-    return this.claim('learning_assessment', { finding: value.finding.trim(), condition: value.condition ?? null,
+    return this.claim('learning_assessment', { finding: value.finding.trim(), condition,
       method: value.method ?? null, method_version: value.method_version ?? null, next_decision: value.next_decision ?? null,
-      evidence_refs: [...new Set(value.evidence_refs)], unknowns: value.unknowns ?? [], evidence, status: 'agent_claim' });
+      evidence_refs: [...new Set(refs)], unknowns: value.unknowns ?? [], evidence, status: 'agent_claim' });
   }
   learningAssessment() {
     if (!this.mech.meta) return null;
@@ -2141,6 +2145,14 @@ export class SelfRoot extends LiveAgentSelf {
       const responses = (result as any)?.entry_question_responses;
       if (!Array.isArray(responses) || responses.length !== 3 || responses.some((x: any) => typeof x !== 'string'))
         invalid = 'entry_question_responses must be exactly three strings, one per entrance question ("none" is a valid response)';
+    }
+    if (!invalid && exitRound === 1 && this.learningReview?.status === 'judgment_required') {
+      const openedAt = this.learningReview.ledger_window[1];
+      const judged = this.ledger.some((r: any, i: number) => i >= openedAt && r.type === 'learning_assessment');
+      if (!judged) {
+        this.fact('learning_conditions_gate', { review: review.id, reason: 'induction close requires a learning-conditions judgment', assessment: null });
+        invalid = 'this induction turn must first judge the learning conditions with decide(op="assessment", value:{finding, condition, evidence_refs, ...}); a usable or unknown condition may omit evidence_refs, otherwise cite 1-8 exact refs. Then close with decide_exit.';
+      }
     }
     if (invalid) {
       review.invalid_exits = (review.invalid_exits ?? 0) + 1;

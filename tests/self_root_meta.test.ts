@@ -303,6 +303,7 @@ test('META focus: a source read permits one repair request and an incomplete swe
   await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
   s.fact('render_action_receipt', { action_ref: 'render:1' }); await tick(s);
   assert.ok(s.review, 'an in-task feedback receipt opens the pass');
+  s.assessLearning({ finding: 'learning conditions are usable for this stage', condition: 'usable' });
   s.exit({ result: { reason: 'recorded facts reviewed', entry_question_responses: ['none', 'none', 'none'] } }); await tick(s);
   assert.ok(s.review && s.isMetaSpecialistTurn, 'the specialist sweep follows induction');
   s.reviewRequests = 2;
