@@ -37,7 +37,8 @@ test('execution view is compact and keeps the full SelfRoot view readable on dem
   const taskObservation = 'Current state and recent action facts';
   const view = s.executionView({ taskObservation });
   assert.equal(view.task_observation, taskObservation);
-  assert.deepEqual(view.execution.recent_actions, []);
+  assert.equal(view.execution.last_failure, undefined);
+  assert.equal('recent_actions' in view.execution, false);
   assert.equal(view.read.full_self, 'read_self(section="self")');
   assert.ok(!('architecture' in view));
   assert.ok(!('ledger' in view));

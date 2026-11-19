@@ -105,3 +105,37 @@ test('ARC optional Meta starts after exploration and routes one focus', async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('ARC request-cadence fallback triggers on task requests and is recorded after the pass', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'arc-request-cadence-'));
+  try {
+    const contract = loadOrCreateArcContract(root, [...ARC_SELF_ROOT_OPTIONS.reviewTools, ...ARC_SELF_ROOT_OPTIONS.evolutionTools]);
+    const interval = 6;
+    const evo = new SelfRoot(contract, undefined, undefined, undefined, undefined, {
+      ...ARC_SELF_ROOT_OPTIONS, mechanisms: { meta: true }, metaAtStart: false,
+      metaFallback: { unit: 'request' as const, interval },
+    });
+    assert.equal(evo.metaT0Pending, false);
+    evo.fact('meta_t0_design', { contract: { task_goal: 'complete the task under recorded facts', task_acceptance: 'recorded terminal facts', loop_policy: { look_when: [{ on: 'repetition', look: 'harness state' }] } } });
+    for (let request = 1; request < interval; request++) {
+      evo.pin();
+      await evo.cost({}, 10, 0, false);
+      assert.equal(evo.metaPassDue(), null);
+    }
+    evo.pin();
+    await evo.cost({}, 10, 0, false);
+    const due = evo.metaPassDue();
+    assert.deepEqual([due?.reason, due?.facts.trigger], ['request_cadence_fallback', 'request_cadence_fallback']);
+    assert.equal(due?.facts.task_requests_since_last_evolution, interval);
+    await evo.boundary(() => {}, () => {});
+    assert.equal(evo.reviewSelfView().evolution_pass.trigger, 'request_cadence_fallback');
+    evo.exit({ result: { reason: 'exploration can continue', next_specialist: 'none' } });
+    await evo.boundary(() => {}, () => {});
+    assert.equal(evo.hasReview, false);
+    evo.pin();
+    await evo.cost({}, 10, 0, false);
+    assert.equal(evo.metaPassDue(), null, 'the closed pass restarts the request window');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

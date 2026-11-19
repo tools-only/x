@@ -384,6 +384,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 */
 	const refinePoints = native && criticOn && refineTool && process.env.ARC_THIN_REFINE_POINT !== "0";
 	const reviewConsult = legacyHarnessEnabled && native && !selfBaseline && consultTool && process.env.ARC_THIN_REVIEW_CONSULT !== "0";
+	let lastSystemPrompt: string | undefined;
 	/** Where a review's record is written for the subagent it consults (read-only to the agent, read by refs). */
 	const RECORD_PATH = "data/record.md";
 	const storeDir = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "harness");
@@ -393,7 +394,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		installProviderTelemetry(pi, { root: storeDir, scope: "arc-thin-parent" });
 	}
   const workspace = native ? new Workspace(process.env.ARC_RUN_ROOT ?? process.cwd(), {
-    inlineChars: Number(process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 8000) }) : undefined;
+    inlineChars: Number(process.env.ARC_THIN_RESULT_CHARS ?? process.env.ARC_THIN_INLINE_RESULT_CHARS ?? 4000) }) : undefined;
   let evo: SelfRoot | undefined;
   let selfRootPersist: (() => void) | undefined;
   let arcTaskRuntimeView: unknown;
@@ -898,6 +899,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	  const saved = existsSync(paths.state) ? JSON.parse(readFileSync(paths.state, 'utf8')) : undefined;
 	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS,
 	    mechanisms: { meta: evoMetaCore || process.env.ARC_THIN_META === '1' }, metaAtStart: false,
+	    // Level 0 has no level-complete checkpoint; without a request-based fallback it reached the budget before the
+	    // first evolution pass (bp35). Count task requests, not review requests, so the pass does not restart itself.
+	    ...(evoMetaCore ? { metaFallback: { unit: 'request' as const, interval: 6 } } : {}),
 	    // Gap routing and pass-only reflection writes (2026-11-19); ARC_THIN_META_ROUTING=sweep and ARC_THIN_EVO_TASK_WRITES=all restore the earlier arm.
 	    ...(evoMetaCore ? { metaRouting: process.env.ARC_THIN_META_ROUTING === 'sweep' ? 'sweep' : 'gaps', metaActionCheckpoints: true,
 	      metaTaskWrites: evoTaskWrites, metaReplaySource: 'python history.transitions() and history.grid(n) (the grid after action n) read the recorded run; data/trajectory.jsonl has one row per action.' } as const : {}),
@@ -4077,6 +4081,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * returns both come here (`via` names the tool). The bridge, its budget and its refusals stay the only way to act.
 	 */
 	let lastGuardRefusal: { decision: number; action: string } | undefined;
+	/**
+	 * Error taxonomy for the agent-facing action failure line: one short class plus what to do next, with the raw
+	 * provider/bridge text kept in errors.jsonl and clipped here. Classes are facts about this call, not diagnoses of
+	 * the task; the agent decides the next move from them.
+	 */
+	function actionErrorCategory(error: unknown): { category: string; recovery: string } {
+		if (error instanceof Refusal) return { category: "VALIDATION", recovery: "Fix the call (action name, x/y and any then list); the action was not played." };
+		if (isEnvironmentFailure(error)) return { category: "ENVIRONMENT_UNAVAILABLE", recovery: "Do not resend now; the decision ends and the runner rechecks the environment before the next one." };
+		const text = errorText(error);
+		if (/timeout|timed out|aborted|ECONN|connection|fetch failed|socket|status (5\d\d|429)/i.test(text))
+			return { category: "ENVIRONMENT_UNAVAILABLE", recovery: "Do not resend this call; wait for the next decision, then reread env.revision/env.state before acting." };
+		if (/busy|in use|locked|conflict/i.test(text))
+			return { category: "CONTENTION", recovery: "One call at a time reached the environment; resend only after reading the latest env.revision." };
+		if (/budget|exhaust/i.test(text))
+			return { category: "BUDGET", recovery: "No more actions on this budget; stop acting and close the decision." };
+		return { category: "OUTCOME_UNKNOWN", recovery: "The action may or may not have been played: reread env.revision, env.state/env.grid and the history transition before any resend." };
+	}
 	async function submitAction(params: {
 		action: string; x?: number; y?: number; note?: string; idea?: unknown; predict?: Prediction; predict_skill?: string;
 	}, via?: string, meta: { batchId?: string; batchPosition?: number; batchTotal?: number; rejected?: RejectedStep[] } = {}):
@@ -4178,12 +4199,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		catch (error) {
 			// The environment failing is not the agent's to fix: end the decision instead of
 			// letting it retry the same call (each retry is a full model turn plus the timeout).
+			const category = actionErrorCategory(error);
 			if (isEnvironmentFailure(error)) {
 				append("errors.jsonl", { hook: "arc_action:environment", environment: true, decision, action: label, message: errorText(error).slice(0, 500) });
-				return { environment: true, refusal: `${by} ${label} failed because the environment did not respond (${errorText(error).slice(0, 200)}). ` +
-					`This decision ends; the runner checks the environment before the next one.` };
+				return { environment: true, refusal: `${by} ${label} failed (${category.category}): ${category.recovery} Raw: ${errorText(error).slice(0, 200)}` };
 			}
-			return { refusal: `${by} ${label} failed: ${errorText(error)}` };
+			append("errors.jsonl", { hook: "arc_action:error", environment: false, decision, action: label, category: category.category, message: errorText(error).slice(0, 500) });
+			return { refusal: `${by} ${label} failed (${category.category}): ${category.recovery} Raw: ${errorText(error).slice(0, 200)}` };
 		}
 		run.actionDone = true;
 		previousGrid = beforeGrid;
@@ -4815,7 +4837,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			name: "python",
 			label: "Python",
 			description: native
-				? evo ? "Run code in the persistent Python sandbox. Available names: state, grid (current rows; grid[y][x]), prev_grid, history (history.grid(n), history.transitions()), artifacts, args, env. A missing frame may make grid None. env.grid and env.state expose the current state; after env.act(...) in the same call, read the updated env.grid or returned observation, since the bare grid name was bound at call entry. Batch independent checks from one observation into one call and return only evidence that could change the next decision. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. "
+				? evo ? "Run code in the persistent Python sandbox. Available names: state, grid (current rows; grid[y][x]), prev_grid, history (history.grid(n), history.transitions()), artifacts, args, env. A missing frame may make grid None. env.revision counts observations and increments on every action feedback, including when the grid does not change; bare grid/prev_grid/state stay bound at call entry, while env.grid/env.state stay current, so compare against the revision you read with the data and refresh from env when env.revision has moved. If an action's result is unknown, do not send it again: reread env.revision, env.state/env.grid and the history transition, then decide from the observed state. env.grid and env.state expose the current state; after env.act(...) in the same call, read the updated env.grid or returned observation, since the bare grid name was bound at call entry. Batch independent checks from one observation into one call and return only evidence that could change the next decision. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. "
 				: "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
 					"Returns what you print and the " +
 					"value of a final expression. Batch independent checks from one observation into one call and return only evidence that could change the next decision. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
@@ -5102,7 +5124,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         for (const record of artifactLog.slice(count)) workspace.runtimeWrite(`artifacts/${record.name}.json`, JSON.stringify(current[record.name]) + '\n');
         return kept;
       },
-      receipt: body => workspace.receipt(body),
+      receipt: (body, resultLabel) => workspace.receipt(body, 'ok', [], undefined, resultLabel),
       wrap: (name, fn) => guardTool(name, async (params, signal, ctx) => {
         let result: any;
         const subagent = binder?.candidates().find(c => c.kind === 'subagent' && c.name === name);
@@ -5426,6 +5448,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const rendered = `${rootPrompt}\n\n${systemBody.trim()}`.trimEnd() + "\n";
 		if (run.hookTurn) hookSystemHeader = systemPrompt;
 		systemChars = rendered.length;
+		// Prefix-cache immutability: the rendered system prompt changes only across decisions, not between the tool
+		// rounds of one decision. A byte-identical value is written back so the provider prefix stays reusable.
+		if (native && lastSystemPrompt !== undefined && rendered === lastSystemPrompt && event.systemPromptOptions?.customPrompt !== undefined)
+			event.systemPromptOptions.customPrompt = lastSystemPrompt;
+		lastSystemPrompt = rendered;
     if (native) {
       event.systemPromptOptions.customPrompt = rendered;
       event.systemPromptOptions.cwd = workspace!.root;
@@ -5568,9 +5595,23 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			const selfText = evoMetaCore ? JSON.stringify(selfView) : JSON.stringify(selfView, null, 2);
 			const held = compactArc && evoMetaCore && sessionView ? nativeRuntime?.sessionView() ?? '' : '';
+			// Repeat work is a fact the agent decides on, not a host edit: the head counts repeated self-view fragments
+			// (>=40 chars appearing more than once) so a later evolution pass sees how much of the window is duplicated.
+			const repeatedSelfFragments = (() => {
+				try {
+					const text = selfText;
+					const seen = new Map<string, number>();
+					for (let i = 0; i + 40 <= text.length; i += 1) {
+						const fragment = text.slice(i, i + 40);
+						seen.set(fragment, (seen.get(fragment) ?? 0) + 1);
+					}
+					return [...seen.values()].reduce((count, n) => count + (n > 1 ? 1 : 0), 0);
+				} catch { return 0; }
+			})();
 			run.workingSet!.text = compactArc
 				? [typeof task_observation === 'string' ? task_observation : '', held, selfText].filter(Boolean).join('\n\n')
 				: [run.workingSet!.text, selfText].filter(Boolean).join('\n\nSELFROOT EXECUTION VIEW\n');
+			if (compactArc && evoMetaCore) append("context_budget.jsonl", { decision, repeated_self_fragments: repeatedSelfFragments, self_view_chars: selfText.length });
 		}
 			run.head = {
 				...user,

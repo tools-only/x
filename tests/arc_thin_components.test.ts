@@ -268,3 +268,13 @@ test('env.restore asks the host for an earlier version; read-only executions can
   const refused = await executeNative({ mode: 'exec', code: 'env.restore("tools/route.py", 2)', sources: {}, state: {}, files: {} });
   assert.match(String(refused.error), /read-only/);
 });
+
+test('env.revision counts every action feedback, including when the grid does not change', async () => {
+  const acted = await executeNative({ mode: 'exec', code: 'env.act("ACTION1")\nenv.revision', acts: [
+    { call: { action: 'ACTION1' }, observation: { grid: ['00'], changed_cells: 0 } }], allow_act: true, state: { grid: [[0, 0]] } });
+  assert.equal(acted.ok, true);
+  assert.equal(acted.value?.value, 1);
+  const unchanged = await executeNative({ mode: 'exec', code: 'env.revision', acts: [], allow_act: true, state: { grid: [[0, 0]] } });
+  assert.equal(unchanged.ok, true);
+  assert.equal(unchanged.value?.value, 0);
+});

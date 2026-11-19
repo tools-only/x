@@ -28,7 +28,7 @@ test('long output receipt retains exact middle evidence behind a stable ranged r
 test('short result IDs survive restart and concurrent workspace owners without rewriting evidence', () => {
   const root = mkdtempSync(join(tmpdir(), 'receipt-ids-'));
   const a = new Workspace(root), b = new Workspace(root);
-  const x = 'alpha\n'.repeat(600), y = 'beta\n'.repeat(600);
+  const x = 'alpha\n'.repeat(1200), y = 'beta\n'.repeat(1200);
   const ref = (receipt: string) => /ref: (results\/[^\s]+)/.exec(receipt)![1];
   const ax = ref(a.receipt(x)), by = ref(b.receipt(y));
   assert.notEqual(ax, by);
@@ -44,8 +44,23 @@ test('short result IDs survive restart and concurrent workspace owners without r
 test('receipt marks a partial single line and an explicit configurable inline threshold', () => {
   const root = mkdtempSync(join(tmpdir(), 'receipt-preview-'));
   const w = new Workspace(root);
-  const body = 'head\n' + 'middle'.repeat(350) + '\ntail';
+  const body = 'head\n' + 'middle'.repeat(1200) + '\ntail';
   assert.match(w.receipt(body), /tail/);
   assert.match(w.receipt(body), /omitted|partial/);
-  assert.equal(new Workspace(root, {inlineChars:3000}).receipt(body), body);
+  assert.equal(new Workspace(root, {inlineChars:12000}).receipt(body), body);
+});
+
+test('python results are filed with a ref even when short; other short results stay whole', () => {
+  const w = new Workspace(mkdtempSync(join(tmpdir(), 'receipt-python-label-')), {inlineChars: 600});
+  const body = 'head\n' + 'y'.repeat(450) + '\ntail';
+  assert.equal(w.receipt(body), body, 'a short result without a label is not rewritten');
+  const receipt = w.receipt(body, 'ok', [], undefined, 'python');
+  assert.match(receipt, /Preview partial/);
+  assert.match(receipt, /ref: results\/r\d{6}\.txt/);
+  const ref = /ref: (results\/[^\s]+)/.exec(receipt)![1];
+  assert.equal(w.read(ref), body);
+  // The python address mark stays the first line, and the rest is still treated as a python result.
+  const marked = w.receipt(`[P3]\n${body}`, 'ok', [], undefined, 'python');
+  assert.match(marked, /^\[P3\]\n/);
+  assert.match(marked, /ref: results\/r000002\.txt/);
 });

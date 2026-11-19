@@ -24,7 +24,7 @@ export class Workspace {
   version = 0;
   constructor(runRoot: string, options: { inlineChars?: number; dirs?: string[] } = {}) {
     this.root = resolve(runRoot, 'workspace');
-    this.inlineChars = options.inlineChars ?? 8000;
+    this.inlineChars = options.inlineChars ?? 4000;
     if (!Number.isInteger(this.inlineChars) || this.inlineChars < 0) throw Error('invalid inline result threshold');
     const privateRoot = resolve(runRoot, '.harness'); mkdirSync(privateRoot, {recursive:true});
     this.resultIndex = join(privateRoot, 'result-index.jsonl');
@@ -134,11 +134,13 @@ export class Workspace {
    * otherwise used the whole preview and hid the short lines the code printed as its findings, and the agent then read
    * the file back whole (kernel-02, 2026-10-14). If what remains fits the inline threshold it is shown whole.
    */
-  receipt(body: string, status = 'ok', keyLines: string[] = [], source?: string): string {
+  receipt(body: string, status = 'ok', keyLines: string[] = [], source?: string, resultLabel?: string): string {
     // A python result's address ("[P12]", "[P15 = P12: same code]") stays its first line, whatever is done to the rest.
     const mark = /^\[P\d+[^\]\n]*\]\n/.exec(body)?.[0];
-    if (mark) return mark + this.receipt(body.slice(mark.length), status, keyLines, source);
-    if (body.length <= this.inlineChars) return body;
+    if (mark) return mark + this.receipt(body.slice(mark.length), status, keyLines, source, resultLabel);
+    // Python results are always filed with a ref even when short: the agent decides whether to read back exact lines,
+    // and other tool outputs keep their whole short text.
+    if (resultLabel !== 'python' && body.length <= this.inlineChars) return body;
     const {hash, ref} = source ? {hash: createHash('sha256').update(body).digest('hex'), ref: source} : this.saveResult(body);
     const raw = body.split('\n');
     const keys = [...keyLines, ...raw.filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);

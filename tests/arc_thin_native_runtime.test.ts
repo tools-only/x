@@ -160,6 +160,19 @@ test('short window check appears once after repeated nonacting Python work and r
   } finally { runtime.close(); }
 });
 
+test('python result receipts reach the host with the python label', async () => {
+  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-receipt-label-')));
+  const labels: Array<string | undefined> = [];
+  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder: new Binder(workspace),
+    state: () => ({ grid: [[1]] }), level: () => 0, actionCount: () => 0, pythonSession: false,
+    receipt: (body, resultLabel) => { labels.push(resultLabel); return body; },
+    log() {}, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    await runtime.python('2 + 2');
+    assert.deepEqual(labels, ['python']);
+  } finally { runtime.close(); }
+});
+
 test('ordinary task Python calls do not receive a conversion cue', async () => {
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-convert-cue-')));
   let decision = 1;

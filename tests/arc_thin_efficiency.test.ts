@@ -114,7 +114,7 @@ test('current knowledge carries next experiment and conditional negative evidenc
  assert.match(rendered,/test ACTION2 after mode change/); assert.match(rendered,/only in blue mode/);
  memory.hypotheses.get('hyp.live')!.next_test='test the new goal';
  rendered=renderDecisionMemory(memory,2); assert.match(rendered,/test the new goal/);
- const workspace=new Workspace(mkdtempSync(join(tmpdir(),'arc-results-')));
+ const workspace=new Workspace(mkdtempSync(join(tmpdir(),'arc-results-')),{inlineChars:8000});
  assert.equal(workspace.receipt('X'.repeat(6000)),'X'.repeat(6000));
  assert.match(workspace.receipt('X'.repeat(9000)),/Preview partial/);
 });

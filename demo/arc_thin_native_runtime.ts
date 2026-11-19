@@ -29,7 +29,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; self: any; binder: Binder;
   remember?(args: unknown): Promise<string>;
   onSaved?(path: string, receipt: string | undefined): void;
   metaDecision?(choice: string, reason: string): string;
-  receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
+  receipt?(body: string, resultLabel?: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   componentSaved?(path: string, before: number | undefined, receipt: string | undefined, split: ComponentExpectationSource): string | undefined;
   componentEvent?(type: string, value: Record<string, unknown>): void;
   /** Keep the python namespace between python calls (default true). */
@@ -728,7 +728,7 @@ export class NativeRuntime {
    * final value stays in the live session as _, so a result shortened here is still whole there.
    */
   private finish(body: string, result: NativeResult & { acted?: Acted }, valueKept = false, mark = '') {
-    let shownBody = mark + (this.host.receipt?.(body) ?? body);
+    let shownBody = mark + (this.host.receipt?.(body, 'python') ?? body);
     if (valueKept && shownBody !== mark + body) shownBody += '\n(the whole final value is _ in the python session until your next final expression: take the part you need from it)';
     const acted = result.acted;
     if (!acted?.lines.length) return text(shownBody + (acted?.stopped ? `\n(no action taken: ${acted.stopped})` : ''), !result.ok);
@@ -813,7 +813,7 @@ export class NativeRuntime {
       && latest.session === (session?.version ?? 0) && latest.workspace === this.host.workspace.version) {
       this.calls.push({ ...latest, id, comments, code });
       this.host.log('python_calls.jsonl', { id, same: first.id, cached: true, n: latest.n, decision: this.decision(), ok: true, code });
-      return text(`[P${id} = P${first.id}: same code on the same state, not run again]\n${this.host.receipt?.(latest.result) ?? latest.result}`);
+      return text(`[P${id} = P${first.id}: same code on the same state, not run again]\n${this.host.receipt?.(latest.result, 'python') ?? latest.result}`);
     }
     // A new cell that retypes whole statements of an earlier one says which lines (cell(k, a, b) runs them).
     const blocks = parent && !first ? repeatedBlocks(code, this.calls.filter((c, i, all) => all.findIndex(o => o.key === c.key) === i)) : [];

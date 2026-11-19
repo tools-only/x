@@ -313,6 +313,7 @@ class _Env:
         self.artifacts = _state.get('artifacts') or {}
         self.memory = {'facts': _state.get('memory'), 'hypotheses': _state.get('hypotheses'), 'strategies': _state.get('strategies')}
         self.acted = 0
+        self.revision = 0
         self.stopped = None
         self._namespace = _ns
     def __getitem__(self, key):
@@ -411,6 +412,7 @@ class _Env:
         return observation
     def _refresh(self, observation):
         before = self.grid
+        self.revision += 1
         self.prev_grid, self.grid = before, observation['grid']
         self.state.update({k: observation[k] for k in ('state', 'levels_completed', 'available_actions', 'action_budget') if k in observation})
         self.state.update({'grid': self.grid, 'prev_grid': before})

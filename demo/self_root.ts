@@ -900,13 +900,13 @@ export class SelfRoot extends LiveAgentSelf {
     if (fallback) {
       const count = fallback.unit === 'action'
         ? after.filter(r => r.kind === 'fact' && this.options.actionReceiptTypes?.includes(r.type)).length
-        : after.filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
+        : after.filter(r => r.type === 'request_record' && r.value?.pin?.kind === 'task').length;
       if (count >= fallback.interval)
         return fallback.unit === 'action'
           ? { reason: 'action_cadence_fallback', window,
             facts: { trigger: 'action_cadence_fallback', actions_since_last_evolution: count, interval: fallback.interval, window } }
           : { reason: 'request_cadence_fallback', window,
-            facts: { trigger: 'request_cadence_fallback', execute_requests_since_last_evolution: count, interval: fallback.interval, window } };
+            facts: { trigger: 'request_cadence_fallback', task_requests_since_last_evolution: count, interval: fallback.interval, window } };
     }
     return null;
   }
@@ -2375,6 +2375,22 @@ export class SelfRoot extends LiveAgentSelf {
     return { orchestration: 1, policy: Object.keys(this.policy).length, prompt: count('prompt'), skill: count('skill'), tool: count('tool'), memory: count('memory'), protected: 3 };
   }
   /** Compact task-facing view. Full canonical state remains available through read_self. */
+  /** The last recorded failed call that no later successful call superseded; recovery reads the ledger refs on demand. */
+  private lastFailureView(rows: any[]) {
+    let last: { ref: string; tool: string; excerpt: string } | undefined;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i];
+      if (row.type === 'tool_failed') {
+        const raw = row.value?.content ?? row.value?.error ?? '';
+        const excerpt = (Array.isArray(raw) ? raw.map((c: any) => String(c?.text ?? '')).join(' ') : String(raw)).slice(0, 200);
+        last = { ref: row.ref, tool: String(row.value?.tool ?? 'unknown'), excerpt };
+        break;
+      }
+      if (row.kind === 'fact' && (row.type === 'component_execution' && row.value?.outcome === 'success'
+        || row.type === 'component_body_read' && row.value?.outcome === 'success')) break;
+    }
+    return last;
+  }
   executionView(input: { taskObservation?: unknown; taskMemoryItems?: TaskMemoryItem[] } = {}) {
     const run = super.mirror().run;
     const contract = (this.current?.orchestration as any)?.contract ?? null;
@@ -2390,6 +2406,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (memoryPolicy.partition === 'kind') selectedMemory.sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key) || a.ref.localeCompare(b.ref));
     const meta = this.options.metaActionCheckpoints && this.inEvolutionReview ? this.metaPassTrigger : undefined;
     const specialist = meta?.round === 2 ? META_PASS_SPECIALISTS[meta.specialistIndex ?? 0] : undefined;
+    const fullExecutionView = process.env.ARC_THIN_FULL_EXECUTION_VIEW === '1' && !this.inEvolutionReview;
     // The pass entry (trajectory, prior changes, carried notes) is the pass's observation: it rides task_observation as
     // plain text, so the adapter places it where a task decision has its observation. It already renders round 1's
     // reason and carry, so the view repeats neither.
@@ -2460,8 +2477,9 @@ export class SelfRoot extends LiveAgentSelf {
         step: run.step,
         complete: run.complete,
         in_review: Boolean(this.review),
-        recent_actions: run.actions.slice(-2),
-        recent_decisions: run.decisions.slice(-2),
+        ...(fullExecutionView
+          ? { recent_actions: run.actions.slice(-2), recent_decisions: run.decisions.slice(-2) }
+          : { last_failure: this.lastFailureView(this.ledger) }),
         pass,
       },
       active_components: this.active().map(({ kind, name, version, description }) => ({ kind, name, version, description })),
