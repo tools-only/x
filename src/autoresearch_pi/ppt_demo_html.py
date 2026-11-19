@@ -89,6 +89,59 @@ def _mime_of(path: Path) -> str:
     return "image/png"
 
 
+def _visual_metrics(out: Path, first: int, last: int) -> dict:
+    """Objective, deterministic pixel-level design facts per rendered slide.
+
+    Raw measurements only: the agent builds its own quality standard and feedback system on top
+    of them. This is host measurement of the rendered artifact, not an aesthetic verdict.
+    """
+    from collections import Counter
+    from PIL import Image
+
+    def measure(n: int) -> dict:
+        image = Image.open(out / f"slide-{n:02d}.png").convert("RGB")
+        width, height = image.size
+        # Crop out the fixed bottom navigation chrome (about 8% of height) so the facts measure
+        # slide content, not viewer controls.
+        crop = image.crop((int(width * 0.02), int(height * 0.02), int(width * 0.98), int(height * 0.92)))
+        tw, th = 200, max(1, round(200 * crop.height / crop.width))
+        small = crop.resize((tw, th))
+        px = list(small.getdata())
+        # Dominant quantized color is the estimated slide background.
+        quant = [(r // 32, g // 32, b // 32) for (r, g, b) in px]
+        dom_q = Counter(quant).most_common(1)[0][0]
+        dom = tuple(c * 32 + 16 for c in dom_q)
+
+        def diff(p):
+            return max(abs(p[0] - dom[0]), abs(p[1] - dom[1]), abs(p[2] - dom[2]))
+
+        content = [p for p in px if diff(p) > 24]
+        coverage = len(content) / len(px)
+        distinct_colors = len({(r // 32, g // 32, b // 32) for (r, g, b) in content})
+        lum = [0.299 * r + 0.587 * g + 0.114 * b for (r, g, b) in px]
+        mean_lum = sum(lum) / len(lum)
+        lum_std = (sum((v - mean_lum) ** 2 for v in lum) / len(lum)) ** 0.5
+        contrast = min(1.0, lum_std / 96.0)
+        return {"slide": n, "coverage": round(coverage, 4), "distinct_colors": distinct_colors,
+                "contrast": round(contrast, 4)}
+
+    slides = [measure(n) for n in range(first, last + 1)]
+
+    def aggregate(key):
+        values = [s[key] for s in slides]
+        mean = sum(values) / len(values)
+        var = sum((v - mean) ** 2 for v in values) / len(values)
+        return {"mean": round(mean, 4), "min": round(min(values), 4), "max": round(max(values), 4), "std": round(var ** 0.5, 4)}
+
+    return {"window": os.environ.get("PPT_DEMO_WINDOW_SIZE", "1600,900"), "downsample": "200px wide, aspect-preserved",
+            "definitions": {
+                "coverage": "fraction of pixels differing from the dominant slide color (layout fill; low=sparse, high=cluttered)",
+                "distinct_colors": "count of distinct quantized colors in non-background content (visual richness)",
+                "contrast": "luminance standard deviation normalized to 0..1 (visual interest / figure-ground separation)"},
+            "slides": slides,
+            "deck": {k: aggregate(k) for k in ("coverage", "distinct_colors", "contrast")}}
+
+
 def render(root: Path, manifest: Path, revision: int, page_start: int | None = None, page_end: int | None = None) -> dict:
     raw = manifest.read_bytes(); source_path = manifest.resolve().relative_to((root/"workspace").resolve()).as_posix()
     source_hash = hashlib.sha256(raw).hexdigest(); source = raw.decode("utf-8")
@@ -150,7 +203,8 @@ def render(root: Path, manifest: Path, revision: int, page_start: int | None = N
     for i in range(first-1,last):
         image=Image.open(out/f"slide-{i+1:02d}.png").convert("RGB"); image.thumbnail((tw,th)); sheet.paste(image,((i%cols)*tw,(i//cols)*(th+24))); draw.text(((i%cols)*tw+6,(i//cols)*(th+24)+th+4),str(i+1),fill="black")
     sheet.save(out/"contact-sheet.png")
-    result={"revision":revision,"slides":count,"rendered_page_range":{"start":first,"end":last},"native_objects":counts,"warnings":warnings,"renderer":f"{browser.name} headless HTML","output":str(out),"html":"presentation.html","source_path":source_path,"source_sha256":source_hash,"source":source_info,"title":title}
+    visual_metrics=_visual_metrics(out, first, last)
+    result={"revision":revision,"slides":count,"rendered_page_range":{"start":first,"end":last},"native_objects":counts,"warnings":warnings,"renderer":f"{browser.name} headless HTML","output":str(out),"html":"presentation.html","source_path":source_path,"source_sha256":source_hash,"source":source_info,"title":title,"visual_metrics":visual_metrics}
     (out/"receipt.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     return {k:v for k,v in result.items() if k!="source"}
 

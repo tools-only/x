@@ -101,7 +101,7 @@ export default function pptDemo(pi: ExtensionAPI) {
         last_render: state.lastFeedback ? { revision: state.lastFeedback.revision, warnings: Array.isArray(state.lastFeedback.warnings) ? state.lastFeedback.warnings.length : state.lastFeedback.warnings ?? null } : null }),
       learningInputs: () => ({ source_hashes: activeManifest()?.sources ?? {}, source_location: 'workspace data/',
         current_artifact: sourceFacts(workspace), last_render: state.lastFeedback
-          ? { revision: state.lastFeedback.revision, source_hash: state.lastFeedback.source_hash, source_path: state.lastFeedback.source_path }
+          ? { revision: state.lastFeedback.revision, source_hash: state.lastFeedback.source_hash, source_path: state.lastFeedback.source_path, visual_metrics: state.lastFeedback.visual_metrics ?? null }
           : null }),
       adapterEvidence: (ref: string, offset = 0) => {
         const page = 16000;
@@ -496,7 +496,8 @@ export default function pptDemo(pi: ExtensionAPI) {
         const acceptance = experimentManifest ? collectAcceptance(activeManifest() ?? experimentManifest, root, workspace, sourcePath, receipt, child.status) : undefined;
         if (evo && acceptance) { evo.outcome({ ...acceptance, episode:state.episode, metrics: pptUnitMetrics(acceptance, evo.segmentRows()) }); persistLiveSelf(); }
         state.lastFeedback = { revision, slides: receipt.slides, native_objects: receipt.native_objects,
-          warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath, source_hash: receipt.source_sha256 };
+          warnings: receipt.warnings, renderer: receipt.renderer, source_path: sourcePath, source_hash: receipt.source_sha256,
+          visual_metrics: receipt.visual_metrics ?? null };
         state.renderedRevisions = [...(state.renderedRevisions ?? []), state.lastFeedback];
         state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
         log('renders.jsonl', state.lastFeedback);

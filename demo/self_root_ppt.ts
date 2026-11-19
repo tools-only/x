@@ -69,7 +69,8 @@ export function collectAcceptance(m: SelfRootManifest, root: string, workspace: 
     slide_count: { expected: acceptance.expected_slides ?? null, observed: receipt.slides, matches: acceptance.expected_slides === undefined ? null : acceptance.expected_slides === receipt.slides },
     rendered_source_matches_current: fileHash(workspace.path(sourcePath)) === receipt.source_sha256,
     unit: unit ?? 'whole_deck', units, renderer: { exit, receipt, original_ref: artifacts, images: existsSync(artifacts) ? readdirSync(artifacts).filter(p => /^slide-\d+\.png$/.test(p)) : [] },
-    limitations: ['literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion', 'narrative, aesthetics and persuasion unmeasured', 'geometry limited to renderer warnings', 'HTML delivery; not a native editable pptx'] };
+    visual: receipt.visual_metrics ?? null,
+    limitations: ['literal/normalized matching does not prove semantic completeness, currency units or numeric attribution; normalized numbers are scoped to cited section fragments and retain polarity, without magnitude conversion', 'visual_metrics are raw pixel facts, not an aesthetic verdict; narrative, aesthetics and persuasion remain unmeasured', 'geometry limited to renderer warnings', 'HTML delivery; not a native editable pptx'] };
 }
 
 /** PPT outcome metrics ({name, value, unit}) for one unit, plus segment counts from the adapter's own facts.
@@ -86,6 +87,14 @@ export function pptSegmentMetrics(rows: any[]) {
     { name: 'artifact.write_chars', value: writes.reduce((sum, r) => sum + Number(r.value?.chars ?? 0), 0), unit: 'chars' },
   ].map((metric: any) => ({ ...metric, scope: 'segment' }));
 }
+/** Host-measured visual facts from the rendered deck; raw, so the Agent can build its own rubric
+ * and use success_predicate to compare iterations. No quality verdict. */
+export function visualDeckMetrics(receipt: any) {
+  const deck = receipt?.visual_metrics?.deck;
+  if (!deck) return [];
+  const names: Record<string,string> = { coverage: 'visual.coverage', distinct_colors: 'visual.distinct_colors', contrast: 'visual.contrast' };
+  return Object.entries(names).map(([key, name]) => ({ name: `${name}_mean`, value: deck[key]?.mean ?? null, unit: 'ratio', scope: 'whole_deck' }));
+}
 export function pptUnitMetrics(result: any, rows: any[]) {
   const units = result.units ?? [];
   const literal = units.flatMap((u: any) => u.literal_matches ?? []);
@@ -97,6 +106,7 @@ export function pptUnitMetrics(result: any, rows: any[]) {
     { name: 'acceptance.citations_found', value: cited, unit: 'count', scope: result.unit === 'whole_deck' ? 'whole_deck' : `unit:${result.unit}` },
     { name: 'acceptance.normalized_found', value: normalized.filter((m: any) => m.found === true).length, unit: 'count', denominator: normalized.length },
     { name: 'render.warnings_latest', value: (result.renderer?.receipt?.warnings ?? []).length, unit: 'count' },
+    ...visualDeckMetrics(result.renderer?.receipt),
     ...pptSegmentMetrics(rows),
   ].map((metric: any) => ({ ...metric, scope: metric.scope ?? 'segment', observation: { artifact_hash: result.artifact?.sha256 ?? null, render_source_hash: result.renderer?.receipt?.source_sha256 ?? null, render_revision: result.renderer?.receipt?.revision ?? null, checker: result.checker?.version ?? null }, observation_id: JSON.stringify({ artifact_hash: result.artifact?.sha256 ?? null, render_source_hash: result.renderer?.receipt?.source_sha256 ?? null, render_revision: result.renderer?.receipt?.revision ?? null, checker: result.checker?.version ?? null }) }));
 }
