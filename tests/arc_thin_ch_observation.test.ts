@@ -174,12 +174,14 @@ test('SelfRoot recent actions retain CH color transitions after the four-action 
     const text = textOf(head(await h.decide()));
     assert.match(section(text, '## RECENT HISTORY'), /color 9→0: r2 c5; color 0→9: r2 c6/);
     assert.doesNotMatch(section(text, '## RECENT HISTORY'), /started at step 2/);
+    assert.match(section(text, '## OBSERVATIONS SINCE LAST QUERY'),
+      /FINAL DELTA #5 \[x,y,old,new\]: \[\[5,2,9,0\],\[6,2,0,9\]\]; full frames: data\/observations\/5\.json#frames/);
     assert.match(text, /# Step: 6/);
   } finally { await h.close(); }
 });
 
-test('an animated action delivers the intermediate, original final and current PNGs together', async () => {
-  const h = await fixture({}, true);
+test('an animated SelfRoot action delivers the intermediate, original final and current PNGs together', async () => {
+  const h = await fixture({ ARC_THIN_SELFROOT: '1' }, true);
   try {
     await h.decide();
     await h.respond(['arc_action', { actions: [{ name: 'ACTION1' }] }]);
@@ -192,6 +194,7 @@ test('an animated action delivers the intermediate, original final and current P
     assert.equal(images.length, 3);
     assert.equal(images[1].data, images[2].data, 'the final and canonical current image remain intact');
     assert.notEqual(images[0].data, images[1].data, 'the additional image carries an intermediate state');
+    assert.match(text, /full frames: data\/observations\/1\.json#frames/);
     const [python] = await h.respond(['python', { code: 'print(len(state["observations"]), len(state["observations"][0]["frame"]))' }]);
     assert.match(python.text, /1 3/, 'the documented Python state exposes the complete action animation');
   } finally { await h.close(); }

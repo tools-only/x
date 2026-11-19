@@ -1667,7 +1667,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			// CH's action_counter counts the starting RESET, so it is the number the next action gets.
 			blocks.push(`# Step: ${trajectory.length + 1}`);
 			const observed = buildObservationSection(decisionObservations, undefined, grid);
-			if (observed.text.trim()) blocks.push("## OBSERVATIONS SINCE LAST QUERY\n" + observed.text.trimEnd());
+			if (observed.text.trim()) {
+				let observationText = observed.text.trimEnd();
+				const latest = decisionObservations.at(-1);
+				const row = latest && latest.step > 0 ? trajectory[latest.step - 1] : undefined;
+				if (evo && latest?.validFrame && row) {
+					const source = `data/observations/${latest.step}.json#frames`;
+					const finalChanges = row.grid_change?.reduce((total, group) => total + group[2], 0) ?? row.changed_cells;
+					if (row.grid_delta?.length && finalChanges === row.grid_delta.length)
+						observationText += `\nFINAL DELTA #${row.n} [x,y,old,new]: ${JSON.stringify(row.grid_delta)}; full frames: ${source}`;
+					else if (latest.animation.length > 1 || finalChanges)
+						observationText += `\nFULL FRAMES #${row.n}: ${source}; exact final grids: history.grid(${row.n - 1}), history.grid(${row.n})`;
+				}
+				blocks.push("## OBSERVATIONS SINCE LAST QUERY\n" + observationText);
+			}
 			shown = observed.grids;
 		}
 		blocks.push(observation
