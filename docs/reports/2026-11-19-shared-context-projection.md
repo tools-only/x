@@ -2,7 +2,7 @@
 
 ## Opportunity and claim
 
-The Kaggle run's execution and evolution requests carried a median 67,721 and 79,418 input tokens respectively over inspected request samples. Its existing context hook shortened old tool output but kept every historical message. PPT already uses a batch boundary, yet long batches can accumulate the same history. The shared projector archives older dialogue before provider transmission, leaving 8–11 recent assistant/tool pairs and the latest task-state message. It advances the archive every four assistant turns to limit repeated local writes. An archived reference remains available for inspection.
+The Kaggle run's execution and evolution requests carried a median 67,721 and 79,418 input tokens respectively over inspected request samples. Its existing context hook shortened old tool output but kept every historical message. PPT already uses a batch boundary, yet long batches can accumulate the same history. The shared projector archives older dialogue before provider transmission, leaving 8–11 recent assistant/tool pairs, the initial task request, and the latest task-state message. It advances the archive every four assistant turns to limit repeated local writes. An archived reference remains available for inspection.
 
 ## Scope and integration
 
@@ -10,7 +10,7 @@ The Kaggle run's execution and evolution requests carried a median 67,721 and 79
 
 ## Evaluation boundary
 
-- Functional smoke: a synthetic twelve-call history projected to eight recent assistant messages, retained the latest custom state, archived the prefix once, and left zero orphan tool results. A 12/13/16-turn sequence retained 8/9/8 assistant messages with zero orphan results.
+- Functional smoke: a synthetic twelve-call history projected to eight recent assistant messages, retained the latest custom state, archived the prefix once, and left zero orphan tool results. A 12/13/16-turn sequence retained 8/9/8 assistant messages with zero orphan results. A resumed history retained both its initial task request and latest continuation request.
 - Full-chain reachability: module import and adapter hooks are wired. Actual Pi/provider continuation and transcript retrieval after projection remain unverified.
 - Autonomous adoption and net benefit: unverified. Compare provider input, cache reads, archive writes, evidence-retrieval calls, task decisions and quality against the prior run. A reduction in request tokens alone does not establish benefit.
 
