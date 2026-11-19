@@ -2,6 +2,8 @@
 
 日期：2026-11-19。状态：ARC 主路径已接线，真实模型效果待验证。
 
+> 前段保留七焦点建立时的设计与证据。文末“上下文窗口与缺口路由”是当前默认行为；`ARC_THIN_META_ROUTING=sweep` 可恢复七焦点以作比较。
+
 ## 问题与命题
 
 `runs/su15-selfloop-evo7-20261119-az-qwen` 为了开启旧七焦点，关闭了 Agent 自身运行状态对象。该运行在首次任务动作前遇到 provider 容量错误，不能说明七焦点质量。旧七焦点读取 Binder 和 `data/self`，ARC 的 CH 观测、紧凑任务视图、组件版本与使用回执却进入另一条路径。默认任务运行因此需要一个可直接检查的主路径。
@@ -78,3 +80,30 @@
 功能检查 `node --experimental-transform-types --test --test-concurrency=1 tests/self_root_meta_entry.test.ts` 为 5/5。最终全链路脚本运行 `runs/evo-middle-layer-smoke-v6-20261119/summary.json`：生产 runner、Pi、bridge、mock ARC SDK、脚本 provider；1 次 Python 计算后有任务动作，Agent 脚本请求 Meta，归纳入口含该 Python 代码、返回值及动作引用（分别标记 R1、R2）；七焦点逐一以 `no_change` 关闭，之后恢复任务并完成 2 次动作。总计 3 动作、10 决策、7 焦点、0 provider 错误，停止原因 `max_decisions`。`runs/evo-middle-layer-smoke-v3-20261119/pi-events.jsonl` 记录 `transition:1` 的 offset 0 实际返回动作前 grid 和动作，未包含后果；offset 1 的实际读取仍未在此运行中检查。真实 provider 自主识别缺口、创建并语义使用组件、以及任务净收益均未验证。
 
 该链路揭示一个计数边界：`meta_pass_entry` 的 WINDOW 统计为 0 task action，`AGENT_STAGE.task_actions` 为 1；前者只数 SelfRoot ledger 窗口内特定 action fact，后者统计任务工作，归纳轨迹另有实际动作。不能以 WINDOW 的 0 推断游戏未行动。下一项单因素检查是有授权预算的真实模型短程对照：同一模型与相近任务前缀，只改变是否提供该决策轨迹，观察 Agent 是否提出可证伪候选、在后续输入上调用并改变行动，记录父子总成本和失败样本。
+
+## 上下文窗口与缺口路由（2026-11-19）
+
+### 机会、命题与取舍
+
+任务轮曾挂载 `reflect_component`、`reflect_orchestration`，占据工具 schema；七个固定专项无论窗口有没有相应证据都轮转。前次变更及后续使用也未进入下一次归纳。命题：反思写入集中到自进化窗口，归纳轮基于带引用的轨迹和前次变更提出少量可证伪缺口，只为这些缺口打开执行轮，减少常驻上下文和无证据管理轮。若真实 Agent 因不能即时反思而漏掉有价值修改，或证据包丢失反例、不能形成后续能力，命题被推翻。
+
+比较了仅缩短七焦点提示（管理轮不减）、保留任务轮所有反思写入（schema 不减）、按证据选择执行轮。本次实现第三种；`ARC_THIN_META_ROUTING=sweep` 与 `ARC_THIN_EVO_TASK_WRITES=all` 保留比较臂。任务轮仍有 `request_evolution(focus)`、普通任务记忆/文件工具；符合契约的 Python session 函数仍自动发布。版本化 SelfRoot 定义只能通过反思接口写入，普通文件工具拒绝组件路径。没有增加 ARC 能力标签、策略建议、动作字段或内置派生分析。
+
+### 窗口与反馈路径
+
+1. 任务窗口保留当前 CH 观测、记忆、状态和持久 Python session 名称，去掉与 CH `RECENT HISTORY` 重复的 `recent_actions`。主动请求在下一边界进入自进化轮。
+2. 归纳窗口的 `PASS ENTRY` 包含本窗口轨迹与可展开引用、前次变更的版本及曝光/调用、原检查和跨轮携带内容。Agent 可在 `decide_exit.result.gaps` 提交最多四个缺口，各有观察、证据引用、候选及可证伪检查；空缺口直接恢复任务。`prior_checks` 可记录对前次变更的结论。调用、曝光及后续动作数只是事实，语义作用仍未知。
+3. 每个缺口打开一个执行窗口，展示原缺口、检查和退役条件；Agent 通过对应反思接口修改，或用有证据的 `no_change` 关闭。变更下一请求边界激活，后续调用和动作回到下一次归纳窗口复查。跨窗口携带和前次变更先于最多 3K 字符的近期轨迹，旧材料用精确引用读回。
+
+“反复手工计算、预测被反证、结果不影响后续行动 → 可证伪候选 → 在保留输入或后续真实回执上检查 → 下轮复查”构成机制与能力之间的中间层。它允许 Agent 自行选择空间表示、帧持续性、动作效果、假设、规划、重放、证据选择、编译视图等能力，不指定组件。跨窗口相似性与因果价值仍需 Agent 审阅引用；单一真实轨迹不能裁决未执行的替代动作。
+
+### 成本、验证与下一步
+
+脚本请求里的任务工具 schema 从约 18–20K 降到约 8–9K **字符**，不是 provider token；归纳入口按触发最多约 8K 字符，执行请求数随缺口数变化。新增选择与填报的推理成本、误选和漏选尚未测量。负例包括无缺口、空证据、无收益变更及合理不投资。
+
+- 功能正确：现有定向检查 24 项通过。另审阅了缺口上限/空证据检查与普通文件写的组件边界；这两条新增边界尚无独立测试结果。
+- 全链路可达：`runs/evo-gaps-v10-20261119/summary.json`，生产 runner/Pi/bridge、mock ARC SDK、脚本 provider，`passed=true`；15 请求、6 动作、两次归纳、一次缺口执行。`smoke-requests.jsonl` 证实任务轮未挂载两个反思工具、自进化轮有；后次归纳出现 `grid_size` 成功调用和原检查。脚本预定行为不证明自主采用。
+- 自主采用：未验证，尚无本版普通真实 provider ARC 样本。
+- 净收益：未验证，尚无固定模型与预算的独立对照；字符数和调用数不能证明关卡收益。
+
+若有付费预算，先固定 provider/模型、推理设置、同一任务前缀、动作/时间/父子总 token 预算，以短诊断确认重复负担可观察，再对照 `sweep` 和单因素消融。审阅展示、展开、实际修改、语义使用、下一动作、合理不使用、任务进展和完整成本。`docs/deferred-research-todos.md` A 的 adapter 边界和 D 的跨压缩语义连续性继续开放。

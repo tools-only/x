@@ -177,7 +177,7 @@ test('META pass: a second pass needs a new trigger row recorded after the previo
   assert.ok(opened.value.window[0] > closedIdx, 'the new pass window starts after the recorded close');
 });
 
-test('META pass rounds: the capability round alone closes through the entrance-question responses', async () => {
+test('META pass rounds: the focus turn has no unusable decide_exit requirement', async () => {
   const s = await designed();
   s.fact('task_episode_closed', { episode: 1, of: 2, id: 'case-a' });
   await tick(s);
@@ -187,9 +187,9 @@ test('META pass rounds: the capability round alone closes through the entrance-q
   s.exit({ reason: 'facts read' });
   await tick(s);
   const r2 = s.reviewExitSchema;
-  assert.ok(r2.required.includes('entry_question_responses'), 'the capability round requires one response per entrance question');
-  assert.throws(() => s.exit({ reason: 'missing responses' }), /entry_question_responses/, 'a round-2 exit without responses is invalid');
-  const closed = s.exit({ result: { reason: 'no gap', entry_question_responses: RESPONSES } });
-  assert.ok(closed.recorded);
-  assert.equal(s.review, undefined);
+  assert.ok(!r2.required?.includes('entry_question_responses'), 'the focus turn has no exit field it cannot submit');
+  assert.ok(!s.surface().includes('decide_exit'));
+  s.noteSpecialistResponse({ role: 'assistant', content: [{ type: 'text', text: 'no_change: The evidence does not justify a prompt change.' }] });
+  await tick(s);
+  assert.equal(s.review?.id.includes('specialist:context'), true, 'the next focus opens after no_change');
 });

@@ -940,20 +940,34 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else {
 				if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo-meta-core') {
 					const seenEvidence = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'read_self');
-					planned = /SPECIALIST \w+ \(\d\/7\)/.test(head)
+					const offeredTools = new Set(tools.map((tool: any) => tool.name ?? tool.function?.name));
+					const gapRound1 = head.includes('ROUND 1 - REVIEW AND GAPS');
+					const priorRefs = [...head.matchAll(/^(\S+) components\.\S+ \(revision/gm)].map(m => m[1]);
+					planned = head.includes('ROUND 2 - GAP EXECUTION')
+						? currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'python')
+							? { kind: 'decide', text: 'no_change: The candidate is written; nothing further in this gap.' }
+							: { kind: 'decide', calls: [['python', { code: 'def grid_size(args, env):\n    """Return the current grid height.\n\n    Applies: any current state.\n    """\n    return len(env.grid) if hasattr(env, "grid") else 0\n' }]] }
+						: gapRound1
+							? { kind: 'decide', calls: [seenEvidence
+								? ['decide_exit', { result: { reason: 'Observed the window.', carry: ['Keep the current strategy.'],
+									gaps: priorRefs.length ? [] : [{ kind: 'tool', observation: 'The grid size was computed by hand in two requests.', evidence_refs: ['request:1'],
+										candidate: 'Publish a grid_size tool.', check: 'The next pass shows a successful grid_size call.', retire_if: 'No call by the next pass.' }],
+									prior_checks: priorRefs.map(ref => ({ ref, verdict: 'held', next: 'keep' })) } }]
+								: ['read_self', { section: 'evidence', ref: 'transition:1', offset: 0 }]] }
+						: /SPECIALIST \w+ \(\d\/7\)/.test(head)
 						? { kind: 'decide', text: 'no_change: No evidence supports a change in this focus.' }
 						: head.includes('ROUND 1 OF 2')
 							? { kind: 'decide', calls: [seenEvidence
 								? ['decide_exit', { result: { reason: 'Observed one action.', carry: ['Keep the current strategy.'] } }]
 								: ['read_self', { section: 'evidence', ref: 'transition:1', offset: 0 }]] }
 							: { kind: 'decide', calls: [evoMetaStage === 0 || evoMetaStage === 4
-								? ['python', { code: 'print(len(grid))' }]
+								? offeredTools.has('grid_size') ? ['grid_size', { args: {} }] : ['python', { code: 'print(len(grid))' }]
 								: evoMetaStage === 1 || evoMetaStage === 3
 									? ['arc_action', { action: 'ACTION1', note: 'Advance after computation.' }]
 								: evoMetaStage === 2 || evoMetaStage === 5
 									? ['request_evolution', { focus: evoMetaStage === 2 ? 'Check the first action.' : 'Check the repeated computation.' }]
 									: ['arc_action', { action: 'ACTION1', note: 'Advance after observation.' }]] };
-					if (!/SPECIALIST \w+ \(\d\/7\)/.test(head) && !head.includes('ROUND 1 OF 2') && evoMetaStage < 6) evoMetaStage += 1;
+					if (!/SPECIALIST \w+ \(\d\/7\)/.test(head) && !head.includes('ROUND 1 OF 2') && !gapRound1 && !head.includes('ROUND 2 - GAP EXECUTION') && evoMetaStage < 6) evoMetaStage += 1;
 				} else planned = SCRIPT[step];
 				if (planned && (planned.kind === "consolidate") === consolidating) step += 1;
 				else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop') planned = { kind: 'decide', text: 'Script complete; stop normally.' };

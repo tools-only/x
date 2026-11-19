@@ -19,7 +19,13 @@ export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component'
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
   metaFallback?: { unit: 'request' | 'action'; interval: number };
   metaActionCheckpoints?: boolean;
-  metaRouting?: 'sweep' | 'selective';
+  /** sweep: seven fixed specialist turns; selective: round 1 picks one; gaps: round 1 records gaps and each opens one turn. */
+  metaRouting?: 'sweep' | 'selective' | 'gaps';
+  /** pass: reflect_component and reflect_orchestration are mounted inside evolution passes (and the design turn) only;
+   * during task decisions request_evolution opens a pass. all (default): mounted at every request. */
+  metaTaskWrites?: 'all' | 'pass';
+  /** Adapter text naming where recorded transitions can be read to test a candidate before writing it. */
+  metaReplaySource?: string;
   metaAtStart?: boolean;
   /** Some task adapters record qualitative effects without opening numeric comparison windows. */
   validationWindows?: 'declared_effect' | 'explicit_predicate';
@@ -130,11 +136,12 @@ export const ENTRANCE_QUESTIONS = [
   'Given the recorded recurrence and inventory facts, is any recurring work not covered by an existing capability?',
   'Which capabilities exist but appear in no recorded outcome path, and why?',
 ];
-export function entranceAskBlock(layer: boolean): string {
+export function entranceAskBlock(layer: boolean, closure = true): string {
   return ['SELF-EVOLUTION ENTRANCE QUESTIONS: This harness is yours; evolution means creating or optimizing components and orchestration, not only adjusting parameters.',
     ...(layer ? [`Four layers exist as coordinates for locating a change - ${EVOLUTION_LAYERS.join(', ')} - and a recorded change may declare its evolution_layer.`] : []),
     ...ENTRANCE_QUESTIONS.map((q, i) => `${i + 1}. ${q}`),
-    'Close with decide_exit carrying result.entry_question_responses: exactly three strings, one per question; "none" is a valid response. "No gap" and "no change" are both valid closures.'].join('\n');
+    // Round-2 focus turns have no decide_exit; there the questions frame the turn and a write or no_change closes it.
+    ...(closure ? ['Close with decide_exit carrying result.entry_question_responses: exactly three strings, one per question; "none" is a valid response. "No gap" and "no change" are both valid closures.'] : [])].join('\n');
 }
 /** EVO_META (user decision 2026-11-16): the self-evolution loop is a fixed host mechanism, not something the agent
  * invents. The fixed fields live in demo/prompts/self_root_meta_fields.md (stable prefix; the acceptance section was
@@ -143,6 +150,8 @@ export function entranceAskBlock(layer: boolean): string {
  * self view. Every string here names mechanism, facts or boundaries only; task content reaches the agent through the
  * runner's task prompt and through its own orchestration contract. */
 export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. While a task is still active, a recorded task-feedback checkpoint or unresolved delivery stall can open a self-evolution pass. The current task pauses for that pass and resumes at the same step; evolution is not deferred until one task ends so the next can use it. Judgment stays with you.';
+/** metaTaskWrites='pass': the reflection writes are mounted in evolution passes; task decisions open one on request. */
+export const META_STRATEGY_PASS_WRITES = 'This harness is yours: components, policy and orchestration are written in a self-evolution pass through reflect_component and reflect_orchestration; each write activates at the next request boundary and its receipt returns to the same self view. During task decisions, request_evolution(focus) opens a pass at the next request boundary, and a documented Python session function still publishes as a tool. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. A recorded task-feedback checkpoint, an agent request or an unresolved delivery stall can open a pass; the task pauses for it and resumes at the same step. Judgment stays with you.';
 /** META pass: the host opens an in-task checkpoint; the Agent judges and applies any harness change. */
 export const META_PASS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at a recorded progress/feedback checkpoint, not completed; after this pass, resume the same task at the same step. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads a component\'s source and retained revisions; reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit. Round 2 is seven focused self-evolution execution turns: analyze the focus, then apply a justified change through its reflection interface. A successful hot modification or an explicit evidence-based no_change closes that focus. Resume this task after the seventh focus so later task work can use the active harness.';
 const META_SELECTIVE_STRATEGY = 'EVOLUTION CHECK DURING THE ACTIVE TASK. Read the current SelfRoot view and the preceding task stage. Close with decide_exit. Choose none to resume the task, or one specialist to inspect and modify. A selected specialist ends after its focused turn; then resume the task.';
@@ -159,6 +168,15 @@ export const META_PASS_SPECIALISTS = [
   { id: 'loop', label: 'Loop', description: 'Inspect orchestration, policy outside context, and recorded step transitions. Find a transition that wasted effort, delayed action, or stopped before completion evidence. Specify the observable trigger, next action, return point, and stopping condition; account for added requests and management turns.', writeInterface: 'reflect_orchestration' },
 ] as const;
 export const META_PASS_ROUND2_LINE = 'ROUND 2 OF 2 - SELF-EVOLUTION EXECUTION: round 1 is closed; its reason and carry are shown as recorded facts. This focus is an execution turn, not a report. Analyze the evidence and hot-modify through the listed reflection interface when it supports a concrete improvement; do not leave a justified change as prose. Continue investigating or repairing this focus until a justified modification or evidence-based no_change closes it. The next request then presents the next focus.';
+/** Gap routing (user request 2026-11-19): round 1 judges the earlier changes against the checks they were made under,
+ * then records gaps - recurring work, failed predictions or unused results the window shows - each with evidence refs,
+ * a candidate change, a falsifiable check and a retire condition. Each gap opens one round-2 execution turn. Process
+ * wording only: no task content, no component prescribed. */
+export const META_GAPS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at a recorded checkpoint, not completed; after this pass it resumes at the same step. What exists: the PASS ENTRY block (window trajectory, prior changes with their recorded use, carried notes); read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy"); read_self(section="evidence", ref="request:N" | "artifact:vK"); read_self_component(kind, name, version?); reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit; each gap it records opens one round-2 execution turn, in order; recording no gap resumes the task.';
+export const META_GAPS_ROUND1_LINE = 'ROUND 1 - REVIEW AND GAPS: first judge each entry under PRIOR CHANGES against the check it was made under and its recorded use since activation; record result.prior_checks (held, failed or untested; keep, revise or retire). Then read the trajectory for work repeated by hand across requests, predictions the next observation contradicted, and results that changed no later action. Record each gap worth a change as result.gaps[]: evidence refs, a candidate change, a check that later recorded steps can falsify, and a retire condition. result.carry keeps open notes for the next pass.';
+export const META_GAPS_ROUND2_LINE = 'ROUND 2 - GAP EXECUTION: this turn owns the one recorded gap below. Where the recorded transitions allow, test the candidate on them before writing; then apply it through the write interface, or reply with "no_change: <evidence-based reason>". A successful write or an explicit no_change closes the turn; the next request presents the next gap or resumes the task.';
+const GAP_FIELDS = { observation: 'What the recorded window shows, in task terms.', candidate: 'The component or orchestration change to make.',
+  check: 'A prediction that later recorded steps can confirm or falsify.', retire_if: 'The recorded condition under which the change should be revised or retired.' };
 export function orchestrationSchema(current?: any) {
   const receiptCondition = { type: 'object', properties: { type: { type: 'string' }, currentArtifact: { type: 'boolean' }, freshness: { type: 'string', enum: ['current','any'] }, factPath: { type: 'string' }, equals: {} }, required: ['type'], additionalProperties: false };
   const output = { type: 'object', description: 'Supported JSON schema subset: object, array, string, integer, number, boolean, null, enum, properties, required, items.' };
@@ -579,7 +597,7 @@ export class SelfRoot extends LiveAgentSelf {
   private resetInProgress?: string;
   private mutations: Promise<unknown> = Promise.resolve();
   private reviewRequests = 0;
-  private metaPassTrigger?: { reason: string; facts: any; window: [number, number]; round?: number; specialistIndex?: number; prior?: any };
+  private metaPassTrigger?: { reason: string; facts: any; window: [number, number]; round?: number; specialistIndex?: number; prior?: any; entry?: string; entryRound?: number; gaps?: any[]; gapIndex?: number };
   private reviewedQualityRefs = new Set<string>();
   private reviewObjectState: any = null;
   private pendingDelivery?: { run: () => Promise<any> };
@@ -651,11 +669,12 @@ export class SelfRoot extends LiveAgentSelf {
   get reviewExitSchema() {
     if (!this.review) return undefined;
     const schema = copy(this.review.modeDefinition.exitSchema);
-    // EVO_ASK closure protocol: the entrance questions close through one array field on the agent's own exit schema.
-    // Two rounds (user decision 2026-11-17): under META the questions belong to the capability round alone - the
-    // induction round closes on the agent's own schema. Non-META arms keep the EVO_ASK gating unchanged.
+    // EVO_ASK closure protocol applies to non-META reviews. META focus turns close by write or no_change
+    // and do not mount decide_exit, so their visible questions carry no exit field.
     const metaRound = this.mech.meta && this.metaPassTrigger ? ((this.metaPassTrigger as any).round ?? 1) : null;
-    if (this.inEvolutionReview && (metaRound !== null ? metaRound === 2 : this.mech.ask)) {
+    // Round-2 focus turns mount no decide_exit (surface()), so under META the questions carry no exit field; the
+    // sweep's round-2 turns show them without the closure line.
+    if (this.inEvolutionReview && metaRound === null && this.mech.ask) {
       schema.properties = { ...(schema.properties ?? {}), entry_question_responses: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'One response per entrance question, in order; "none" is a valid response.' } };
       schema.required = [...new Set([...(schema.required ?? []), 'entry_question_responses'])];
     }
@@ -667,6 +686,18 @@ export class SelfRoot extends LiveAgentSelf {
         type: 'string', enum: ['none', ...META_PASS_SPECIALISTS.map(specialist => specialist.id)],
         description: 'Open one focused pass, or resume the task with none.',
       };
+      if (this.options.metaRouting === 'gaps') {
+        schema.properties.gaps = { type: 'array', maxItems: 4, description: 'Each gap opens one round-2 execution turn, in order. An empty list resumes the task.',
+          items: { type: 'object', additionalProperties: false, required: ['kind', 'observation', 'evidence_refs', 'candidate', 'check'], properties: {
+            kind: { type: 'string', enum: META_PASS_SPECIALISTS.map(specialist => specialist.id), description: 'The harness object the candidate changes.' },
+            ...Object.fromEntries(Object.entries(GAP_FIELDS).map(([key, description]) => [key, { type: 'string', description }])),
+            evidence_refs: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'Recorded refs (request:N, ledger refs, transition or action numbers).' } } } };
+        schema.properties.prior_checks = { type: 'array', description: 'One verdict per PRIOR CHANGES entry you judged.',
+          items: { type: 'object', additionalProperties: false, required: ['ref', 'verdict', 'next'], properties: {
+            ref: { type: 'string', description: 'The change or gap ref shown under PRIOR CHANGES.' },
+            verdict: { type: 'string', enum: ['held', 'failed', 'untested'] }, next: { type: 'string', enum: ['keep', 'revise', 'retire'] },
+            evidence_refs: { type: 'array', items: { type: 'string' } } } } };
+      }
     }
     return schema;
   }
@@ -747,15 +778,25 @@ export class SelfRoot extends LiveAgentSelf {
    * entrance=true appends the EVO_ASK question block at evolution-review entrances only (zero resident elsewhere). */
   reviewStrategy(entrance = false): string {
     if (this.mech.meta) {
-      if (!this.inEvolutionReview) return META_STRATEGY;
+      if (!this.inEvolutionReview) return this.options.metaTaskWrites === 'pass' ? META_STRATEGY_PASS_WRITES : META_STRATEGY;
       const pass: any = this.metaPassTrigger;
+      if (pass?.gaps || (this.options.metaRouting === 'gaps' && (pass?.round ?? 1) === 1)) {
+        if ((pass?.round ?? 1) === 1) return `${META_GAPS_STRATEGY}\n${META_GAPS_ROUND1_LINE}`;
+        const gap = pass.gaps[pass.gapIndex ?? 0];
+        const specialist = META_PASS_SPECIALISTS[pass.specialistIndex ?? 0];
+        return [META_GAPS_STRATEGY, META_GAPS_ROUND2_LINE,
+          `GAP ${(pass.gapIndex ?? 0) + 1}/${pass.gaps.length} ${gap.ref} (${gap.kind}): ${gap.observation}`,
+          `EVIDENCE: ${(gap.evidence_refs ?? []).join(', ')}`, `CANDIDATE: ${gap.candidate}`, `CHECK: ${gap.check}`, `RETIRE IF: ${gap.retire_if ?? 'not stated'}`,
+          ...(this.options.metaReplaySource ? [`RECORDED TRANSITIONS: ${this.options.metaReplaySource}`] : []),
+          `FOCUS ${specialist.label}: ${specialist.description}`, `WRITE INTERFACE: ${specialist.writeInterface}`].join('\n');
+      }
       if ((pass?.round ?? 1) === 1) return this.options.metaRouting === 'selective'
         ? `${META_SELECTIVE_STRATEGY}\nChoose result.next_specialist from none, prompt, context, skill, tool, subagent, memory, loop.`
         : `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
       const specialist = META_PASS_SPECIALISTS[pass?.specialistIndex ?? 0] ?? META_PASS_SPECIALISTS[0];
       return pass?.selective
         ? `${META_SELECTIVE_STRATEGY}\nSPECIALIST ${specialist.label}: ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`
-        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(false)}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
+        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(false, false)}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
     }
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
@@ -908,7 +949,8 @@ export class SelfRoot extends LiveAgentSelf {
     if (book && carryRaw?.some(x => x.length > 200)) this.fact('carry_truncated', { review_closed: carryRow!.ref, limit: 200 });
     const carry = carryRaw?.map(x => clip(x, 200));
     const images = rows.reduce((acc, r) => acc + (Array.isArray(r.value?.composition?.images_refs) ? r.value.composition.images_refs.length : 0), 0);
-    const work = rows.filter(r => this.isWork(r)).length;
+    const isAction = (r: any) => this.options.actionReceiptTypes?.length ? r.kind === 'fact' && this.options.actionReceiptTypes.includes(r.type) : this.isWork(r);
+    const work = rows.filter(isAction).length;
     const artifact = snap.latestArtifactVersion
       ? `v${snap.latestArtifactVersion} hash ${String(snap.latestArtifactHash ?? '').slice(0, 12)}; expand: read_self(section="evidence", ref="artifact:v${snap.latestArtifactVersion}")`
       : 'none rendered';
@@ -928,7 +970,8 @@ export class SelfRoot extends LiveAgentSelf {
         const tagOf = (s: string) => { const m = /^R(\d+)\b/.exec(s); return m ? Number(m[1]) : null; };
         const inWindow = recorded.filter(s => { const t = tagOf(s); return t === null || lo === null || (t >= lo && t <= hi!); });
         let used = 0, from = inWindow.length;
-        const trajBudget = round === 2 ? 4000 : 6000;
+        // Cross-pass judgments and carried counter-evidence precede the trajectory in the bounded entry.
+        const trajBudget = round === 2 ? 4000 : this.options.metaRouting === 'gaps' ? 3000 : 6000;
         for (let i = inWindow.length - 1; i >= 0; i--) {
           const line = clip(inWindow[i], 400);
           if (used + line.length + 1 > trajBudget) break;
@@ -938,6 +981,29 @@ export class SelfRoot extends LiveAgentSelf {
         trajNote = `${inWindow.length} recorded event line(s)${from > 0 ? `; oldest ${from} omitted (full text: read_self(section="evidence", ref="request:N"))` : ''}`;
       }
     } catch (e) { trajNote = `unavailable (${clip(String(e), 120)})`; }
+    // Prior changes (user request 2026-11-19: a pass first reviews what earlier passes changed): every change booked
+    // after the design turn and before this window, newest six, with its recorded use since activation, the gap and
+    // check it was made under, and the last verdict a round 1 recorded on it. Counts and quoted text only.
+    const prior_changes: string[] = [];
+    if (round === 1) {
+      const gapOf = new Map(this.ledger.filter(r => r.type === 'meta_specialist_turn_closed' && r.value?.gap).map(r => [r.value.review, r.value.gap]));
+      const verdicts = new Map<string, any>();
+      for (const r of this.ledger) if (r.type === 'meta_gaps_recorded') for (const c of r.value?.prior_checks ?? []) verdicts.set(c.ref, c);
+      const t0 = this.ledger.findIndex(r => r.type === 'meta_t0_design');
+      const intents = this.ledger.map((r, i) => ({ r, i })).filter(({ r, i }) => i > t0 && i < start && r.type === 'reflection_activated' && r.value?.parent === undefined);
+      for (const { r, i } of intents.slice(-6)) {
+        const after = this.ledger.slice(i + 1);
+        const actions = after.filter(isAction).length;
+        const use = r.value?.component_bindings?.length
+          ? (() => { const runs = this.successfulComponentExecutions(r.value, after); return `${runs.length} successful call(s)${runs.length ? ` (last ${runs[runs.length - 1]})` : ''}, exposed in ${this.componentExposures(r.value, after).length} request(s)`; })()
+          : 'no component binding';
+        const gap = gapOf.get(r.value?.review);
+        const verdict = verdicts.get(r.ref) ?? (gap ? verdicts.get(gap.ref) : undefined);
+        prior_changes.push(clip(`${r.ref} ${(r.value?.addresses ?? []).join(',')} (revision ${r.value?.revision ?? '?'}): ${use}; ${actions} task action(s) since; semantic use and effect on subsequent action unknown`
+          + (gap ? `; made for ${gap.ref}: check "${clip(String(gap.check ?? ''), 160)}"; retire if "${clip(String(gap.retire_if ?? 'not stated'), 100)}"` : '')
+          + (verdict ? `; last verdict ${verdict.verdict}, ${verdict.next}` : ''), 480));
+      }
+    }
     const lines = [
       `TASK: ${clip(String(contract?.task_goal ?? 'not declared').split('\n')[0], 140)}; position: ${position ? clip(JSON.stringify(position), 180) : 'not provided'}`,
       `TRIGGER: ${pass.facts?.trigger}; round ${round} of 2 (${round === 1 ? 'induction' : 'capability'}); window ledger:${start}..ledger:${end} (expand: read_self(section="ledger", offset=${start}))`,
@@ -946,10 +1012,11 @@ export class SelfRoot extends LiveAgentSelf {
       ...(round === 2 && prior ? [`ROUND 1: closed ${prior.closed} (${prior.outcome})${prior.reason ? `; reason: ${clip(String(prior.reason), 400)}` : ''}; carry: ${prior.carry?.length ? clip(prior.carry.join(' | '), 1200) : 'none'}`] : []),
       `WINDOW: ${n('request_record')} request(s), ${work} task action(s), ${n('tool_failed')} failed call(s), ${n('artifact_write')} artifact write(s), ${n('reflection_activated')} activation(s), ${images} image part(s) delivered; expand one request: read_self(section="evidence", ref="request:N")`,
       ...(round === 1 ? [`AGENT_STAGE: ${clip(JSON.stringify(this.stageView(pass.window)), 650)}`] : []),
+      ...(round === 1 ? [`PRIOR CHANGES: ${prior_changes.length ? `${prior_changes.length} (newest last; expand: read_self(section="ledger"))\n${prior_changes.join('\n')}` : 'none since the design turn'}`] : []),
+      `CARRIED: ${carry ? clip(carry.join(' | '), 600) : 'none recorded'}`,
       `TRAJECTORY: ${trajNote}${trajectory.length ? `\n${trajectory.join('\n')}` : ''}`,
       `ARTIFACT: ${artifact}`,
       `SELF: revision ${this.revision}; components: ${clip(names, 220)}${more}; orchestration revision ${(this.current?.orchestration as any)?.revision ?? 1}; context order ${(this.policy.context?.order ?? []).join(',')}`,
-      `CARRIED: ${carry ? clip(carry.join(' | '), 600) : 'none recorded'}`,
     ];
     return clip(lines.join('\n'), 8000);
   }
@@ -1343,13 +1410,17 @@ export class SelfRoot extends LiveAgentSelf {
       ? [...new Set([...this.policy.review.tools, ...this.review?.modeDefinition.tools ?? [], ...this.policy.modes[this.currentMode].tools])] : this.review?.modeDefinition.tools ?? this.policy.modes[this.currentMode].tools;
     const protocol = this.mech.meta && (this.metaPassTrigger as any)?.round === 2
       ? this.protocolSurface().filter(t => t !== 'decide_exit') : this.protocolSurface();
-    return [...new Set([...protocol, ...tools.filter((t: string) => t !== 'agent_tools' && !(this.mech.meta && (this.metaPassTrigger as any)?.round === 2 && t === 'decide_exit') && this.contract.capabilities.includes(t)),
+    // Pass-only writes: the mode's own tool list must not mount what protocolSurface left out of a task decision.
+    const withheld = PROTOCOL.filter(t => !protocol.includes(t));
+    return [...new Set([...protocol, ...tools.filter((t: string) => t !== 'agent_tools' && !withheld.includes(t) && this.contract.capabilities.includes(t)),
       ...(this.contract.capabilities.includes('agent_tools') ? this.active().filter(c => c.kind === 'tool' || c.kind === 'subagent').map(c => c.name) : [])])];
   }
   /** The protocol surface, minus what has no object in this run: with no review entrance wired, decide_exit would be
    * advertised with nothing to exit. Everything else in PROTOCOL stays reachable from every step. */
   private protocolSurface(): string[] {
-    return this.mech.meta && !this.review ? PROTOCOL.filter(t => t !== 'decide_exit') : [...PROTOCOL];
+    if (!this.mech.meta || this.review) return [...PROTOCOL];
+    const passOnly = this.options.metaTaskWrites === 'pass' && !this.metaT0Pending ? ['reflect_component', 'reflect_orchestration'] : [];
+    return PROTOCOL.filter(t => t !== 'decide_exit' && !passOnly.includes(t));
   }
   allowTool(name: string, args: any) { this.assertActionAllowed(this.options.actionOf ? this.options.actionOf(name, args) : name); }
   /** Use persisted receipts and review entrances so resuming a run preserves its cadence. */
@@ -1839,10 +1910,17 @@ export class SelfRoot extends LiveAgentSelf {
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
       this.fact('self_view', { review: ticket.id, view: { revision: this.serial, full: 'read_self(section="pin")' } });
-      // The induction entry carries the bounded trajectory; the capability entry carries its closure into the focused view.
-      if (this.mech.meta && this.metaPassTrigger && ((this.metaPassTrigger.round ?? 1) === 1 || (this.metaPassTrigger.specialistIndex ?? 0) === 0)) {
-        const entryText = this.passEntry(true);
-        if (entryText) { this.review.pass_entry = entryText; this.fact('meta_pass_entry', { chars: entryText.length, text: entryText }); }
+      // The induction entry carries the bounded trajectory; the round-2 entry carries round 1's closure. Each is booked
+      // once per round and rides every turn of that round (executionView), so later focus turns keep it.
+      const pass: any = this.metaPassTrigger;
+      if (this.mech.meta && pass) {
+        const round = pass.round ?? 1;
+        if (pass.entryRound !== round) {
+          const entryText = this.passEntry(true);
+          pass.entry = entryText ?? undefined; pass.entryRound = round;
+          if (entryText) this.fact('meta_pass_entry', { chars: entryText.length, round, text: entryText });
+        }
+        if (pass.entry) this.review.pass_entry = pass.entry;
       }
     }
     this.fact('mode_entered', { id: ticket.id, mode: this.currentMode, triggers: ticket.triggers, suspended: this.review.suspended });
@@ -1976,7 +2054,16 @@ export class SelfRoot extends LiveAgentSelf {
     const exitSchema = this.reviewExitSchema ?? review.modeDefinition.exitSchema;
     try { validateSchema(result, exitSchema); } catch (e) { invalid = `result does not match your mode exit schema: ${String(e)}`; }
     const exitRound = this.mech.meta && this.metaPassTrigger ? ((this.metaPassTrigger as any).round ?? 1) : null;
-    if (!invalid && this.inEvolutionReview && (exitRound !== null ? exitRound === 2 : this.mech.ask)) {
+    // The orchestration schema validator supports shape and enum, but does not enforce array bounds or nonblank
+    // evidence. Reject malformed gap routing before it can open a focus with an undefined specialist.
+    if (!invalid && this.inEvolutionReview && exitRound === 1 && this.options.metaRouting === 'gaps') {
+      const gaps = (result as any).gaps;
+      if (gaps !== undefined && (gaps.length > 4 || gaps.some((g: any) =>
+        !g.observation.trim() || !g.candidate.trim() || !g.check.trim() || !Array.isArray(g.evidence_refs) ||
+        !g.evidence_refs.length || g.evidence_refs.some((ref: string) => !ref.trim()))))
+        invalid = 'gaps must contain at most four entries, each with nonblank observation, candidate, check and at least one evidence ref';
+    }
+    if (!invalid && this.inEvolutionReview && exitRound === null && this.mech.ask) {
       const responses = (result as any)?.entry_question_responses;
       if (!Array.isArray(responses) || responses.length !== 3 || responses.some((x: any) => typeof x !== 'string'))
         invalid = 'entry_question_responses must be exactly three strings, one per entrance question ("none" is a valid response)';
@@ -2010,19 +2097,29 @@ export class SelfRoot extends LiveAgentSelf {
     if (evolution && this.reviewChanged()) this.unresolvedReview = false;
     // The induction round's closure opens the fixed specialist sweep at the next request boundary.
     const passTrigger: any = this.metaPassTrigger;
+    const gapRouting = this.options.metaRouting === 'gaps';
+    // Gap routing: each recorded gap gets a ref and opens one turn for its kind; no gap resumes the task.
+    const gaps = gapRouting && Array.isArray(extra?.result?.gaps)
+      ? extra.result.gaps.slice(0, 4).map((gap: any, i: number) => ({ ...gap, ref: `gap:${row.ref}:${i + 1}` })) : [];
     const selectedSpecialist = this.options.metaRouting === 'selective'
-      ? META_PASS_SPECIALISTS.findIndex(specialist => specialist.id === extra?.result?.next_specialist) : 0;
+      ? META_PASS_SPECIALISTS.findIndex(specialist => specialist.id === extra?.result?.next_specialist)
+      : gapRouting ? (gaps.length ? META_PASS_SPECIALISTS.findIndex(specialist => specialist.id === gaps[0].kind) : -1) : 0;
+    if (gapRouting && evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1 && closedBy === 'agent')
+      this.fact('meta_gaps_recorded', { closure: row.ref, gaps, prior_checks: Array.isArray(extra?.result?.prior_checks) ? extra.result.prior_checks : [] });
     const advance = evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1 && closedBy === 'agent' && selectedSpecialist >= 0;
     if (advance) {
       const result = (extra as any)?.result ?? null;
-      this.metaPassTrigger = { ...passTrigger, round: 2, specialistIndex: selectedSpecialist, selective: this.options.metaRouting === 'selective', prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
+      this.metaPassTrigger = { ...passTrigger, round: 2, specialistIndex: selectedSpecialist, selective: this.options.metaRouting === 'selective',
+        ...(gapRouting ? { gaps, gapIndex: 0 } : {}), prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
         carry: Array.isArray(result?.carry) ? result.carry.map((x: any) => String(x)) : null } };
-      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary', specialists: this.options.metaRouting === 'selective' ? [META_PASS_SPECIALISTS[selectedSpecialist].id] : META_PASS_SPECIALISTS.map(x => x.id) });
-      this.queue.push({ id: `${review.id}:specialist:${META_PASS_SPECIALISTS[selectedSpecialist].id}`, boundary: `pass:${this.request}`, event: review.event,
+      const turns = gapRouting ? gaps.map((gap: any) => gap.kind) : this.options.metaRouting === 'selective' ? [META_PASS_SPECIALISTS[selectedSpecialist].id] : META_PASS_SPECIALISTS.map(x => x.id);
+      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary', specialists: turns });
+      this.queue.push({ id: gapRouting ? `${review.id}:gap:1` : `${review.id}:specialist:${META_PASS_SPECIALISTS[selectedSpecialist].id}`, boundary: `pass:${this.request}`, event: review.event,
         triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
     }
     this.review = undefined; this.currentMode = this.previousMode; if (!advance) this.metaPassTrigger = undefined;
-    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode, ...(advance ? { next_round: { round: 2, of: 2, specialists: this.options.metaRouting === 'selective' ? [META_PASS_SPECIALISTS[selectedSpecialist].id] : META_PASS_SPECIALISTS.map(x => x.id), opens: 'next request boundary' } } : {}) };
+    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode,
+      ...(advance ? { next_round: { round: 2, of: 2, specialists: (this.metaPassTrigger as any).gaps?.map((gap: any) => gap.kind) ?? (this.options.metaRouting === 'selective' ? [META_PASS_SPECIALISTS[selectedSpecialist].id] : META_PASS_SPECIALISTS.map(x => x.id)), opens: 'next request boundary' } } : {}) };
   }
   /** A specialist execution turn closes after a hot edit or explicit no_change. */
   private closeMetaSpecialist() {
@@ -2039,9 +2136,25 @@ export class SelfRoot extends LiveAgentSelf {
       outcome: changed ? 'activated' : explicitNoChange ? 'no_change' : 'unresolved', closed_by: 'specialist_turn_end', requests: this.reviewRequests, changes: review.changes });
     const row = this.fact('meta_specialist_turn_closed', { review: review.id, closure: closure.ref, specialist: specialist.id, index: index + 1,
       request: this.request, requests: this.reviewRequests, outcome, changes: review.changes,
+      ...(pass.gaps ? { gap: pass.gaps[pass.gapIndex ?? 0] } : {}),
       ...(explicitNoChange ? { no_change_reason: pass.noChange.reason } : {}) });
     this.review = undefined;
     this.currentMode = this.previousMode;
+    if (pass.gaps) {
+      const nextGap = (pass.gapIndex ?? 0) + 1;
+      const outcomes = [...(pass.completed ?? []), outcome];
+      if (nextGap < pass.gaps.length) {
+        const nextIndex = META_PASS_SPECIALISTS.findIndex(x => x.id === pass.gaps[nextGap].kind);
+        this.metaPassTrigger = { ...pass, gapIndex: nextGap, specialistIndex: nextIndex, noChange: undefined, completed: outcomes };
+        this.fact('meta_specialist_turn_opened', { previous: row.ref, specialist: pass.gaps[nextGap].kind, gap: pass.gaps[nextGap].ref, index: nextGap + 1, opens: 'next request boundary' });
+        this.queue.push({ id: `${review.id.replace(/:gap:\d+$/, '')}:gap:${nextGap + 1}`, boundary: `pass:${this.request}`, event: review.event,
+          triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
+      } else {
+        this.fact('meta_specialist_sweep_closed', { previous: row.ref, turns: pass.gaps.map((gap: any) => gap.kind), gaps: pass.gaps.map((gap: any) => gap.ref), outcome: 'complete', completed_turns: outcomes.length });
+        this.metaPassTrigger = undefined;
+      }
+      return;
+    }
     const nextIndex = index + 1;
     if (!pass.selective && nextIndex < META_PASS_SPECIALISTS.length) {
       const next = META_PASS_SPECIALISTS[nextIndex];
@@ -2263,10 +2376,13 @@ export class SelfRoot extends LiveAgentSelf {
     if (memoryPolicy.partition === 'kind') selectedMemory.sort((a, b) => a.kind.localeCompare(b.kind) || a.key.localeCompare(b.key) || a.ref.localeCompare(b.ref));
     const meta = this.options.metaActionCheckpoints && this.inEvolutionReview ? this.metaPassTrigger : undefined;
     const specialist = meta?.round === 2 ? META_PASS_SPECIALISTS[meta.specialistIndex ?? 0] : undefined;
+    // The pass entry (trajectory, prior changes, carried notes) is the pass's observation: it rides task_observation as
+    // plain text, so the adapter places it where a task decision has its observation. It already renders round 1's
+    // reason and carry, so the view repeats neither.
     if (meta) return {
-      root_id: this.root_id, revision: this.serial, task_observation: '', execution: { mode: this.currentMode, step: run.step },
+      root_id: this.root_id, revision: this.serial, task_observation: meta.entry ? `PASS ENTRY\n${meta.entry}` : '', execution: { mode: this.currentMode, step: run.step },
       evolution: { trigger: meta.facts, stage: this.stageView(meta.window),
-        ...(specialist ? { focus: specialist.id, carry: meta.prior?.carry?.join(' | ').slice(0, 600), prior: meta.prior?.closed } : {}),
+        ...(specialist ? { focus: specialist.id, prior: meta.prior?.closed, ...(meta.entry ? {} : { carry: meta.prior?.carry?.join(' | ').slice(0, 600) }) } : {}),
         active_components: this.active().filter(component => !specialist || component.kind === specialist.id)
           .slice(-8).map(({ kind, name, version }) => ({ kind, name, version })),
         detail: 'read_self(section="ledger" | "policy" | "self")' },

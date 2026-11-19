@@ -281,6 +281,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   const archiveResults = process.env.ARC_THIN_ARCHIVE_RESULTS === '1';
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	const evoMetaCore = process.env.ARC_THIN_CORE === "1";
+	/** Evo meta core: reflection writes mount in evolution passes only unless ARC_THIN_EVO_TASK_WRITES=all (2026-11-19). */
+	const evoTaskWrites: 'all' | 'pass' = process.env.ARC_THIN_EVO_TASK_WRITES === 'all' ? 'all' : 'pass';
 	const selfRootEnabled = native && !control && process.env.ARC_THIN_SELFROOT !== '0';
 	const legacySelfLoopEnabled = native && !control && !selfRootEnabled && process.env.ARC_THIN_SELFLOOP === '1';
 	// SelfRoot owns self-evolution in the native path. Keep the previous ledger/critic/refiner loop available only
@@ -896,7 +898,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	  const saved = existsSync(paths.state) ? JSON.parse(readFileSync(paths.state, 'utf8')) : undefined;
 	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS,
 	    mechanisms: { meta: evoMetaCore || process.env.ARC_THIN_META === '1' }, metaAtStart: false,
-	    ...(evoMetaCore ? { metaRouting: 'sweep', metaActionCheckpoints: true } as const : {}),
+	    // Gap routing and pass-only reflection writes (2026-11-19); ARC_THIN_META_ROUTING=sweep and ARC_THIN_EVO_TASK_WRITES=all restore the earlier arm.
+	    ...(evoMetaCore ? { metaRouting: process.env.ARC_THIN_META_ROUTING === 'sweep' ? 'sweep' : 'gaps', metaActionCheckpoints: true,
+	      metaTaskWrites: evoTaskWrites, metaReplaySource: 'python history.transitions() and history.grid(n) (the grid after action n) read the recorded run; data/trajectory.jsonl has one row per action.' } as const : {}),
 	    runPosition: () => arcRunPosition(observation, trajectory.length, decision), taskRuntimeView: () => arcTaskRuntimeView,
 	    adapterTrajectory: () => {
 	      const requestsByDecision = new Map<number, number[]>();
@@ -4387,6 +4391,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       }
       catch (error) { throw new Refusal(errorText(error)); }
     }) });
+  // The Evo Meta task still writes ordinary notes and artifacts. Its versioned harness definitions have one owner:
+  // reflect_component in an evolution pass. A generic file write must not publish an untracked Binder component.
+  if (workspace && evoMetaCore) workspace.writeGuard = path => {
+    const kind = componentKind(path);
+    if (kind && kind !== 'library') throw new Refusal(`${path} is a harness component; use reflect_component in a self-evolution pass`);
+  };
 	// No action vocabulary is invented before the environment has supplied its scope.
 	registerArcAction([]);
 	let boundActionScope = chView ? "ch" : "[]";
@@ -4552,7 +4562,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
             return text(`Skip: ${params.reason_code}`, undefined, true);
           }) });
         pi.registerTool({ name: evoMetaCore ? 'request_evolution' : 'request_adapt', label: evoMetaCore ? 'Request evolution' : 'Request ADAPT',
-          description: evoMetaCore ? 'Request an Evo Meta review at the next request boundary. State the reason.'
+          description: evoMetaCore ? 'Open a self-evolution pass at the next request boundary; the task resumes at the same step after it. State the focus: the recorded work or failure the pass should examine.'
             : 'Queue ADAPT at the next settled task boundary. You can still act in this turn.',
           parameters: Type.Object({ focus: Type.String({ minLength: 3, maxLength: 500 }) }),
           execute: guardTool(evoMetaCore ? 'request_evolution' : 'request_adapt', async (params: { focus: string }) => {
@@ -4805,7 +4815,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			name: "python",
 			label: "Python",
 			description: native
-				? evo ? "Run code in the persistent Python sandbox. Batch independent checks from one observation into one call and return only evidence that could change the next decision. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. "
+				? evo ? "Run code in the persistent Python sandbox. Available names: state, grid (current rows; grid[y][x]), prev_grid, history (history.grid(n), history.transitions()), artifacts, args, env. A missing frame may make grid None. env.grid and env.state expose the current state; after env.act(...) in the same call, read the updated env.grid or returned observation, since the bare grid name was bound at call entry. Batch independent checks from one observation into one call and return only evidence that could change the next decision. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. "
 				: "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
 					"Returns what you print and the " +
 					"value of a final expression. Batch independent checks from one observation into one call and return only evidence that could change the next decision. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
@@ -5344,7 +5354,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			catch (error) { logError("memory:file", error); }
 		}
 		} else { ledgerText = ""; criticText = ""; }
-		const rootPrompt = renderPrompt("arc_thin_agent.md", {});
+		const rootPrompt = renderPrompt("arc_thin_agent.md", { adapt: evoMetaCore
+			? evoTaskWrites === 'pass'
+				? 'You may update your prompts, memory, tools, skills and subagent roles in a self-evolution pass. `request_evolution(focus)` opens one at the next request boundary; it does not prevent task actions. A documented Python session function still publishes as a tool during task decisions.'
+				: 'You may update your prompts, memory, tools, skills and subagent roles at any request through reflect_component and reflect_orchestration. `request_evolution(focus)` opens a self-evolution pass at the next request boundary; it does not prevent task actions.'
+			: 'You may update your prompts, memory, tools, skills and subagent roles. `request_adapt` schedules a separate adjustment turn at the next task boundary; it does not prevent task actions. Read `adapt-config.json` when considering a schedule change; edits take effect at the next task boundary.' }).trimEnd();
 		const systemPrompt = run.hookTurn
 			? renderPrompt("arc_thin_adapt.md", {})
 			: selfBaseline ? renderPrompt('arc_thin_self_baseline.md', { game,
@@ -5389,7 +5403,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       python: agentNativeProgramLoop ? 'Named programs are created with save_program and run in a fresh sandbox on the current state; source is read on demand.'
         : evo ? 'Python is a persistent sandbox. A documented def name(args, env) becomes a versioned SelfRoot tool automatically; see the Python tool contract. Source is read on demand.'
         : 'Python is a persistent sandbox; `env.act(action, x, y, predict)` can act when available. `promote` or `save_tool` publishes a session function as a native callable tool.',
-      skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.' }) : control
+      skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.',
+      reflect: evoMetaCore && evoTaskWrites === 'pass' ? 'In a self-evolution pass, `reflect_component` defines, revises or restores SelfRoot components.' : '`reflect_component` defines, revises or restores SelfRoot components.' }) : control
 			? renderPrompt("arc_thin_control_system.md", { game })
 			: renderPrompt("arc_thin_system.md", {
 				game, overlay: overlay ? `Your standing instructions (set with prompt):\n${overlay}` : "",
@@ -5512,9 +5527,14 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const metaReview = evoMetaCore && evo?.inEvolutionReview;
 		if (evoMetaCore && evo) {
 			const active = pi.getActiveTools();
+			// Task decisions mount the protocol tools the core's surface names (pass-only writes leave out the reflection
+			// writes) and none of the older write paths: save_program belongs to the program loop, self_component is the
+			// pre-SelfRoot compatibility path.
+			const surface = evo.surface();
 			const tools = metaReview
 				? [...new Set([...active.filter(name => ['read', 'python', 'memory', 'skill', 'run_skill'].includes(name)), ...evo.surface()])].filter(name => name !== 'arc_action')
-				: active.filter(name => name !== 'decide_exit');
+				: active.filter(name => name !== 'decide_exit' && name !== 'self_component' && (agentNativeProgramLoop || name !== 'save_program')
+					&& (!ARC_SELFROOT_TOOLS.includes(name) || surface.includes(name)));
 			pi.setActiveTools(tools);
 		}
 		const headKey = `${decision}:${lastUser}:${evo ? [evo.revision, evo.mode, evo.reviewId, trajectory.length, intervalReview].join(':') : ''}`;
@@ -5538,9 +5558,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const viewInput = compactArc && taskObservation ? { taskObservation } : chView ? { taskObservation: '' } : {};
 			const view = evo.executionView({ ...viewInput, taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> });
 			const { task_observation, ...selfView } = view;
+			// Compact task head: the observation's RECENT HISTORY already lists the actions, so the view's copy goes, and
+			// empty fields go; what the Python session still holds is listed so the decision reuses it (2026-11-19).
+			if (compactArc && evoMetaCore) {
+				const execution = (selfView as any).execution;
+				if (chView && !metaReview && execution) delete execution.recent_actions;
+				for (const target of [selfView as any, execution]) for (const [key, value] of Object.entries(target ?? {}))
+					if (value === null || (Array.isArray(value) && !value.length)) delete target[key];
+			}
 			const selfText = evoMetaCore ? JSON.stringify(selfView) : JSON.stringify(selfView, null, 2);
+			const held = compactArc && evoMetaCore && sessionView ? nativeRuntime?.sessionView() ?? '' : '';
 			run.workingSet!.text = compactArc
-				? [typeof task_observation === 'string' ? task_observation : '', selfText].filter(Boolean).join('\n\n')
+				? [typeof task_observation === 'string' ? task_observation : '', held, selfText].filter(Boolean).join('\n\n')
 				: [run.workingSet!.text, selfText].filter(Boolean).join('\n\nSELFROOT EXECUTION VIEW\n');
 		}
 			run.head = {

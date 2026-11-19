@@ -8,9 +8,9 @@ Your harness has {{kinds}} kinds of capability:
 - Prompt and memory: task-authored prompts and facts are available in the working view; read their full records on demand.
 - Tool: {{python}}
 - Skill: {{skill}}
-- Subagent: agents/<name>.md can be consulted with `consult(agent, question, refs)`; subagents cannot act.
+- Subagent: agents/<name>.md is called as the tool `<name>(question, refs)`; subagents cannot act.
 Writes are versioned; `env.restore(path, version)` restores a prior version.
 
-`reflect_component` defines, revises or restores SelfRoot components. Runtime owns storage, validation and binding. Component availability or display is not evidence of use; the Agent decides whether to create, call, revise or retire one. {{refine}}{{call_points}}
+{{reflect}} Runtime owns storage, validation and binding. Component availability or display is not evidence of use; the Agent decides whether to create, call, revise or retire one. {{refine}}{{call_points}}
 
 {{arc}}
