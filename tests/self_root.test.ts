@@ -1,6 +1,6 @@
 ﻿import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { SelfRoot, FLOOR, PROTOCOL, hash, type SelfContract } from '../demo/self_root.ts';
+import { SelfRoot, FLOOR, PROTOCOL, hash, normalizeOperation, compileOrchestrationIntent, type SelfContract } from '../demo/self_root.ts';
 import { deliveryReviewEvidence } from '../demo/self_root_ppt.ts';
 import { closeLiveSelfMethods } from '../demo/live_self_wasi.ts';
 after(closeLiveSelfMethods);
@@ -148,14 +148,12 @@ test('no session-entry review; settlement review uses the v1.4 exit contract', a
   assert.equal(s.mode,'reflect');
 });
 
-test('pending chain leaves pinned response unchanged, any failure aborts whole chain', async () => {
+test('a rejected write preserves prior pending changes and accepts a same-turn retry', async () => {
   const s = new SelfRoot(contract()); await start(s);
   const p = structuredClone(s.policy); p.context.instruction = 'next input';
   await s.transaction({baseRevision:1,policy:p}); assert.equal(s.revision,1); assert.equal(s.policy.context.instruction,'');
   await assert.rejects(s.transaction({baseRevision:1,policy:p}),/stale/);
-  await start(s); assert.equal(s.revision,1); assert.equal(s.policy.context.instruction,'');
-  await s.transaction({baseRevision:1,policy:p}); await start(s);
-  assert.equal(s.revision,2); assert.equal(s.policy.context.instruction,'next input');
+  await start(s); assert.equal(s.revision,2); assert.equal(s.policy.context.instruction,'next input');
 });
 
 test('request envelope is part of the same policy, hot activation and restore', async () => {
@@ -372,6 +370,42 @@ test('host schema rejection also aborts an in-flight reflection validation', asy
   await start(s);
   const transaction=s.transaction({baseRevision:1,components:[{op:'define',kind:'tool',name:'probe',source:'# program: on\ndef main(args): return 1'}]});
   await begun; s.abortTransaction('parallel reflection rejected by Pi schema'); release();
-  await assert.rejects(transaction,/chain failed/); await start(s);
+  await assert.rejects(transaction,/reflection aborted/); await start(s);
   assert.equal(s.revision,1); assert.ok(!s.surface().includes('probe'));
+});
+
+test('a rejected reflection can be corrected in the same turn without discarding a valid pending change', async () => {
+  const s = new SelfRoot(contract()); await start(s);
+  await s.transaction({ components: [{ op: 'define', kind: 'prompt', name: 'keep', source: 'Keep this' }] });
+  await assert.rejects(s.transaction({ components: [{ op: 'define', kind: 'prompt', name: 'broken', source: 7 }] }));
+  await s.transaction({ baseRevision: 2, components: [{ op: 'define', kind: 'prompt', name: 'retry', source: 'Retry works' }] });
+  await start(s);
+  assert.equal(s.revision, 3);
+  assert.ok(s.active().some(c => c.name === 'keep'));
+  assert.ok(s.active().some(c => c.name === 'retry'));
+  assert.ok(!s.active().some(c => c.name === 'broken'));
+});
+
+test('host wraps tool source and description but does not repair invalid Python', async () => {
+  const validator = async (_path: string, source: string) => {
+    if (source.includes('def main(:')) throw Error('invalid Python syntax');
+    return { kind: 'tool', name: 'probe', description: 'Returns seven', enabled: true };
+  };
+  const s = new SelfRoot(contract(), undefined, validator); await start(s);
+  const input = normalizeOperation('component', { op: 'define', kind: 'tool', name: 'probe', source: 'def main(args):\n    return 7', description: 'Returns seven' });
+  await s.transaction({ components: [input] }); await start(s);
+  const tool = s.active().find(c => c.kind === 'tool' && c.name === 'probe');
+  assert.match(tool?.source ?? '', /^# program: on\n# description: Returns seven\n/);
+  await assert.rejects(s.transaction({ components: [{ op: 'redefine', kind: 'tool', name: 'probe', source: 'def main(:' }] }));
+  assert.equal(s.revision, 2);
+});
+
+test('decision evidence is inferred only from one recorded incoming action type', () => {
+  const definition = { roles: [{ id: 'agent' }], slots: [], steps: [{ id: 'work', role: 'agent' }, { id: 'judge', role: 'agent', decision: 'check' }],
+    decisions: [{ id: 'check', judge: 'agent', question: 'What happened?', evidence: [], output: { type: 'boolean' } }],
+    transitions: [{ id: 'arrive', from: 'work', to: 'judge', on: { type: 'action', action: 'arc_action' } }, { id: 'leave', from: 'judge', to: 'complete', on: { type: 'decision', id: 'check' } }] };
+  const compiled = compileOrchestrationIntent(definition, new Set(['arc_action']));
+  assert.deepEqual(compiled.definition.decisions[0].evidence, [{ type: 'arc_action' }]);
+  assert.deepEqual(definition.decisions[0].evidence, []);
+  assert.throws(() => compileOrchestrationIntent({ ...definition, transitions: [] }, new Set(['arc_action'])), /decisions.check.evidence/);
 });

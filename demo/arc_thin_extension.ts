@@ -5677,9 +5677,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		nativeRuntime?.close();
 	});
 	if (evo && selfRootPersist) pi.on('turn_end', async (event: any) => {
-		for (const result of event.toolResults ?? []) {
+		for (const [index, result] of (event.toolResults ?? []).entries()) {
 			if (!result.isError) continue;
-			if (['reflect_component', 'reflect_orchestration'].includes(result.toolName)) evo!.abortTransaction(JSON.stringify(result.content));
+			if (['reflect_component', 'reflect_orchestration'].includes(result.toolName) && !(event.toolResults ?? []).slice(index + 1).some((later: any) => !later.isError && ['reflect_component', 'reflect_orchestration'].includes(later.toolName))) evo!.abortTransaction(JSON.stringify(result.content));
 			evo!.fact('tool_failed', { tool: result.toolName, content: result.content });
 		}
 		try {
