@@ -893,7 +893,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	  const contract = loadOrCreateArcContract(runRoot, [...ARC_SELF_ROOT_OPTIONS.reviewTools ?? [], ...ARC_SELF_ROOT_OPTIONS.evolutionTools ?? []]);
 	  const paths = arcSelfRootPaths(runRoot);
 	  const saved = existsSync(paths.state) ? JSON.parse(readFileSync(paths.state, 'utf8')) : undefined;
-	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS, taskRuntimeView: () => arcTaskRuntimeView });
+	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS,
+	    mechanisms: { meta: process.env.ARC_THIN_META === '1' }, metaAtStart: false,
+	    runPosition: () => arcRunPosition(observation, trajectory.length, decision), taskRuntimeView: () => arcTaskRuntimeView });
 	  selfRootPersist = () => { writeFileSync(paths.state + '.next', JSON.stringify(evo!.export(), null, 2)); renameSync(paths.state + '.next', paths.state); };
 	}
 	let previousGrid: number[][] | undefined;
@@ -4175,11 +4177,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					await evo.event('unit_completed', `arc-level:${row.levels_completed}:action:${row.n}`, {
 						unit: `level:${row.levels_completed}`, event_classes: ['task_outcome'], evidenceRefs: [outcome.ref], metrics: arcMetrics(trajectory, observation),
 					});
-				} else if (process.env.ARC_THIN_EVO_PASS !== '0') {
+				} else if (!evo.mech.meta && process.env.ARC_THIN_EVO_PASS !== '0') {
 					const budget = row.budget;
 					if (!(budget?.maximum != null && budget.used >= budget.maximum) &&
 						!(budget?.total_maximum != null && budget.total_used >= budget.total_maximum)) {
-						await evo.queueActionIntervalReview(30, row.n);
+						await evo.queueActionIntervalReview(ARC_SELF_ROOT_OPTIONS.metaFallback.interval, row.n);
 					}
 				}
 				selfRootPersist?.();

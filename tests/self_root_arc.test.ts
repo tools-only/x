@@ -64,3 +64,44 @@ test('ARC counts played actions across requests and reloads, and starts a fresh 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('ARC task cadence opens after fifty played actions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'arc-cadence-'));
+  try {
+    const contract = loadOrCreateArcContract(root, [...ARC_SELF_ROOT_OPTIONS.reviewTools, ...ARC_SELF_ROOT_OPTIONS.evolutionTools]);
+    const evo = new SelfRoot(contract, undefined, undefined, undefined, undefined, ARC_SELF_ROOT_OPTIONS);
+    const interval = ARC_SELF_ROOT_OPTIONS.metaFallback.interval;
+    for (let action = 1; action < interval; action++) {
+      evo.fact('arc_action', { n: action });
+      await evo.queueActionIntervalReview(interval, action);
+    }
+    assert.equal(evo.actionIntervalReviewState, undefined);
+    evo.fact('arc_action', { n: interval });
+    await evo.queueActionIntervalReview(interval, interval);
+    assert.equal(evo.actionIntervalReviewState, 'queued');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ARC optional Meta starts after exploration and routes one focus', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'arc-meta-'));
+  try {
+    const contract = loadOrCreateArcContract(root, [...ARC_SELF_ROOT_OPTIONS.reviewTools, ...ARC_SELF_ROOT_OPTIONS.evolutionTools]);
+    const evo = new SelfRoot(contract, undefined, undefined, undefined, undefined, {
+      ...ARC_SELF_ROOT_OPTIONS, mechanisms: { meta: true }, metaAtStart: false,
+    });
+    assert.equal(evo.metaT0Pending, false);
+    for (let action = 1; action < ARC_SELF_ROOT_OPTIONS.metaFallback.interval; action++) evo.fact('arc_action', { n: action });
+    assert.equal(evo.metaPassDue(), null);
+    evo.fact('arc_action', { n: ARC_SELF_ROOT_OPTIONS.metaFallback.interval });
+    await evo.boundary(() => {}, () => {});
+    assert.equal(evo.reviewSelfView().evolution_pass.trigger, 'action_cadence_fallback');
+    assert.equal(evo.reviewExitSchema?.properties.next_specialist.enum.includes('loop'), true);
+    evo.exit({ result: { reason: 'exploration can continue', next_specialist: 'none' } });
+    await evo.boundary(() => {}, () => {});
+    assert.equal(evo.hasReview, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

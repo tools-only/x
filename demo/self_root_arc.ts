@@ -5,6 +5,8 @@ import { Type } from 'typebox';
 import { FLOOR, hash, normalizeOperation, operationContract, providerOperationSchema, type SelfContract, type SelfRoot } from './self_root.ts';
 
 export const ARC_SELF_ROOT_OPTIONS = {
+  metaFallback: { unit: 'action' as const, interval: 50 },
+  metaRouting: 'selective' as const,
   reviewTools: ['arc_action', 'python', 'read', 'memory', 'skill', 'run_skill'],
   evolutionTools: ['read', 'write', 'edit', 'memory', 'skill', 'run_skill', 'reflect_component', 'reflect_orchestration'],
   reservedToolNames: ['arc_action', 'python'],

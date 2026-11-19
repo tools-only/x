@@ -17,6 +17,9 @@ const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], e
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide', 'decide_exit', 'decide_validation'];
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
+  metaFallback?: { unit: 'request' | 'action'; interval: number };
+  metaRouting?: 'sweep' | 'selective';
+  metaAtStart?: boolean;
   /** Some task adapters record qualitative effects without opening numeric comparison windows. */
   validationWindows?: 'declared_effect' | 'explicit_predicate';
   processFactTypes?: string[]; finalDeliveryTools?: string[]; taskComplete?: () => boolean; requiredUnits?: () => number;
@@ -141,6 +144,7 @@ export function entranceAskBlock(layer: boolean): string {
 export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. While a task is still active, a recorded task-feedback checkpoint or unresolved delivery stall can open a self-evolution pass. The current task pauses for that pass and resumes at the same step; evolution is not deferred until one task ends so the next can use it. Judgment stays with you.';
 /** META pass: the host opens an in-task checkpoint; the Agent judges and applies any harness change. */
 export const META_PASS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at a recorded progress/feedback checkpoint, not completed; after this pass, resume the same task at the same step. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads a component\'s source and retained revisions; reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit. Round 2 is seven focused self-evolution execution turns: analyze the focus, then apply a justified change through its reflection interface. A successful hot modification or an explicit evidence-based no_change closes that focus. Resume this task after the seventh focus so later task work can use the active harness.';
+const META_SELECTIVE_STRATEGY = 'EVOLUTION CHECK DURING THE ACTIVE TASK. Read the current SelfRoot view and the preceding task stage. Close with decide_exit. Choose none to resume the task, or one specialist to inspect and modify. A selected specialist ends after its focused turn; then resume the task.';
 /** Two rounds (user decision 2026-11-17): induction and capability inference never share a round. Round 1 closes
  * with the agent's own reading of the window; round 2 consists of seven sequential, focus-specific turns. */
 export const META_PASS_ROUND1_LINE = 'ROUND 1 OF 2 - INDUCTION: this round closes through decide_exit with your own reading of the window\'s recorded facts - recurrences, costs, losses, outcome paths; result.reason and result.carry are rendered verbatim at the round-2 entry. Round 2 opens at the next request boundary and asks a different question. Writes stay legal in every round.';
@@ -658,6 +662,10 @@ export class SelfRoot extends LiveAgentSelf {
     // nothing to carry. Stored verbatim on the close; the next pass entry renders it (clipped at render only).
     if (this.mech.meta && this.metaPassTrigger && this.inEvolutionReview && (metaRound ?? 1) === 1) {
       schema.properties = { ...(schema.properties ?? {}), carry: { type: 'array', items: { type: 'string' }, description: 'Optional free-text notes for the next evolution pass, rendered verbatim at its entry: open questions, unfinished investigations, retained understanding.' } };
+      if (this.options.metaRouting === 'selective') schema.properties.next_specialist = {
+        type: 'string', enum: ['none', ...META_PASS_SPECIALISTS.map(specialist => specialist.id)],
+        description: 'Open one focused pass, or resume the task with none.',
+      };
     }
     return schema;
   }
@@ -739,15 +747,19 @@ export class SelfRoot extends LiveAgentSelf {
     if (this.mech.meta) {
       if (!this.inEvolutionReview) return META_STRATEGY;
       const pass: any = this.metaPassTrigger;
-      if ((pass?.round ?? 1) === 1) return `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
+      if ((pass?.round ?? 1) === 1) return this.options.metaRouting === 'selective'
+        ? `${META_SELECTIVE_STRATEGY}\nChoose result.next_specialist from none, prompt, context, skill, tool, subagent, memory, loop.`
+        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
       const specialist = META_PASS_SPECIALISTS[pass?.specialistIndex ?? 0] ?? META_PASS_SPECIALISTS[0];
-      return `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(false)}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
+      return pass?.selective
+        ? `${META_SELECTIVE_STRATEGY}\nSPECIALIST ${specialist.label}: ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`
+        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND2_LINE}\n${entranceAskBlock(false)}\nSPECIALIST ${specialist.label} (${(pass?.specialistIndex ?? 0) + 1}/7): ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
     }
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
   }
   /** EVO_META T0: the gate is open until the agent has written its orchestration contract (the design turn). */
-  get metaT0Pending() { return this.mech.meta && !this.ledger.some(r => r.type === 'meta_t0_design'); }
+  get metaT0Pending() { return this.mech.meta && this.options.metaAtStart !== false && !this.ledger.some(r => r.type === 'meta_t0_design'); }
   /** The task-side contract in force: the live orchestration's own, else the one recorded at the design turn. */
   metaContract(): OrchestrationContract | null {
     const row = this.ledger.find(r => r.type === 'meta_t0_design');
@@ -807,7 +819,7 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.mech.meta || this.review || this.queue.length || this.metaT0Pending) return null;
     const index = (type: string) => { for (let i = this.ledger.length - 1; i >= 0; i--) if (this.ledger[i].type === type) return i; return -1; };
     const anchor = Math.max(index('review_closed'), index('meta_t0_design'), index('task_episode_started'));
-    if (anchor < 0) return null;
+    if (anchor < 0 && this.options.metaAtStart !== false) return null;
     const window: [number, number] = [anchor + 1, this.ledger.length - 1];
     const after = this.ledger.slice(window[0]);
     const episode = after.find(r => r.type === 'task_episode_closed');
@@ -823,7 +835,33 @@ export class SelfRoot extends LiveAgentSelf {
     const stall = after.findIndex(r => r.type === 'action_transition_stalled');
     if (stall >= 0) { const row = after[stall]; return { reason: 'delivery_stall', window,
       facts: { trigger: 'delivery_stall', action: row.value?.action ?? null, status: row.value?.status ?? null, window } }; }
+    const fallback = this.options.metaFallback;
+    if (fallback) {
+      const count = fallback.unit === 'action'
+        ? after.filter(r => r.kind === 'fact' && this.options.actionReceiptTypes?.includes(r.type)).length
+        : after.filter(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute').length;
+      if (count >= fallback.interval)
+        return fallback.unit === 'action'
+          ? { reason: 'action_cadence_fallback', window,
+            facts: { trigger: 'action_cadence_fallback', actions_since_last_evolution: count, interval: fallback.interval, window } }
+          : { reason: 'request_cadence_fallback', window,
+            facts: { trigger: 'request_cadence_fallback', execute_requests_since_last_evolution: count, interval: fallback.interval, window } };
+    }
     return null;
+  }
+  stageView(window: [number, number]) {
+    const rows = this.ledger.slice(window[0], window[1] + 1);
+    const requests = rows.filter(row => row.type === 'request_record' && row.value?.pin?.mode === 'execute');
+    const outcomes = rows.filter(row => row.type === 'unit_delivered' || row.type === 'task_outcome' || row.type === 'unit_outcome');
+    return {
+      window, requests: requests.length, task_actions: rows.filter(row => this.isWork(row)).length,
+      first_revision: requests[0]?.value?.pin?.revision ?? null, current_revision: this.serial,
+      changes: rows.filter(row => row.type === 'reflection_activated').map(row => ({ ref: row.ref, revision: row.value?.revision ?? null })),
+      outcomes: outcomes.slice(-3).map(row => ({ ref: row.ref, type: row.type, metrics: row.value?.metrics ?? null })),
+      parent_recorded_tokens: requests.reduce((total, row) => total + (Number(row.value?.tokens?.total) || 0), 0),
+      cost_incomplete: requests.some(row => row.value?.tokens?.status !== 'reported'),
+      position: this.options.runPosition?.() ?? null,
+    };
   }
   /** META pass evidence expansion (user decision 2026-11-17): one recorded ref resolved through the adapter.
    * The core knows no file layout; a missing ref is a value with state "missing", never a throw into the agent. */
@@ -895,6 +933,7 @@ export class SelfRoot extends LiveAgentSelf {
       // verbatim under the section budget; the mechanical transcription never selects by content.
       ...(round === 2 && prior ? [`ROUND 1: closed ${prior.closed} (${prior.outcome})${prior.reason ? `; reason: ${clip(String(prior.reason), 400)}` : ''}; carry: ${prior.carry?.length ? clip(prior.carry.join(' | '), 1200) : 'none'}`] : []),
       `WINDOW: ${n('request_record')} request(s), ${work} task action(s), ${n('tool_failed')} failed call(s), ${n('artifact_write')} artifact write(s), ${n('reflection_activated')} activation(s), ${images} image part(s) delivered; expand one request: read_self(section="evidence", ref="request:N")`,
+      ...(round === 1 ? [`AGENT_STAGE: ${clip(JSON.stringify(this.stageView(pass.window)), 650)}`] : []),
       `TRAJECTORY: ${trajNote}${trajectory.length ? `\n${trajectory.join('\n')}` : ''}`,
       `ARTIFACT: ${artifact}`,
       `SELF: revision ${this.revision}; components: ${clip(names, 220)}${more}; orchestration revision ${(this.current?.orchestration as any)?.revision ?? 1}; context order ${(this.policy.context?.order ?? []).join(',')}`,
@@ -1938,17 +1977,19 @@ export class SelfRoot extends LiveAgentSelf {
     if (evolution && this.reviewChanged()) this.unresolvedReview = false;
     // The induction round's closure opens the fixed specialist sweep at the next request boundary.
     const passTrigger: any = this.metaPassTrigger;
-    const advance = evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1 && closedBy === 'agent';
+    const selectedSpecialist = this.options.metaRouting === 'selective'
+      ? META_PASS_SPECIALISTS.findIndex(specialist => specialist.id === extra?.result?.next_specialist) : 0;
+    const advance = evolution && this.mech.meta && passTrigger && (passTrigger.round ?? 1) === 1 && closedBy === 'agent' && selectedSpecialist >= 0;
     if (advance) {
       const result = (extra as any)?.result ?? null;
-      this.metaPassTrigger = { ...passTrigger, round: 2, specialistIndex: 0, prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
+      this.metaPassTrigger = { ...passTrigger, round: 2, specialistIndex: selectedSpecialist, selective: this.options.metaRouting === 'selective', prior: { closed: row.ref, outcome, reason: result?.reason ?? null,
         carry: Array.isArray(result?.carry) ? result.carry.map((x: any) => String(x)) : null } };
-      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary', specialists: META_PASS_SPECIALISTS.map(x => x.id) });
-      this.queue.push({ id: `${review.id}:specialist:prompt`, boundary: `pass:${this.request}`, event: review.event,
+      this.fact('meta_pass_round', { from: 1, to: 2, closure: row.ref, trigger: passTrigger.reason ?? null, opens: 'next request boundary', specialists: this.options.metaRouting === 'selective' ? [META_PASS_SPECIALISTS[selectedSpecialist].id] : META_PASS_SPECIALISTS.map(x => x.id) });
+      this.queue.push({ id: `${review.id}:specialist:${META_PASS_SPECIALISTS[selectedSpecialist].id}`, boundary: `pass:${this.request}`, event: review.event,
         triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
     }
     this.review = undefined; this.currentMode = this.previousMode; if (!advance) this.metaPassTrigger = undefined;
-    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode, ...(advance ? { next_round: { round: 2, of: 2, specialists: META_PASS_SPECIALISTS.map(x => x.id), opens: 'next request boundary' } } : {}) };
+    return { recorded: row.ref, outcome, windows, undecided_windows: undecided, activated: review.changes, activation_boundary: this.pending ? 'next request boundary' : null, resume: this.step, mode: this.currentMode, ...(advance ? { next_round: { round: 2, of: 2, specialists: this.options.metaRouting === 'selective' ? [META_PASS_SPECIALISTS[selectedSpecialist].id] : META_PASS_SPECIALISTS.map(x => x.id), opens: 'next request boundary' } } : {}) };
   }
   /** A specialist execution turn closes after a hot edit or explicit no_change. */
   private closeMetaSpecialist() {
@@ -1969,7 +2010,7 @@ export class SelfRoot extends LiveAgentSelf {
     this.review = undefined;
     this.currentMode = this.previousMode;
     const nextIndex = index + 1;
-    if (nextIndex < META_PASS_SPECIALISTS.length) {
+    if (!pass.selective && nextIndex < META_PASS_SPECIALISTS.length) {
       const next = META_PASS_SPECIALISTS[nextIndex];
       this.metaPassTrigger = { ...pass, specialistIndex: nextIndex, noChange: undefined, completed: [...(pass.completed ?? []), outcome] };
       this.fact('meta_specialist_turn_opened', { previous: row.ref, specialist: next.id, index: nextIndex + 1, opens: 'next request boundary' });
@@ -1977,7 +2018,7 @@ export class SelfRoot extends LiveAgentSelf {
         triggers: [{ id: 'evolution_review', source: 'meta_pass', mode: 'reflect', conclusion_sink: 'ledger' }], revision: this.serial, ledger_offset: this.ledger.length });
     } else {
       const outcomes = [...(pass.completed ?? []), outcome];
-      this.fact('meta_specialist_sweep_closed', { previous: row.ref, turns: META_PASS_SPECIALISTS.map(x => x.id), outcome: 'complete', completed_turns: outcomes.length });
+      this.fact('meta_specialist_sweep_closed', { previous: row.ref, turns: pass.selective ? [specialist.id] : META_PASS_SPECIALISTS.map(x => x.id), outcome: 'complete', completed_turns: outcomes.length });
       this.metaPassTrigger = undefined;
     }
   }
