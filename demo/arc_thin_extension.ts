@@ -4723,12 +4723,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			name: "python",
 			label: "Python",
 			description: native
-				? evo ? "Run code in the persistent Python sandbox. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. " +
+                ? evo ? "Run code in the persistent Python sandbox. Batch independent checks from one observation into one call and return only evidence that could change the next decision. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. " +
 					(chView ? 'state["observations"][i]["frame"] contains full frames; state["recent_trajectory"] contains action records. ' : '')
 				: "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
 					(chView ? "state[\"observations\"][i][\"frame\"] holds each recent action's full animation; state[\"recent_trajectory\"] holds action records. " : "") +
 					"Returns what you print and the " +
-					"value of a final expression. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
+                    "value of a final expression. Batch independent checks from one observation into one call and return only evidence that could change the next decision. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
 					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
 					"called later as the tool name(args={...}). " +
 					"Names persist automatically. env.act(action, predict=...) takes an action and returns feedback; grid/state/history update. " +
