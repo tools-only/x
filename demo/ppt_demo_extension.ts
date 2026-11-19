@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Workspace } from './arc_thin_workspace.ts';
+import { projectAgentHistory } from './self_root_context.ts';
 import { validatePythonComponent } from './arc_thin_components.ts';
 import { NativeRuntime } from './arc_thin_native_runtime.ts';
 import { canonicalPath, sourceFacts, deliveryIntegrity, statusFacts, PPT_GOAL, PPT_ACTIONS, OFFICE_ACTION_DESCRIPTION } from './ppt_demo_adapter.ts';
@@ -710,7 +711,7 @@ export default function pptDemo(pi: ExtensionAPI) {
     tail.push({ role: 'user', content: [{ type: 'text', text: statusText() }], timestamp: Date.now(), contextSection: evo?.inEvolutionReview ? 'review_status' : 'task_status' });
     if (freshBatch && state.batchRequests === batchLimit - 1) tail.push({ role: 'custom', customType: 'ppt-batch-limit', display: false,
       timestamp: Date.now(), content: 'LAST REQUEST IN THIS BATCH. The next batch starts with a fresh conversation; only the workspace, your harness and a checkpoint note (max 400 chars) carry over.' });
-    return { messages: [...kept, ...tail] };
+    return { messages: projectAgentHistory([...kept, ...tail], workspace) };
   });
   // Prompt and memory changes are interceded into the very next provider request,
   // including tool continuations in the same Pi task/session.
