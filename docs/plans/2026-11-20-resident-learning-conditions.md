@@ -105,3 +105,28 @@
 - **决定**：设计保留，等用户给预算。实现前先与并行 WIP 协调常驻行归并，避免同一主题两行常驻外加一条少被拉的通道。
 - **剩余验证与下一可证伪检查**：一次获授权的 PPT 运行按 §3 主指标判。若负例 (a) 成立，下一个因素换到**回报侧**（让条件改写在同一运行内有可观察后果），而不是继续加呈现面。跨运行的学习条件历史（用户方向里的"以往的自进化"的完整读法）在运行内无持久存储，仍是未解问题，不在本因素范围内。
 - **关联 backlog**：`docs/plans/2026-11-19-learning-environment.md`（并行 WIP，材料侧，状态未变）；`docs/plans/2026-11-16-self-evolution-space.md` §6（M 系列预算与两轮 pass 结构）；`docs/plans/2026-11-16-general-meta-loop.md` §15（固定字段与 T0 门禁的用户定稿）。三项状态均无新证据支持的变化。
+
+## 6. 运行验证（2026-11-20，evo-m20）
+
+HEAD `0939c8e3`（含常驻学习条件审查、`read_self(section="learning_environment")`、render 回执 `visual_metrics`、checker `literal-normalized-render-v3`）。root `runs/evo-m20-visual-metrics-20261120`，az / glm-5.3-flash，arm B，caps requests=3000 / seconds=2592000 / tokens+usd 无上限，brief 追加“专业视觉传达设计师…商用广告级”。实耗 95 请求 / 3.19M tokens / $0.437 / 1661 s，10/10 unit delivered，0 告警。
+
+**结果**
+
+- 交付：30/30 required literals + 10/10 citations 全部 found（m15 为 unit-02…10 多处 missing）。`visual_metrics` 已随每次 render 下发：deck coverage 0.223 / distinct_colors 44.6 / contrast 0.670。
+- 常驻审查（目标 1）：9 次 induction review。agent 用 `read_self(section="learning_environment")` + `decide(op="assessment")` 诊断出两个真实学习条件缺口并修复——(a) `submit_unit` ENOENT（`<root>/exports` 不存在，write 无法创建 `../exports`）；(b) `study` step 的 decisions/transitions 在交付前不闭合——经 `reflect_orchestration` 修到 rev 8（增加 `study --office.deliver--> deliver` 与 `study_deliver_complete`）。`orchestration.contract` 由 T0 富化改写为 ad-grade 目标 + 6 项验收 + 3 条 `look_when`。
+- 能力级自进化（目标 2）：**未达成**。`snapshot.components` 仅 `ppt_baseline_guidance`（seed prompt，v1 未变，8 次曝光 0 语义使用）。唯一一次 `reflect_component(kind="tool")` 被拒：`session_ref 'exports_bootstrap' unavailable`。
+
+**能力级未达成的断点定位**
+
+1. PPT `python` 工具只接受 `{code}`（`demo/ppt_demo_extension.ts:388`），把 `NativeRuntime.python(code, signal, readonly, save?)` 的 `save` 参数丢弃；`reflect_component(kind="tool", session_ref=…)` 依赖已保存会话函数，故 tool 组件（PPT 最需要的能力载体）永远无法挂载。
+2. `submit_unit` 在 `demo/self_root_ppt.ts:247` `readdirSync(join(root,'exports'))`，首次 render 前 `exports/` 不存在即 ENOENT，且 write 工具不能写 `../exports`——host 前置条件缺口。
+3. prompt/skill/memory/subagent 路径（只需 `source`）可用，但 agent 未用其创建新组件；seed prompt 8 次曝光 0 语义使用。
+
+| 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
+| --- | --- | --- | --- |
+| 功能正确 | 已验证 | worktree venv + node v25.5.0 | `visual_metrics` 下发、checker v3、常驻审查入口接线（提交 `e3430d8c`、`0939c8e3`） |
+| 全链路可达 | 已验证 | az / glm-5.3-flash，evo-m20 | render→视觉指标→acceptance→审查→orchestration 修复，10/10 闭环 |
+| 自主采用 | 已验证 | az / glm-5.3-flash，evo-m20 | 9 次 induction 审查、contract 富化改写、学习条件缺口诊断+修复 |
+| 净收益 | 部分验证 | 对比 m15 | 交付 literal/citation 由缺到全；但能力级 harness 组件未产出，净收益未闭合 |
+
+**下一因素（单因素）**：给 PPT `python` 工具补齐会话函数保存通道（`save` 参数或 `promote_session_function` 等价），使 `reflect_component(kind="tool", session_ref=…)` 可解析；并让 `submit_unit` 在首次 render 前不 ENOENT（host 预建 `exports/` 或优雅返回“需先 render”）。之后同配置再跑一次确认，观察是否出现 `tools/*.py` 组件及后续语义使用。
