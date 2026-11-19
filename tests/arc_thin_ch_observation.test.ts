@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import arcThinExtension from '../demo/arc_thin_extension.ts';
 
-async function fixture(extra: Record<string, string> = {}) {
+async function fixture(extra: Record<string, string> = {}, animated = false) {
   const submitted: string[] = [];
   // A marker on row 2 that ACTION1 moves right; ACTION2 does nothing; ACTION3 ends the game; ACTION4 completes the level.
   let x = 1, level = 0, state = 'NOT_FINISHED', acted = false;
@@ -21,9 +21,11 @@ async function fixture(extra: Record<string, string> = {}) {
   const server = createServer((req, res) => {
     let text = ''; req.on('data', (c) => text += c); req.on('end', () => {
       let changed = 0, levelChanged = false;
+      let action: string | undefined;
+      const before = grid();
       if (req.url === '/action') {
-        const { action } = JSON.parse(text);
-        submitted.push(action);
+        ({ action } = JSON.parse(text));
+        submitted.push(action!);
         if (action === 'RESET') { x = 1; state = 'NOT_FINISHED'; acted = false; changed = 2; }
         else {
           acted = true;
@@ -32,8 +34,11 @@ async function fixture(extra: Record<string, string> = {}) {
           if (action === 'ACTION4') { level += 1; levelChanged = true; changed = 64; }
         }
       }
+      const after = grid();
+      const middle = after.map((row) => [...row]);
+      middle[0][0] = 7;
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ frames: [grid()], state, levels_completed: level,
+      res.end(JSON.stringify({ frames: animated && action === 'ACTION1' ? [before, middle, after] : [after], state, levels_completed: level,
         agent_available_actions: state === 'GAME_OVER' ? ['RESET'] : [...(acted ? ['RESET'] : []), 'ACTION1', 'ACTION2', 'ACTION3', 'ACTION4'],
         action_budget: { used: submitted.length, maximum: null, total_used: submitted.length, total_maximum: null },
         observation_delta: { frame_available: true, changed_cells: changed, cells: [] }, public_transition: { level_changed: levelChanged } }));
@@ -126,6 +131,7 @@ test('a decision shows the game as CH does, after this harness\'s own sections; 
     assert.match(h.system(), /working view carries the current observation, recent action results, task memory and SelfRoot execution changes/);
     assert.match(h.system(), /Coordinates are zero-based from the top-left/);
     assert.match(h.system(), /Each action produces a receipt/);
+    assert.match(h.tool('python').description, /state\["observations"\]\[i\]\["frame"\] holds each recent action's full animation/);
     assert.doesNotMatch(h.system(), /Spend each action wisely|predict carries it|Take an experimental action only/);
     assert.ok(h.system().length < 3000, `compact ARC instructions: ${h.system().length}`);
     assert.deepEqual(Object.keys(h.tool('arc_action').parameters.properties).sort(), ['actions', 'predict_skill', 'reasoning']);
@@ -149,12 +155,45 @@ test('arc_action plays a list in order, cut at its first bad entry and stopped b
     assert.ok(messages.length > 1, 'the earlier decision stays in view as a transcript');
     assert.match(text, /# Step: 3/);
     assert.match(text, new RegExp(`### ACTION step 1: ACTION1\nRESULT: state NOT_FINISHED -> NOT_FINISHED; score 0 -> 0; source=arc_action; ` +
-      `final_grid_changed=yes; transient_animation=no; batch=${first.batch_id}\\[1/2\\]`));
+      `final_grid_changed=yes; intermediate_frames_changed=no; batch=${first.batch_id}\\[1/2\\]`));
     assert.match(text, /\[arc_action\] steps 1-2 {2}ACTION1 ×2 → 2 cells changed|\[arc_action\] step 2 {2}ACTION1 → 2 cells changed/);
     assert.doesNotMatch(text, /### ACTION step 0/, 'shown once');
     assert.match(section(text, '## CURRENT STATE'), / {2}RESET: Start or restart a game\./, 'RESET is offered to the agent once it has acted');
     await h.respond(['arc_action', { reasoning: 'finish', actions: [{ name: 'ACTION4' }, { name: 'ACTION1' }] }]);
     assert.deepEqual(h.submitted.slice(2), ['ACTION4'], 'the rest of a list stops at a level change');
+  } finally { await h.close(); }
+});
+
+test('SelfRoot recent actions retain CH color transitions after the four-action boundary', async () => {
+  const h = await fixture({ ARC_THIN_SELFROOT: '1' });
+  try {
+    for (let i = 0; i < 5; i++) {
+      await h.decide();
+      await h.respond(['arc_action', { actions: [{ name: 'ACTION1' }] }]);
+    }
+    const text = textOf(head(await h.decide()));
+    assert.match(section(text, '## RECENT HISTORY'), /color 9→0: r2 c5; color 0→9: r2 c6/);
+    assert.doesNotMatch(section(text, '## RECENT HISTORY'), /started at step 2/);
+    assert.match(text, /# Step: 6/);
+  } finally { await h.close(); }
+});
+
+test('an animated action delivers the intermediate, original final and current PNGs together', async () => {
+  const h = await fixture({}, true);
+  try {
+    await h.decide();
+    await h.respond(['arc_action', { actions: [{ name: 'ACTION1' }] }]);
+    const message = head(await h.decide()), text = textOf(message);
+    const images = message.content.filter((block: any) => block.type === 'image');
+    assert.match(text, /RENDERED GRIDS: frame indices \[1, 2\]/);
+    assert.match(text, /Grid action_step_1_frame_1/);
+    assert.match(text, /Grid action_step_1_frame_2/);
+    assert.match(text, /Grid current_state_frame/);
+    assert.equal(images.length, 3);
+    assert.equal(images[1].data, images[2].data, 'the final and canonical current image remain intact');
+    assert.notEqual(images[0].data, images[1].data, 'the additional image carries an intermediate state');
+    const [python] = await h.respond(['python', { code: 'print(len(state["observations"]), len(state["observations"][0]["frame"]))' }]);
+    assert.match(python.text, /1 3/, 'the documented Python state exposes the complete action animation');
   } finally { await h.close(); }
 });
 

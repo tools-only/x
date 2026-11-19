@@ -37,7 +37,7 @@ import { Workspace } from "./arc_thin_workspace.ts";
 import { gitTool } from "./arc_thin_git.ts";
 import { observationReference, storeObservation } from "./arc_thin_observation.ts";
 import { CURRENT_STATE_GRID_LABEL, FULL_HISTORY_MAX_LIMIT, HISTORY_MAX_CHARS, NOTHING_EXECUTED, TAKE_ACTIONS_DESCRIPTION, TAKE_ACTIONS_TEXT,
-	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, sandboxObservation, summarizeGridTransitions,
+	buildObservationSection, computeGridDelta, currentStateBlock, gridImage, renderRecentHistory, renderTransitions, sandboxObservation, summarizeGridTransitions,
 	validateActionSequence, gridFactsText, type PendingObservation, type RejectedStep, type StepRecord } from "./arc_thin_ch_view.ts";
 import { Binder, componentKind } from "./arc_thin_binder.ts";
 import { validatePythonComponent } from "./arc_thin_components.ts";
@@ -1655,18 +1655,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	function chObservation(ctx: ExtensionContext): { text: string; images: Array<{ type: "image"; data: string; mimeType: string }>; labels: string[] } {
 		const blocks: string[] = [];
 		let shown: Array<{ label: string; grid: number[][] }> = [];
+		const grid = gridOf(observation);
 		if (!run.consolidating) {
 			const history = evo && trajectory.length > 4
-				? trajectory.slice(-4).map(actionLine).join("\n")
+				? trajectory.slice(-4).map((row) => {
+					const record = stepRecordOf(row, trajectory[row.n - 2]);
+					return actionLine(row) + (record.gridChange?.length ? ` | ${renderTransitions(record.gridChange)}` : "");
+				}).join("\n")
 				: renderRecentHistory(stepRecords(trajectory), HISTORY_MAX_CHARS);
 			blocks.push("## RECENT HISTORY\n" + history);
 			// CH's action_counter counts the starting RESET, so it is the number the next action gets.
 			blocks.push(`# Step: ${trajectory.length + 1}`);
-			const observed = buildObservationSection(decisionObservations);
+			const observed = buildObservationSection(decisionObservations, undefined, grid);
 			if (observed.text.trim()) blocks.push("## OBSERVATIONS SINCE LAST QUERY\n" + observed.text.trimEnd());
 			shown = observed.grids;
 		}
-		const grid = gridOf(observation);
 		blocks.push(observation
 			? currentStateBlock(String(observation.state ?? "UNKNOWN"), Number(observation.levels_completed ?? 0), availableActions(observation), grid)
 			: "## CURRENT STATE\n(unavailable — do not act on remembered grids)");
@@ -4694,7 +4697,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			name: "python",
 			label: "Python",
 			description: native
-				? "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
+				? "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
+					(chView ? "state[\"observations\"][i][\"frame\"] holds each recent action's full animation; state[\"recent_trajectory\"] holds action records. " : "") +
+					"Returns what you print and the " +
 					"value of a final expression. save=\"name\" saves the exact submitted source as tools/name.py; the saved component runs without your Python session, so session names must be made explicit or recomputed. Code that takes no args becomes a view, " +
 					"shown after every new state; code that defines predict(state, action) predicts every action and is scored; other code is " +
 					"called later as the tool name(args={...}). " +

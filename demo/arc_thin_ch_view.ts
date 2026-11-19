@@ -221,20 +221,27 @@ function observationPlan(obs: PendingObservation, index: number) {
       `score ${obs.preScore} -> ${obs.validFrame ? obs.postScore ?? "?" : "?"}; ` +
       `source=${obs.source}; ` +
       `final_grid_changed=${finalChanged ? "yes" : "no"}; ` +
-      `transient_animation=${transientChanged && !finalChanged ? "yes" : "no"}`,
+      `intermediate_frames_changed=${transientChanged ? "yes" : "no"}`,
   ];
   if (obs.batchId && obs.batchPosition !== undefined && obs.batchTotal !== undefined)
     lines[lines.length - 1] += `; batch=${obs.batchId}[${obs.batchPosition}/${obs.batchTotal}]`;
   const candidates: Candidate[] = [];
+  let supplement: Candidate | undefined;
   if (!obs.validFrame) {
     lines.push("ANIMATION SUMMARY: environment returned no frame; the remote action outcome is unknown. Do not assume the " +
       "action was rejected or blindly repeat it.");
-    return { obs, lines, candidates };
+    return { obs, lines, candidates, supplement };
   }
   if (animation.length > 1) lines.push(summary);
   if (finalChanged && animation.length) {
     const frame = animation.length - 1;
     candidates.push({ observation: index, frame, grid: animation[frame], role: "final_changed_result", priority: [4, -obs.step, frame] });
+    const distinct = Array.from({ length: frame }, (_, i) => i)
+      .filter((i) => diffToPre[i].count > 0 && gridDiffStats(animation[i], animation[frame]).count > 0);
+    if (distinct.length) {
+      const i = argmaxCount(distinct, diffToPrev);
+      supplement = { observation: index, frame: i, grid: animation[i], role: "intermediate_motion", priority: [5, -obs.step, i] };
+    }
   } else if (transientChanged && animation.length) {
     const selected = selectTransientKeyframes(diffToPre, diffToPrev, changed, 3);
     const peak = changed.length ? argmaxCount(changed, diffToPre) : -1;
@@ -245,18 +252,23 @@ function observationPlan(obs: PendingObservation, index: number) {
       candidates.push({ observation: index, frame, grid: animation[frame], role: role as string, priority: [rank as number, -obs.step, frame] });
     }
   }
-  return { obs, lines, candidates };
+  return { obs, lines, candidates, supplement };
 }
 
 const comparePriority = (a: Candidate, b: Candidate) => a.priority[0] - b.priority[0] || a.priority[1] - b.priority[1] || a.priority[2] - b.priority[2];
 
 /** context.build_observation_section: the text, and exactly the grids rendered in it (their PNGs go with the prompt). */
-export function buildObservationSection(observations: PendingObservation[], maxTextGrids = MAX_OBSERVATION_TEXT_GRIDS):
+export function buildObservationSection(observations: PendingObservation[], maxTextGrids = MAX_OBSERVATION_TEXT_GRIDS,
+  currentGrid: Grid | undefined = observations.at(-1)?.animation.at(-1)):
   { text: string; grids: RenderedGrid[] } {
   if (!observations.length) return { text: "", grids: [] };
   const plans = observations.map(observationPlan);
   const selected = new Set(plans.flatMap((plan) => plan.candidates).sort(comparePriority).slice(0, Math.max(0, maxTextGrids))
     .map((c) => `${c.observation}:${c.frame}`));
+  const supplement = [...plans].reverse().find((plan) => plan.supplement && currentGrid &&
+    selected.has(`${plan.supplement.observation}:${plan.obs.animation.length - 1}`) &&
+    gridDiffStats(plan.obs.animation.at(-1)!, currentGrid).count === 0)?.supplement;
+  if (supplement) selected.add(`${supplement.observation}:${supplement.frame}`);
   const lines = [
     "The grids below are selected transition/result grids from actions executed after the previous VLM query.",
     "Grid indices refer to that action's returned frame list.",
@@ -264,7 +276,8 @@ export function buildObservationSection(observations: PendingObservation[], maxT
   const grids: RenderedGrid[] = [];
   for (const plan of plans) {
     lines.push("", ...plan.lines);
-    const shown = plan.candidates.filter((c) => selected.has(`${c.observation}:${c.frame}`)).sort((a, b) => a.frame - b.frame);
+    const shown = [...plan.candidates, ...(plan.supplement ? [plan.supplement] : [])]
+      .filter((c) => selected.has(`${c.observation}:${c.frame}`)).sort((a, b) => a.frame - b.frame);
     if (shown.length) {
       lines.push(`RENDERED GRIDS: frame indices [${shown.map((c) => c.frame).join(", ")}]`);
       for (const c of shown) {
@@ -369,7 +382,7 @@ export function computeGridDelta(pre: Grid | undefined, post: Grid | undefined):
 }
 
 const rangeToken = (r0: number, r1: number, c0: number, c1: number) => `${r0 === r1 ? `r${r0}` : `r${r0}-${r1}`} ${c0 === c1 ? `c${c0}` : `c${c0}-${c1}`}`;
-function renderTransitions(transitions: number[][], maxGroups = 6): string {
+export function renderTransitions(transitions: number[][], maxGroups = 6): string {
   const total = transitions.reduce((n, e) => n + Number(e[2]), 0);
   const parts = transitions.slice(0, maxGroups).map(([f, t, count, r0, r1, c0, c1]) =>
     `color ${colorToHex(f)}→${colorToHex(t)}${count > 1 ? ` (×${count})` : ""}: ${rangeToken(r0, r1, c0, c1)}`);

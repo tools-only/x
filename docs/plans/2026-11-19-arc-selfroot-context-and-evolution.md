@@ -114,3 +114,13 @@
 - **功能正确：通过。** `tests/arc_thin_native_context.test.ts` 10 项、`tests/test_arc_thin_decide_prompt.py` 1 项通过；TypeScript 语法和 Python 编译通过。检查了 CH 合同与 Native system 装配后历史路径只出现一次，普通提示为单句。
 - **全链路可达：通过，限脚本环境。** `runs/arc-prompt-trim-20261119/summary.json`：生产 Pi/bridge、mock ARC SDK、scripted provider，3 个动作、0 provider error、正常 bridge close。首个真实组装请求的 `current` 以单句决策提示开头，Python schema 不含逐格核查要求，system 中 `data/trajectory.jsonl` 只出现一次。此 smoke 未启用 CH 合同，CH 装配只由定向测试覆盖。
 - **自主采用：未验证。净收益：未验证。** 脚本 provider 不反映真实 Qwen 的探测选择；本次不能声称 Python 使用量已经下降、CH 观测缺口已经解决，或 ARC 通关改善。延后事项 A 的 adapter 职责边界、D 的跨轮认知质量保持开放。
+
+## 9. ARC 观测证据交付修复（2026-11-19）
+
+- **真实失败与可证伪命题。** Su15 `restart2` 的第 8、13 步各返回 5 帧，普通决策视图只选末帧，且末帧与当前棋盘相同；第 13 步已算出的 23 格颜色转移只存于 trajectory，SelfRoot 超过四步后用 `actionLine` 丢掉详细差分。Agent 因而分别用 Python 读原始帧、重算转移。命题是把已有的客观变化交付到下一决策，会减少为取回同一证据而发出的 Python/Provider 往返，同时保留原本的最终帧、当前完整棋盘及原始动画。若后续普通运行的重复取证未降，或额外输入成本抵消收益，则命题不成立。
+- **范围与成本。** 选帧器仍按原有规则选基础帧；当被选中的末帧与当前棋盘重复，且存在同时不同于动作前及末帧的中间状态时，再从该动作挑一张帧间变化最大的中间帧。一次决策最多补一张，原末帧、当前网格/PNG 和原始 `data/observations` 均保留；即使基础四格预算已满，补帧也不挤走已有帧。SelfRoot 最近四步继续只列四步，但每步复用已计算的 CH 颜色转移；不增加对象识别或运动推断。将易误读的 `transient_animation` 改为事实含义明确的 `intermediate_frames_changed`。Python schema 只补充现有 `state["observations"][i]["frame"]` 及 `recent_trajectory` 的短入口，不加行为指令。
+- **输入代价实测。** 对 `restart2` 保存的公开观测离线渲染，第 8、13 步都保留 frame 4，并分别新增 frame 1；若该步单独进入下一决策，渲染结果为中间帧、末帧、当前帧共三张 PNG。对应 observation 文本从旧视图的 4,772/4,771 字符变成 8,979 字符，增加约 4,207/4,208 字符和一张 PNG。字符及图像数不是 token 或成本报价；是否值得由真实运行中替代的探测和任务进展判断。
+- **边界发现。** 模拟 bridge 的集成测试显示，刷新当前状态后 `state["frames"]` 只有当前状态响应的一帧，而 `state["observations"][0]["frame"]` 保留该动作全部三帧。故工具说明明确指向后者；没有声称 `state.frames` 是完整动作动画。
+- **功能正确：通过。** 定向 Node 测试 27 项通过，覆盖原有 CH 观测基线、追加帧且不替换末帧、零/一格预算、无有效中间帧、批次最多一张补帧、SelfRoot 超过四步后仍见颜色转移、实际模型消息同时含三张 PNG，以及 Python 中完整动画入口。TypeScript 语法检查和 `git diff --check` 通过。
+- **全链路可达：部分通过。** 最终代码的 `runs/arc-observation-evidence-20261119c/summary.json` 经生产 Pi/bridge + mock ARC SDK + scripted provider smoke 完成 3 动作、0 provider error、正常关闭，但该脚本场景无多帧动画。三 PNG 和 Python 动画入口由生产 extension + mock HTTP bridge 的集成测试验证；实际 Pi 请求中的三 PNG 尚未单独验收。
+- **自主采用：未验证。净收益：未验证。** 未启动新付费 Provider 运行，不能推断 Python 调用会减少或 Su15 关卡效果改善。下一次 AZ/Qwen 稳定运行须同时核对展示的帧是否被 Agent 用于下一动作、历史差分是否替代补读、每动作总 input/output/cache、图像与墙钟以及通关进展；保留合理的精确计算调用。延后事项 A 的 adapter/runtime 边界与 D 的跨轮认知连续性仍开放。
