@@ -384,9 +384,9 @@ export default function pptDemo(pi: ExtensionAPI) {
     if (!/^(tools|lib|skills|agents|prompts|notes)\//.test(path)) lineage.unattributed.add(path);
     return undefined;
   };
-  register('python', 'Write and test Python in a persistent task sandbox. Functions and variables carry across calls. Use open("data/material.txt") and other workspace-relative paths. To turn a tested, self-contained function with signature (args, env) into a Pi tool, use reflect_component with session_ref and description. Invoke the registered tool by name after activation. Returns printed output and the final expression.',
-    Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }) }),
-    async (a: any, signal: any) => runtime.python(a.code, signal, false));
+  register('python', 'Write and test Python in a persistent task sandbox. Functions and variables carry across calls. Use open("data/material.txt") and other workspace-relative paths. To publish a tested, self-contained function with signature (args, env) as a Pi tool, pass save="<name>" in the same call; the host validates the name, reflects the source as tools/<name>.py and registers it. To export a function already defined in the session instead, use reflect_component(kind="tool", session_ref="<name>", description="..."). Invoke a registered tool by name after activation. Returns printed output and the final expression.',
+    Type.Object({ code: Type.String({ minLength: 1, maxLength: 65536 }), save: Type.Optional(Type.String({ maxLength: 41 })) }),
+    async (a: any, signal: any) => runtime.python(a.code, signal, false, a.save));
   register('read_self_component', 'Read a component directly from the live Agent mirror by kind, name, and optional version.',
     Type.Object({ kind: Type.Union([Type.Literal('tool'), Type.Literal('prompt'), Type.Literal('skill'), Type.Literal('subagent'), Type.Literal('memory')]),
       name: Type.String(), version: Type.Optional(Type.Integer({ minimum: 1 })) }), async (a: any) => {
