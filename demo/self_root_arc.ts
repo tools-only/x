@@ -131,7 +131,7 @@ export function installArcSelfRootTools({ pi, evo, resolveSessionToolOperation, 
       }
     },
   });
-  register('read_self', 'Read the current ARC SelfRoot view, ledger, evidence, policy, or context item.', selfRootToolParameters, (a) =>
+  register('read_self', 'Read the current ARC SelfRoot view, ledger, evidence, policy, or context item. ARC evidence refs decision:N show recorded work; transition:N at offset 0 shows only the prior frame and action, offset 1 reveals the recorded outcome.', selfRootToolParameters, (a) =>
     a.section === 'evidence' ? readEvidence?.(a.ref, a.offset ?? 0) ?? { ref: a.ref, state: 'missing' }
       : a.section === 'context_item' && a.ref ? contextItem?.(a.ref) ?? { ref: a.ref, state: 'missing' }
         : evo.detail(a.section ?? 'policy', a.offset ?? 0, a.count ?? 20));

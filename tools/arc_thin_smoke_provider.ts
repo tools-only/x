@@ -614,6 +614,7 @@ const textOf = (message: any): string => typeof message?.content === "string"
 export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	const log = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "smoke-requests.jsonl");
 	let step = 0;
+	let evoMetaStage = 0;
 	let toolCall = 0;
 	let probeOrdinary = 0;
 	let checkpoints = 0;
@@ -938,13 +939,21 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
 			else {
 				if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo-meta-core') {
+					const seenEvidence = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'read_self');
 					planned = /SPECIALIST \w+ \(\d\/7\)/.test(head)
 						? { kind: 'decide', text: 'no_change: No evidence supports a change in this focus.' }
 						: head.includes('ROUND 1 OF 2')
-							? { kind: 'decide', calls: [['decide_exit', { result: { reason: 'Observed one action.', carry: ['Keep the current strategy.'] } }]] }
-							: { kind: 'decide', calls: [step === 1
-									? ['request_evolution', { focus: 'Check the first action.' }]
-								: ['arc_action', { action: 'ACTION1', note: 'Advance after observation.' }]] };
+							? { kind: 'decide', calls: [seenEvidence
+								? ['decide_exit', { result: { reason: 'Observed one action.', carry: ['Keep the current strategy.'] } }]
+								: ['read_self', { section: 'evidence', ref: 'transition:1', offset: 0 }]] }
+							: { kind: 'decide', calls: [evoMetaStage === 0 || evoMetaStage === 4
+								? ['python', { code: 'print(len(grid))' }]
+								: evoMetaStage === 1 || evoMetaStage === 3
+									? ['arc_action', { action: 'ACTION1', note: 'Advance after computation.' }]
+								: evoMetaStage === 2 || evoMetaStage === 5
+									? ['request_evolution', { focus: evoMetaStage === 2 ? 'Check the first action.' : 'Check the repeated computation.' }]
+									: ['arc_action', { action: 'ACTION1', note: 'Advance after observation.' }]] };
+					if (!/SPECIALIST \w+ \(\d\/7\)/.test(head) && !head.includes('ROUND 1 OF 2') && evoMetaStage < 6) evoMetaStage += 1;
 				} else planned = SCRIPT[step];
 				if (planned && (planned.kind === "consolidate") === consolidating) step += 1;
 				else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'min-loop') planned = { kind: 'decide', text: 'Script complete; stop normally.' };

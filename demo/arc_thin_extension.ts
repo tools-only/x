@@ -897,7 +897,56 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS,
 	    mechanisms: { meta: evoMetaCore || process.env.ARC_THIN_META === '1' }, metaAtStart: false,
 	    ...(evoMetaCore ? { metaRouting: 'sweep', metaActionCheckpoints: true } as const : {}),
-	    runPosition: () => arcRunPosition(observation, trajectory.length, decision), taskRuntimeView: () => arcTaskRuntimeView });
+	    runPosition: () => arcRunPosition(observation, trajectory.length, decision), taskRuntimeView: () => arcTaskRuntimeView,
+	    adapterTrajectory: () => {
+	      const requestsByDecision = new Map<number, number[]>();
+	      for (const row of readRows('request-events.jsonl')) if (row.stage === 'decide_callable_schema' &&
+	        Number.isSafeInteger(row.decision) && Number.isSafeInteger(row.self_root_request) &&
+	        row.self_root_request > 0) requestsByDecision.set(row.decision,
+	          [...(requestsByDecision.get(row.decision) ?? []), row.self_root_request]);
+	      const windowLines = windowBlocksSince(-1).flatMap((block) => {
+	        const requests = requestsByDecision.get(block.decision) ?? [];
+	        const request = requests.find((n) => n > 0);
+	        if (request === undefined) return []; // A decision without a recorded request cannot be placed in the pass window.
+	        const tag = (n: number) => `R${n} decision ${block.decision}`;
+	        return [
+	          ...(block.reasoning ? [`${tag(request)} reasoning ${JSON.stringify(block.reasoning).slice(0, 270)} (expand: read_self(section="evidence", ref="decision:${block.decision}"))`] : []),
+	          ...block.python.map((call) => `${tag(request)} python #${call.id} ${call.ok ? 'ok' : 'failed'} ` +
+	            `code ${JSON.stringify(call.code ?? '').slice(0, 240)} result ${JSON.stringify(call.result ?? '').slice(0, 100)} ` +
+	            `(expand: read_self(section="evidence", ref="decision:${block.decision}"))`),
+	          ...(block.rows.length ? [`${tag(requests.at(-1)!)} actions ${block.rows.join(' | ').slice(0, 310)} ` +
+	            `(expand: read_self(section="evidence", ref="decision:${block.decision}"); ` +
+	            `recorded transition: read_self(section="evidence", ref="transition:${block.to}"))`] : []),
+	        ];
+	      });
+	      // Run-wide repeats (untagged, so the pass window filter keeps them): the runtime's own repeat records on every
+	      // python call of this run - `same` names the first call with the same normalized code, `blocks` the earlier
+	      // call whose statement blocks a later cell retyped. Counts and refs only; what a repeat means is the agent's call.
+	      const pythonRows = readRows('python_calls.jsonl').filter((row) => typeof row.id === 'number' && typeof row.code === 'string');
+	      const groups = new Map<number, any[]>();
+	      for (const row of pythonRows) {
+	        const first = typeof row.same === 'number' ? row.same : row.id;
+	        groups.set(first, [...(groups.get(first) ?? []), row]);
+	      }
+	      const repeated = [...groups.entries()].filter(([, rows]) => rows.length >= 2)
+	        .sort((a, b) => b[1].length - a[1].length || a[0] - b[0]).slice(0, 6);
+	      const retyped = pythonRows.filter((row) => Array.isArray(row.blocks) && row.blocks.length);
+	      const decisionsOf = (rows: any[]) => [...new Set(rows.map((row) => row.decision).filter(Number.isSafeInteger))];
+	      const repeatLines = [
+	        ...repeated.map(([first, rows]) => {
+	          const decisions = decisionsOf(rows);
+	          const cached = rows.filter((row) => row.cached).length;
+	          return `RUN-WIDE PYTHON REPEAT: same normalized code ${rows.length}x (P${rows.map((row) => row.id).join(', P')}) ` +
+	            `across ${decisions.length} decision(s) ${decisions.join(',')}${cached ? `, ${cached} answered from the earlier result without running` : ''}; ` +
+	            `code ${JSON.stringify(rows[0].code).slice(0, 160)} (expand: read_self(section="evidence", ref="decision:${decisions[0]}"))`;
+	        }),
+	        ...(retyped.length ? [`RUN-WIDE PYTHON REPEAT: ${retyped.length} later call(s) retyped statement blocks of earlier calls: ` +
+	          retyped.slice(0, 6).map((row) => `P${row.id} (decision ${row.decision}) = ${row.blocks.map((b: any) =>
+	            `P${b.id}${b.a === undefined ? '' : ` lines ${b.a}-${b.b}`}`).join(', ')}`).join('; ')] : []),
+	      ];
+	      return [...windowLines, ...repeatLines];
+	    },
+	  });
 	  selfRootPersist = () => { writeFileSync(paths.state + '.next', JSON.stringify(evo!.export(), null, 2)); renameSync(paths.state + '.next', paths.state); };
 	}
 	let previousGrid: number[][] | undefined;
@@ -3382,7 +3431,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			.map((r) => ({ ...r, rows: rows(r.from, r.to), python: pythonFor(r.decision) }));
 		// The decision now open: the agent's own refine(focus) arrives in the middle of one.
 		const said = run.reasoning.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-		if (said || trajectory.length > traceFrom) blocks.push({ decision, from: traceFrom, to: trajectory.length, ongoing: true,
+		if (said || trajectory.length > traceFrom || pythonFor(decision).length) blocks.push({ decision, from: traceFrom, to: trajectory.length, ongoing: true,
 			...(said ? { reasoning: said.length > 2000 ? `…${said.slice(-2000)}` : said } : {}), ...(run.consolidating ? { review: true } : {}),
 			rows: rows(traceFrom, trajectory.length), python: pythonFor(decision) });
 		return blocks;
@@ -3532,7 +3581,40 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	if (evo && selfRootPersist) {
 		installArcSelfRootTools({ pi, evo, resolveSessionToolOperation: (operation: any, signal?: AbortSignal) => nativeRuntime!.resolveSessionToolOperation(operation, signal), text, persist: selfRootPersist,
 			contextItem: (ref: string) => ({ ref, state: 'missing' }),
-			readEvidence: (ref: string) => {
+			readEvidence: (ref: string, evidenceOffset = 0) => {
+				const match = /^(decision|transition):(\d+)$/.exec(ref ?? '');
+				if (match && (!Number.isSafeInteger(Number(match[2])) || Number(match[2]) < 1)) return { ref, state: 'missing' };
+				if (match?.[1] === 'decision') {
+					const d = Number(match[2]);
+					const trace = decisionTrace.find((item) => item.decision === d);
+					const activeTrace = d === decision && (run.reasoning.length || trajectory.length > traceFrom)
+						? { decision: d, from: traceFrom, to: trajectory.length, reasoning: run.reasoning.join('\n') } : null;
+					const python = readRows('python_calls.jsonl').filter((item) => item.decision === d);
+					const actions = trajectory.filter((item) => item.decision === d);
+					return trace || activeTrace || python.length || actions.length ? { ref, trace: trace ?? activeTrace,
+						python: python.slice(0, 10).map((item) => ({ id: item.id, code: item.code, result: item.result, ok: item.ok,
+							...(item.acted ? { acted: true } : {}) })), python_total: python.length,
+						actions: actions.slice(0, 10).map((item) => ({ n: item.n, action: item.action, x: item.x, y: item.y,
+							changed_cells: item.changed_cells, level_changed: item.level_changed, state: item.state,
+							prediction: item.predict ?? null, scored_prediction: item.prediction ?? null, pre_frame: `data/frames/${item.n - 1}.json`,
+							post_frame: `data/frames/${item.n}.json` })), actions_total: actions.length,
+						source: ['harness/decision_trace.jsonl', 'harness/python_calls.jsonl', 'harness/trajectory.jsonl'] }
+						: { ref, state: 'missing' };
+				}
+				if (match?.[1] === 'transition') {
+					const n = Number(match[2]);
+					const action = trajectory[n - 1];
+					if (!action || action.n !== n) return { ref, state: 'missing' };
+					const before = grids.get(n - 1);
+					if (!before) return { ref, state: 'missing', reason: 'pre-action frame unavailable' };
+					return evidenceOffset === 0 ? { ref, phase: 'before', before,
+						action: { action: action.action, x: action.x, y: action.y }, prediction: action.predict ?? null,
+						reveal: `read_self(section="evidence", ref="${ref}", offset=1)` }
+						: { ref, phase: 'after', after: grids.get(n) ?? null, outcome: {
+							changed_cells: action.changed_cells, bbox: action.bbox ?? null, level_changed: action.level_changed,
+							state: action.state, levels_completed: action.levels_completed },
+							source: ['harness/states.jsonl', 'harness/trajectory.jsonl'] };
+				}
 				let offset = 0;
 				const total = evo!.read(0, 1).total;
 				while (offset < total) {
@@ -5612,10 +5694,12 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		selfRootPersist?.();
 	});
 	pi.on("before_provider_request", guard("before_provider_request", async (event: any, ctx: any) => {
+		let selfRootRequest: number | undefined;
 		if (evo) {
 			try {
 				selfRootRequestStarted = Date.now();
 				const pin = evo.pin(run.consolidating || evo.inEvolutionReview ? 'review' : 'task');
+				selfRootRequest = pin.request;
 				const payload = event.payload ?? {};
 				const messages = Array.isArray(payload.messages) ? payload.messages : Array.isArray(payload.input) ? payload.input : [];
 				const deliveredChars = messages.reduce((sum: number, item: any) => sum + JSON.stringify(item).length, 0);
@@ -5638,6 +5722,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				?? (Array.isArray(payload.tools) ? payload.tools : []);
 			const tools = nativeRuntime?.callableSchema(requestTools) ?? [];
 			append('request-events.jsonl', { stage: 'decide_callable_schema', request_id: parentRequest, decision,
+				...(selfRootRequest === undefined ? {} : { self_root_request: selfRootRequest }),
 				tools, act_capable_count: tools.filter((tool: any) => tool.act_capable).length });
 		}
 		// The runner explicitly declares the parent policy; an omitted registry field otherwise inherits 16,384.

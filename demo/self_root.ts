@@ -1818,8 +1818,8 @@ export class SelfRoot extends LiveAgentSelf {
       this.reviewedQualityRefs = new Set([...this.reviewedQualityRefs, ...shown]);
       this.fact('review_quality_facts', { review_event: ticket.event, refs: shown });
       this.fact('self_view', { review: ticket.id, view: { revision: this.serial, full: 'read_self(section="pin")' } });
-      // The induction entry carries the bounded trajectory. Specialist turns receive only their focused self-view.
-      if (this.mech.meta && this.metaPassTrigger && (this.metaPassTrigger.round ?? 1) === 1) {
+      // The induction entry carries the bounded trajectory; the capability entry carries its closure into the focused view.
+      if (this.mech.meta && this.metaPassTrigger && ((this.metaPassTrigger.round ?? 1) === 1 || (this.metaPassTrigger.specialistIndex ?? 0) === 0)) {
         const entryText = this.passEntry(true);
         if (entryText) { this.review.pass_entry = entryText; this.fact('meta_pass_entry', { chars: entryText.length, text: entryText }); }
       }
