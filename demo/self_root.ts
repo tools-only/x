@@ -18,6 +18,7 @@ export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component'
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
 export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
   metaFallback?: { unit: 'request' | 'action'; interval: number };
+  metaActionCheckpoints?: boolean;
   metaRouting?: 'sweep' | 'selective';
   /** Some task adapters record qualitative effects without opening numeric comparison windows. */
   validationWindows?: 'declared_effect' | 'explicit_predicate';
@@ -700,6 +701,7 @@ export class SelfRoot extends LiveAgentSelf {
   private reviewChanged() { return Boolean(this.review?.changes?.length || this.pending?.review === this.review?.id || this.pendingReview === this.review?.id); }
   get exitOperationSchema() { const kind = this.exitOperationKind; return kind ? providerOperationSchema(kind, this.reviewExitSchema) : undefined; }
   get dueWindows() { return this.windows.filter(w => ['due_unverified', 'due_comparable'].includes(w.status)).map(w => w.id); }
+  get reviewId(): string | undefined { return this.review?.id; }
   get hasReview() { return Boolean(this.review || this.queue.length); }
   /** Whether the task still has host-owned work that a model stop cannot complete. */
   get taskIncomplete() { return !(this.options.taskComplete?.() ?? false) || this.units < (this.options.requiredUnits?.() ?? 0) || this.windows.some(w => w.status === 'open') || this.hasReview || this.unresolvedReview || Boolean(this.taskEndPending); }
@@ -747,7 +749,13 @@ export class SelfRoot extends LiveAgentSelf {
     if (section === 'ledger') return this.read(offset, count);
     if (section === 'policy') return copy(this.policy);
     if (section === 'contract') return copy(this.contract);
-    if (section === 'definition') return copy(this.definitions.find(d => d.revision === offset));
+    if (section === 'definition') {
+      const definition = offset > 0
+        ? this.definitions.find(d => d.revision === offset)
+        : this.definitions.at(-1);
+      if (!definition) throw Error(`No orchestration definition${offset > 0 ? ` at revision ${offset}` : ''}.`);
+      return copy(definition);
+    }
     if (section === 'lineage') return { rows: copy(this.lineage.slice(offset, offset + count)), total: this.lineage.length };
     if (section === 'windows') return copy(this.windows);
     if (section === 'observation') return this.observation();
@@ -854,6 +862,14 @@ export class SelfRoot extends LiveAgentSelf {
     if (anchor < 0) return null;
     const window: [number, number] = [anchor + 1, this.ledger.length - 1];
     const after = this.ledger.slice(window[0]);
+    if (this.options.metaActionCheckpoints) {
+      const checkpoint = after.find(r => r.type === 'evolution_requested' ||
+        (r.type === 'event' && r.value?.type === 'unit_completed' && !r.value?.facts?.terminal));
+      if (checkpoint) {
+        const trigger = checkpoint.type === 'evolution_requested' ? 'agent_request' : 'task_unit_completed';
+        return { reason: trigger, window, facts: { trigger, ref: checkpoint.ref, window } };
+      }
+    }
     const lastExecute = after.findLastIndex(r => r.type === 'request_record' && r.value?.pin?.mode === 'execute');
     const taskClosedAfterLastExecute = lastExecute >= 0 && after.slice(lastExecute + 1).some(r => r.type === 'unit_delivered' || r.type === 'task_episode_closed');
     const feedback = after.findIndex((r, i) => ['render_action_receipt', 'task_outcome'].includes(r.type)
@@ -883,11 +899,13 @@ export class SelfRoot extends LiveAgentSelf {
     const requests = rows.filter(row => row.type === 'request_record' && row.value?.pin?.mode === 'execute');
     const outcomes = rows.filter(row => row.type === 'unit_delivered' || row.type === 'task_outcome' || row.type === 'unit_outcome');
     return {
-      window, requests: requests.length, task_actions: rows.filter(row => this.isWork(row)).length,
+      window, requests: requests.length, task_actions: rows.filter(row => this.options.actionReceiptTypes?.length
+        ? row.kind === 'fact' && this.options.actionReceiptTypes.includes(row.type)
+        : this.isWork(row)).length,
       first_revision: requests[0]?.value?.pin?.revision ?? null, current_revision: this.serial,
-      changes: rows.filter(row => row.type === 'reflection_activated').map(row => ({ ref: row.ref, revision: row.value?.revision ?? null })),
+      changes: rows.filter(row => row.type === 'reflection_activated').slice(-8).map(row => ({ ref: row.ref, revision: row.value?.revision ?? null })),
       outcomes: outcomes.slice(-3).map(row => ({ ref: row.ref, type: row.type, metrics: row.value?.metrics ?? null })),
-      parent_recorded_tokens: requests.reduce((total, row) => total + (Number(row.value?.tokens?.total) || 0), 0),
+      parent_recorded_tokens: requests.reduce((total, row) => total + (row.value?.tokens?.status === 'reported' ? Number(row.value.tokens.total) || 0 : 0), 0),
       cost_incomplete: requests.some(row => row.value?.tokens?.status !== 'reported'),
       position: this.options.runPosition?.() ?? null,
     };
