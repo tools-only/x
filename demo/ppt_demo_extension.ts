@@ -88,7 +88,7 @@ export default function pptDemo(pi: ExtensionAPI) {
   // EVO_META=1 runs the general meta loop (2026-11-16): T0 design turn plus the agent's own review rhythm; it forces ask/l4 off.
   const EVO_MECH = { observation: process.env.EVO_MA !== '0', compiler: process.env.EVO_MB !== '0', effect_return: process.env.EVO_MC !== '0', legacy_obligation: process.env.EVO_LEGACY_OBLIGATION === '1', a4: process.env.EVO_A4 === '1', ask: process.env.EVO_ASK === '1', l4: process.env.EVO_L4 === '1', meta: process.env.EVO_META === '1' };
   const evo = manifest ? new SelfRoot(manifest.contract, savedSelf, validatePythonComponent, workspace, manifest.settings.model?.maxTokens,
-    { ...PPT_SELF_ROOT_OPTIONS, mechanisms: EVO_MECH, metaFallback: { unit: 'request', interval: 12 }, metaRouting: 'selective', taskComplete: () => state.complete || agentSelf?.snapshot?.().complete === true, requiredUnits: () => activeManifest()?.units.length ?? 0,
+    { ...PPT_SELF_ROOT_OPTIONS, userBrief: () => existsSync(workspace.path('data/instructions.md')) ? workspace.read('data/instructions.md').split(/\r?\n/).filter(line => !line.startsWith('- unit-')).join('\n').trim() : '', mechanisms: EVO_MECH, metaFallback: { unit: 'request', interval: 12 }, metaRouting: 'selective', taskComplete: () => state.complete || agentSelf?.snapshot?.().complete === true, requiredUnits: () => activeManifest()?.units.length ?? 0,
       taskEpisodes: () => manifest?.episodes && manifest.episodes.length > 1 ? { active: state.episode, total: manifest.episodes.length } : null,
       pendingDeliveryState: () => agentSelf?.hasPendingFinalDelivery?.() === true,
       deliveryTransitionReached: () => !agentSelf?.hasPendingFinalDelivery?.() || agentSelf?.pendingDeliveryTransitionReady?.() === true,
@@ -99,6 +99,7 @@ export default function pptDemo(pi: ExtensionAPI) {
       runPosition: () => ({ episode: manifest?.episodes && manifest.episodes.length > 1 ? { active: state.episode, total: manifest.episodes.length } : null,
         artifact_revision: state.revision ?? null, delivered_revision: state.deliveredRevision ?? null,
         last_render: state.lastFeedback ? { revision: state.lastFeedback.revision, warnings: Array.isArray(state.lastFeedback.warnings) ? state.lastFeedback.warnings.length : state.lastFeedback.warnings ?? null } : null }),
+      versionFacts: () => (state.renderedRevisions ?? []).slice(-8).map((r: any) => ({ revision: r.revision, slides: r.slides, ...(r.version ?? {}) })),
       learningInputs: () => ({ source_hashes: activeManifest()?.sources ?? {}, source_location: 'workspace data/',
         current_artifact: sourceFacts(workspace), last_render: state.lastFeedback
           ? { revision: state.lastFeedback.revision, source_hash: state.lastFeedback.source_hash, source_path: state.lastFeedback.source_path, visual_metrics: state.lastFeedback.visual_metrics ?? null }
@@ -502,6 +503,20 @@ export default function pptDemo(pi: ExtensionAPI) {
         state.events.push({ batch: state.batch, type: 'render', ...state.lastFeedback }); persist();
         log('renders.jsonl', state.lastFeedback);
         const out = join(root, 'exports', `v${String(revision).padStart(3, '0')}`);
+        const previous = (state.renderedRevisions ?? []).at(-2);
+        const metric = (name: string) => acceptance ? pptUnitMetrics(acceptance, []).find((m: any) => m.name === name) : undefined;
+        const pageHashes = (dir: string) => Object.fromEntries(readdirSync(dir).filter(p => /^slide-\d+\.png$/.test(p)).map(p => [p, createHash('sha256').update(readFileSync(join(dir, p))).digest('hex')]));
+        const prevDir = previous ? join(root, 'exports', `v${String(previous.revision).padStart(3, '0')}`) : null;
+        const sourceLines = readFileSync(source, 'utf8').split(/\r?\n/);
+        const prevLines = prevDir && existsSync(join(prevDir, 'presentation.html')) ? readFileSync(join(prevDir, 'presentation.html'), 'utf8').split(/\r?\n/) : null;
+        const pages = pageHashes(out), prevPages = prevDir ? pageHashes(prevDir) : null;
+        state.lastFeedback.version = {
+          acceptance: acceptance ? { required_found: `${metric('acceptance.required_found')?.value}/${metric('acceptance.required_total')?.value}`,
+            normalized_found: `${metric('acceptance.normalized_found')?.value}/${metric('acceptance.normalized_found')?.denominator}`,
+            citations_found: metric('acceptance.citations_found')?.value, slide_count_matches: acceptance.slide_count.matches } : null,
+          compared_with: previous?.revision ?? null,
+          source_lines: { total: sourceLines.length, ...(prevLines ? { added: sourceLines.filter(l => !prevLines.includes(l)).length, removed: prevLines.filter(l => !sourceLines.includes(l)).length } : {}) },
+          pages_changed: prevPages ? Object.keys(pages).filter(p => pages[p] !== prevPages[p]).map(p => Number(p.match(/\d+/)![0])) : null };
         const evidencePath = `results/renders/v${String(revision).padStart(3, '0')}`;
         // The rendered evidence becomes workspace files: receipt, contact sheet and every page image.
         for (const entry of readdirSync(out, { withFileTypes: true })) {

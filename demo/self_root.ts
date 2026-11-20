@@ -16,7 +16,7 @@ const FLOOR_STEPS = [
 const INITIAL_CONDITIONS = { floor: { step: 0, evidence: ['settlement_facts'], event_classes: [], coverage_tags: [] }, addenda: [] as unknown[] };
 export const PROTOCOL = ['read_self', 'read_self_component', 'reflect_component', 'reflect_orchestration', 'decide', 'decide_exit', 'decide_validation'];
 /** Adapter-supplied, task-neutral wiring. Task tool names live in the adapter, never here. */
-export type SelfRootOptions = { reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
+export type SelfRootOptions = { userBrief?: () => string; versionFacts?: () => unknown; reviewTools?: string[]; evolutionTools?: string[]; reservedToolNames?: string[]; actionOf?: (name: string, args: any) => string;
   metaFallback?: { unit: 'request' | 'action'; interval: number };
   metaActionCheckpoints?: boolean;
   metaRouting?: 'sweep' | 'selective';
@@ -158,7 +158,7 @@ const META_SELECTIVE_STRATEGY = 'EVOLUTION CHECK DURING THE ACTIVE TASK. Read th
  * with the agent's own reading of the window; round 2 consists of seven sequential, focus-specific turns. */
 export const META_PASS_ROUND1_LINE = 'ROUND 1 OF 2 - INDUCTION: this round closes through decide_exit with your own reading of the window\'s recorded facts - recurrences, costs, losses, outcome paths; result.reason and result.carry are rendered verbatim at the round-2 entry. Round 2 opens at the next request boundary and asks a different question. Writes stay legal in every round.';
 export const META_PASS_SPECIALISTS = [
-  { id: 'prompt', label: 'Prompt', description: 'Inspect prompt components, their exposure, use, outcomes, and the instructions actually visible in a failed request. Locate a missing goal, constraint, or observable completion criterion and make the smallest correction in the narrowest applicable prompt. If the instruction was visible, locate the failure in the relevant component or tool instead.', writeInterface: 'reflect_component(kind="prompt")' },
+  { id: 'prompt', label: 'Prompt', description: 'Inspect prompt components, their exposure, use, outcomes, and the instructions actually visible in a failed request. Locate a missing goal, constraint, or observable completion criterion and make the smallest correction in the narrowest applicable prompt. A prompt can also raise the requirement: carry a review standard that the next version should meet into the generation context. If the instruction was visible, locate the failure in the relevant component or tool instead.', writeInterface: 'reflect_component(kind="prompt")' },
   { id: 'context', label: 'Context', description: 'Inspect policy.context, recorded request composition, and the next decision. Trace a missing necessary fact through source, selection, assembly, and compaction. Keep decisive current facts visible and large supporting material reachable by exact reference; change only the policy responsible for the gap.', writeInterface: 'reflect_orchestration (policy.context)' },
   { id: 'skill', label: 'Skill', description: 'Inspect skill exposure, index and body reads, use, and outcomes. Locate a failure in discovery, invocation, or execution. Check existing skills for overlap; describe when the procedure applies and when it does not, then give inputs, steps, observable outputs, and ordinary recovery.', writeInterface: 'reflect_component(kind="skill")' },
   { id: 'tool', label: 'Tool', description: 'Inspect tool calls, rejected calls, and outcomes. Identify an operation or query that existing tools cannot express or verify. Define task-language inputs and a result that distinguishes execution from verification, with an evidence reference or actionable error.', writeInterface: 'reflect_component(kind="tool")' },
@@ -827,14 +827,19 @@ export class SelfRoot extends LiveAgentSelf {
     const refs: string[] = Array.isArray(value?.evidence_refs) ? value.evidence_refs : [];
     const refsValid = (value?.evidence_refs === undefined || Array.isArray(value.evidence_refs)) && refs.every((ref: any) => typeof ref === 'string')
       && (lenient ? refs.length <= 8 : refs.length >= 1 && refs.length <= 8);
-    if (!value || typeof value.finding !== 'string' || !value.finding.trim() || value.finding.length > 1200
+    const states = ['missing', 'glance', 'unsaturated', 'saturated'];
+    if (!value || (value.finding !== undefined && (typeof value.finding !== 'string' || value.finding.length > 1200))
+      || (value.signals === undefined ? typeof value.finding !== 'string' || !value.finding.trim()
+        : !Array.isArray(value.signals) || value.signals.length < 1 || value.signals.length > 16
+          || !value.signals.every((x: any) => typeof x?.dimension === 'string' && x.dimension.trim() && x.dimension.length <= 120
+            && typeof x.signal === 'string' && x.signal.length <= 300 && states.includes(x.state)))
       || !refsValid
       || (value.condition !== undefined && !['missing', 'inadequate', 'blind', 'late', 'usable', 'unknown'].includes(value.condition))
       || (value.method !== undefined && (typeof value.method !== 'string' || value.method.length > 300))
       || (value.method_version !== undefined && (typeof value.method_version !== 'string' || value.method_version.length > 100))
       || (value.next_decision !== undefined && (typeof value.next_decision !== 'string' || value.next_decision.length > 500))
       || (value.unknowns !== undefined && (!Array.isArray(value.unknowns) || value.unknowns.length > 8 || !value.unknowns.every((x: any) => typeof x === 'string' && x.length <= 300))))
-      throw Error('assessment needs a qualitative finding and exact evidence_refs (0-8 when condition is usable or unknown, otherwise 1-8); condition, method, method_version, next_decision and unknowns are optional');
+      throw Error('assessment needs signals:[{dimension, signal, state: missing|glance|unsaturated|saturated}] (1-16 rows) or a qualitative finding, and exact evidence_refs (0-8 when condition is usable or unknown, otherwise 1-8); finding, condition, method, method_version, next_decision and unknowns are optional');
     const evidence = refs.map((ref: string) => {
       const row = this.ledger.find(r => r.ref === ref && r.kind === 'fact');
       if (row) return { ref, source: 'ledger', type: row.type, revision: row.revision, record_hash: hash(row.value) };
@@ -850,7 +855,8 @@ export class SelfRoot extends LiveAgentSelf {
       }
       throw Error(`assessment evidence ${ref} is missing or is an Agent claim`);
     });
-    return this.claim('learning_assessment', { finding: value.finding.trim(), condition,
+    return this.claim('learning_assessment', { finding: value.finding?.trim() ?? null, condition,
+      signals: value.signals?.map((x: any) => ({ dimension: x.dimension.trim(), signal: x.signal, state: x.state })) ?? null,
       method: value.method ?? null, method_version: value.method_version ?? null, next_decision: value.next_decision ?? null,
       evidence_refs: [...new Set(refs)], unknowns: value.unknowns ?? [], evidence, status: 'agent_claim' });
   }
@@ -881,10 +887,20 @@ export class SelfRoot extends LiveAgentSelf {
   }
   private learningReviewBlock() {
     if (!this.mech.meta || !this.learningReview) return null;
+    const contract = this.metaContract();
+    const outcomes = this.ledger.filter(r => r.type === 'task_outcome');
+    const latestAssessment = this.ledger.findLast(r => r.type === 'learning_assessment');
     return { ...copy(this.learningReview), environment_facts_ref: 'read_self(section="learning_environment")',
       exact_evidence: 'read_self(section="learning_environment", ref?)',
-      required_judgment: 'usable, missing, inadequate, blind, late, or unknown',
-      instruction: 'This induction turn must inspect learning conditions, report a judgment with exact evidence_refs, and repair a condition when evidence warrants it. A 7-pass specialist turn remains for capability changes.' };
+      user_brief: this.options.userBrief?.() || null,
+      task_goal: contract?.task_goal ?? null, task_acceptance: contract?.task_acceptance ?? null,
+      feedback_refs: outcomes.slice(-3).map(r => r.ref), feedback_count: outcomes.length,
+      prior_assessment: latestAssessment ? { ref: latestAssessment.ref, condition: latestAssessment.value?.condition,
+        signals: latestAssessment.value?.signals ?? null, unknowns: latestAssessment.value?.unknowns ?? [] } : null,
+      version_history: this.options.versionFacts?.() ?? null,
+      latest_input_composition: JSON.stringify(this.ledger.findLast(r => r.type === 'request_record')?.value?.composition ?? null).slice(0, 1500),
+      required_judgment: 'signals table plus overall condition: usable, missing, inadequate, blind, late, or unknown',
+      instruction: 'This induction turn judges whether the environment can still drive your evolution toward the full task goal, not whether the current artifact can be delivered. task_goal and task_acceptance are your own restatement; user_brief is the original requirement from the user. First check that your restatement keeps every quality requirement in user_brief and judge against user_brief where they differ. For each important goal dimension, name the feedback signal that tells a better version from a worse one. A dimension with no such signal, or one you can only judge by an unstructured glance, gives no learning gradient: the condition is missing, inadequate or blind there, and designing that signal is your work now. A signal the current artifact already fully passes is saturated and no longer guides improvement; raise its bar or add the next dimension the goal demands. When you add or raise a dimension, also load the same standard as an explicit generation requirement in a prompt component, so the next version is made toward it and the review checks it. Usable means every important goal dimension has an unsaturated signal that will reach the next version. Record the judgment as signals:[{dimension, signal, state}], one row per goal dimension with state missing, glance, unsaturated or saturated; prior_assessment shows your last table and version_history shows what each version passed and how much it changed. Check latest_input_composition and the environment facts for anything the host should have given you but did not. Then repair a supported gap through your existing methods. A 7-pass specialist turn remains for capability changes.' };
   }
   noteLearningExposure(ref: string, request: number) {
     const pending = this.learningAssessment();
@@ -917,14 +933,15 @@ export class SelfRoot extends LiveAgentSelf {
       const pass: any = this.metaPassTrigger;
       if ((pass?.round ?? 1) === 1) return this.options.metaRouting === 'selective'
         ? `${META_SELECTIVE_STRATEGY}\nChoose result.next_specialist from none, prompt, context, skill, tool, subagent, memory, loop.`
-        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}`;
+        : `${META_PASS_STRATEGY}\n${META_PASS_ROUND1_LINE}\nREQUEST BUDGET: request ${this.reviewRequests}/${META_PASS_ROUND_CAPS[0]} in this round; after this request, ${Math.max(0, META_PASS_ROUND_CAPS[0] - this.reviewRequests)} request(s) remain. You may close earlier with decide_exit.`;
       const specialist = META_PASS_SPECIALISTS[pass?.specialistIndex ?? 0] ?? META_PASS_SPECIALISTS[0];
       const phase = this.reviewRequests >= 2
         ? this.reviewRequests >= 3
-          ? 'FINAL REPAIR REQUEST (request 3/3): finish the already identified edit or explicit no_change now. This is the last request for this focus.'
-          : 'EXECUTION CONTINUATION (request 2/3): apply the justified hot modification now, or explicitly finish with evidence-based no_change. A third request is available only if this response still needs a source read or repair.'
-        : 'EXECUTION TURN (request 1/3): analyze this focus and hot-modify now if evidence supports it; use explicit evidence-based no_change if it does not. A successful reflection or no_change closes immediately.';
-      return `${pass?.selective ? META_SELECTIVE_STRATEGY : META_PASS_STRATEGY}\n${pass?.selective ? '' : META_PASS_ROUND2_LINE}\n${phase}\nSPECIALIST ${specialist.label}${pass?.selective ? '' : ` (${(pass?.specialistIndex ?? 0) + 1}/7)`}: ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
+          ? 'FINAL REPAIR REQUEST: finish the already identified edit or explicit no_change now. This is the last request for this focus.'
+          : 'EXECUTION CONTINUATION: apply the justified hot modification now, or explicitly finish with evidence-based no_change. One conditional request remains only if this response still needs a source read or repair.'
+        : 'EXECUTION TURN: analyze this focus and hot-modify now if evidence supports it; use explicit evidence-based no_change if it does not. A successful reflection or no_change closes immediately.';
+      const requestBudget = `REQUEST BUDGET: request ${this.reviewRequests}/${META_PASS_SPECIALIST_REQUEST_CAP} in this focus; after this request, ${Math.max(0, META_PASS_SPECIALIST_REQUEST_CAP - this.reviewRequests)} request(s) remain (the third is conditional on a needed source read or repair).`;
+      return `${pass?.selective ? META_SELECTIVE_STRATEGY : META_PASS_STRATEGY}\n${pass?.selective ? '' : META_PASS_ROUND2_LINE}\n${phase}\n${requestBudget}\nSPECIALIST ${specialist.label}${pass?.selective ? '' : ` (${(pass?.specialistIndex ?? 0) + 1}/7)`}: ${specialist.description}\nWRITE INTERFACE: ${specialist.writeInterface}`;
     }
     const base = this.mech.legacy_obligation ? LEGACY_REVIEW_STRATEGY : FIXED_REVIEW_STRATEGY;
     return entrance && this.mech.ask && this.inEvolutionReview ? `${base}\n${entranceAskBlock(this.mech.l4)}` : base;
@@ -2148,10 +2165,10 @@ export class SelfRoot extends LiveAgentSelf {
     }
     if (!invalid && exitRound === 1 && this.learningReview?.status === 'judgment_required') {
       const openedAt = this.learningReview.ledger_window[1];
-      const judged = this.ledger.some((r: any, i: number) => i >= openedAt && r.type === 'learning_assessment');
+      const judged = this.ledger.some((r: any, i: number) => i >= openedAt && r.type === 'learning_assessment' && r.value?.signals?.length);
       if (!judged) {
         this.fact('learning_conditions_gate', { review: review.id, reason: 'induction close requires a learning-conditions judgment', assessment: null });
-        invalid = 'this induction turn must first judge the learning conditions with decide(op="assessment", value:{finding, condition, evidence_refs, ...}); a usable or unknown condition may omit evidence_refs, otherwise cite 1-8 exact refs. Then close with decide_exit.';
+        invalid = 'this induction turn must first judge the learning conditions with decide(op="assessment", value:{signals:[{dimension, signal, state}], condition, evidence_refs, ...}); a usable or unknown condition may omit evidence_refs, otherwise cite 1-8 exact refs. Then close with decide_exit.';
       }
     }
     if (invalid) {

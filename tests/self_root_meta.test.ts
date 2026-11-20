@@ -91,11 +91,11 @@ test('optional qualitative trial finding reaches a later task request and retire
 });
 
 test('resident learning conditions review opens at induction and carries unresolved findings forward', async () => {
-  const s = make({ meta: true }, { metaFallback: { unit: 'request', interval: 1 } });
+  const s = make({ meta: true }, { metaFallback: { unit: 'request', interval: 1 }, userBrief: () => 'ad-grade visual quality' });
   s.fact('meta_t0_design', { status: 'changed', gate: 'open' });
   const outcome = s.fact('task_outcome', { unit: 'whole_deck', status: 'accepted' });
   const claim = s.assessLearning({ finding: 'feedback only checks literal acceptance, not visual quality',
-    evidence_refs: [outcome.ref], condition: 'inadequate' });
+    signals: [{ dimension: 'typography', signal: 'page glance', state: 'glance' }], evidence_refs: [outcome.ref], condition: 'inadequate' });
   s.pin('task');
   s.cost({ input: 10, output: 5 }, 100, 0, true);
   await tick(s);
@@ -108,6 +108,12 @@ test('resident learning conditions review opens at induction and carries unresol
   assert.match(block.required_judgment, /inadequate/);
   assert.match(block.required_judgment, /late/);
   assert.match(block.instruction, /induction turn/);
+  assert.match(block.instruction, /feedback signal/);
+  assert.equal(block.user_brief, 'ad-grade visual quality');
+  assert.equal(block.feedback_count, 1);
+  assert.deepEqual(block.feedback_refs, [outcome.ref]);
+  assert.equal(block.prior_assessment.ref, claim.ref);
+  assert.equal(block.prior_assessment.signals[0].state, 'glance');
   assert.equal(block.unresolved.length, 1);
   assert.equal(block.unresolved[0].ref, claim.ref);
   assert.equal(block.unresolved[0].condition, 'inadequate');
@@ -303,7 +309,8 @@ test('META focus: a source read permits one repair request and an incomplete swe
   await s.transaction({ baseRevision: 1, orchestration: design }); await tick(s);
   s.fact('render_action_receipt', { action_ref: 'render:1' }); await tick(s);
   assert.ok(s.review, 'an in-task feedback receipt opens the pass');
-  s.assessLearning({ finding: 'learning conditions are usable for this stage', condition: 'usable' });
+  assert.throws(() => s.assessLearning({ signals: [{ dimension: 'style', signal: 'none', state: 'unclear' }] }), /signals/);
+  s.assessLearning({ signals: [{ dimension: 'facts', signal: 'protected checker', state: 'saturated' }, { dimension: 'visual style', signal: 'none yet', state: 'missing' }], condition: 'usable' });
   s.exit({ result: { reason: 'recorded facts reviewed', entry_question_responses: ['none', 'none', 'none'] } }); await tick(s);
   assert.ok(s.review && s.isMetaSpecialistTurn, 'the specialist sweep follows induction');
   s.reviewRequests = 2;

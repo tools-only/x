@@ -171,3 +171,15 @@ HEAD `c22aecec`（PPT `python` 工具增加 `save` 参数，镜像 ARC native ru
 - 6 次 render（rev1–6）`source_hash` 均不同，无 m21 式同 hash 重复 render 循环；`deliver_review`→`ship`→`office.deliver` 全链路干净收尾（receipt `revision: 6`）。
 - 常驻学习条件审查多轮触发：`summary.json` 的 `reviews` 含 8 次 `evolution_review` reflect 开关，`learning_assessment` claim 判定 `condition: usable`（ledger:233/390/436）。
 - 自进化产出并交付能力组件 `ppt_baseline_guidance`（prompt v2）：`runtime_activations` 的 `reflection_activated` 绑定该组件且 hash 与 `delivery/harness.json` 一致（`857826f2…`）；后续 slide 修复遵循其 checker 字面量约定（`$1,389` 而非 `$1,389M` 等），语义使用成立。
+
+## 9. 后续修订：评审覆盖与版本演进
+
+m22 的六次渲染中，最终 HTML 相比初版只有 12 行变化，主要是字面量格式修复；学习条件判断却持续为 `usable`。这表明现有归纳看到了反馈是否到达，没有审视反馈能否引导作品向完整的商用视觉目标演进。
+
+本次窄命题是：在归纳入口并列呈现任务目标、Agent 自己声明的验收、最近反馈与上次判断，并明确要求比较评审覆盖范围，Agent 会识别已满足基础检查后仍需建立的质量评审方法，随后用该方法指导一个有实质内容差异的新版。宿主只搬运事实，评审维度、方法与改稿仍由 Agent 决定。复用现有 `learning_conditions_review`、`decide`、`reflect_*`、`office.render` 和版本目录，不增加新门禁或组件类别。
+
+负例是反馈已足以区分当前目标相关的下一步改进，此时允许判断 `usable` 并不修改评审。验收时应逐项检查新评审维度、评审修订、版本之间的设计差异、Agent 是否按评审结果改稿，以及额外请求和耗时。当前仅完成实现和 `self_root_meta` 定向测试；真实 PPT runner、自主采用与净收益尚未验证。
+
+第一次真实探针 `runs/evo-m23-review-coverage-20261120`（az/glm-5.3-flash）在请求 16 前生成了 v001 并触发归纳。`ledger:101` 明确列出视觉裁切、语义正确性尚未评估，却把整体条件判为 `usable`，随后继续修数字字面量。此结果反驳了第一版提示足以使 Agent 判断完整学习条件的命题。为避免继续消耗在已失败的版本上，在首个判断后终止该探针。修订了归纳指令和 Meta 手册：目标的重要维度尚无法评估时，应判整体条件 `inadequate` 或 `blind`，建立或修订评审方法后再判 `usable`。修订后的真实采用、版本差异和质量收益仍未验证。
+
+第二次真实探针 `runs/evo-m24-review-coverage-20261120`（同一模型）部分采用了修订：v001 因导航脚本隐藏 14 页而空白，Agent 判为 `inadequate`，建立 deck-QA 技能（静态渲染、页数、字面量与引用同页、强制看页面图）后修复。此后四次判断均为 `usable`，每次都写明叙事、视觉说服力尚未评估，却称“不阻塞交付”。v002 到 v004 的 HTML 只有 21 行变化，版式自 v002 起未再设计。结论：提示措辞能让 Agent 补上会直接造成失败的评审盲区，但没有让它把尚未衡量的高层目标维度当作需要先补的学习条件。同一原因已连续两次出现，按项目规则暂停在提示层面继续绕行，等待用户决定下一步改变的因素。
