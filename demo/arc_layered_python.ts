@@ -9,7 +9,8 @@ export type LayeredState = { level: number; levels_completed: number; win_levels
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][] };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean };
-export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; error?: string;
+export type ShownImage = { grid: number[][]; scale?: number | null };
+export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number> };
 
 export const COLOR_LEGEND = "W=white, w=light gray, g=gray, G=dark gray, c=charcoal, B=black, M=magenta, P=pink, " +
@@ -51,10 +52,11 @@ export class LayeredPython {
 
   private entry(action: string, raw: any) {
     return { action, frames: raw.frames, level: Math.min(raw.levels_completed + 1, raw.win_levels), step: raw.action_budget?.total_used ?? 0,
-      state: raw.state, levels_completed: raw.levels_completed };
+      state: raw.state, levels_completed: raw.levels_completed, win_levels: raw.win_levels };
   }
   private valid(raw: any) {
-    return (raw.agent_available_actions as string[]).filter(name => this.config.undo || name !== "ACTION7");
+    const names = (raw.agent_available_actions as string[]).filter(name => this.config.undo || name !== "ACTION7");
+    return raw.state === "GAME_OVER" ? names.filter(name => name === "RESET" || name === "ACTION7") : names;
   }
 
   async init() {
@@ -131,11 +133,13 @@ export class LayeredPython {
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
-    let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {};
+    let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
     try {
       const run = await this.kernel.run(request, onRequest, signal);
       error = run.result.error ?? undefined;
       text = run.result.text + (error ? (run.result.text ? "\n" : "") + error : "");
+      images = Array.isArray(run.result.images) ? run.result.images : [];
+      if (run.result.last_result) this.lastResult = run.result.last_result;
       metrics = { ...run.metrics };
     } catch (problem) {
       error = String((problem as Error).message ?? problem);
@@ -151,7 +155,7 @@ export class LayeredPython {
         ` | step ${state.step}${state.budget_left === undefined ? "" : `, budget left ${state.budget_left}`} | valid: ${state.valid_actions.join(" ")}`;
     }
     const { halt: _halt, ...acted } = batch;
-    return { text, truncated, acted: batch.executed ? acted : null, ...(error ? { error } : {}),
+    return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
       ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed } };
   }
 

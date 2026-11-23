@@ -1,12 +1,25 @@
-import ast, builtins, contextlib, io, json, traceback
+import ast, builtins, contextlib, importlib.util, io, json, sys, traceback
 
 CHARS = "WwgGcBMPRbSYOrNp"
+MAX_IMAGES = 2
 _H, _T, _S = [], [], {"ns": None}
 
 
+def _freeze(grid):
+    return tuple(tuple(int(value) for value in row) for row in grid)
+
+
+def _grid_hash(grid):
+    value = 2166136261
+    for row in grid:
+        for cell in row:
+            value = ((value ^ int(cell)) * 16777619) & 0xffffffff
+    return "%08x" % value
+
+
 class Frame:
-    def __init__(self, raw, numeric):
-        self._grid, self.frames, self._numeric = raw["frames"][-1], raw["frames"], numeric
+    def __init__(self, raw, grids, numeric):
+        self._grids, self._numeric = tuple(grids), numeric
         self.level, self.step, self.state = raw["level"], raw["step"], raw["state"]
         self.levels_completed, self._seg = raw["levels_completed"], None
 
@@ -14,32 +27,41 @@ class Frame:
     def grid(self):
         if not self._numeric:
             raise AttributeError("the numeric grid is disabled; use .segmentation or .ascii")
-        return self._grid
+        return [list(row) for row in self._grids[-1]]
+
+    @property
+    def frames(self):
+        return [[list(row) for row in grid] for grid in self._grids]
 
     @property
     def shape(self):
-        return (len(self._grid), len(self._grid[0]) if self._grid else 0)
+        grid = self._grids[-1]
+        return (len(grid), len(grid[0]) if grid else 0)
 
     @property
     def ascii(self):
-        return ascii(self._grid)
+        return ascii(self._grids[-1])
 
     @property
     def segmentation(self):
         if self._seg is None:
-            self._seg = segment(self._grid)
+            self._seg = segment(self._grids[-1])
         return self._seg
+
+    @property
+    def hash(self):
+        return _grid_hash(self._grids[-1])
 
     def __repr__(self):
         return "Frame(level=%s, step=%s, state=%s, shape=%dx%d)" % ((self.level, self.step, self.state) + self.shape)
 
 
 class HistoryEntry:
-    def __init__(self, action, frame):
-        self.action, self.frame = action, frame
+    def __init__(self, action, frame, changed, hash):
+        self.action, self.frame, self.changed, self.hash = action, frame, changed, hash
 
     def __repr__(self):
-        return "HistoryEntry(action=%r, frame=%r)" % (self.action, self.frame)
+        return "HistoryEntry(action=%r, changed=%r, frame=%r)" % (self.action, self.changed, self.frame)
 
 
 class Transition:
@@ -51,7 +73,7 @@ class Transition:
 
 
 def _cells(value):
-    return value._grid if isinstance(value, Frame) else value
+    return value._grids[-1] if isinstance(value, Frame) else value
 
 
 def ascii(grid, region=None):
@@ -115,7 +137,7 @@ def segment(grid):
         ys, xs = [y for y, _ in cells], [x for _, x in cells]
         if max(ys) - top >= 2 and max(xs) - left >= 2:
             seen = [[False] * w for _ in range(h)]
-            stack = [(y, x) for y in range(h) for x in (0, w - 1)] + [(y, x) for x in range(w) for y in (0, h - 1)]
+            stack = [(y, x) for y in (h - 1, 0) for x in range(w)] + [(y, x) for x in (w - 1, 0) for y in range(h)]
             while stack:
                 y, x = stack.pop()
                 if 0 <= y < h and 0 <= x < w and not seen[y][x] and (y, x) not in own:
@@ -131,28 +153,81 @@ def segment(grid):
 
 def frames_of(step):
     entry = _H[step]
-    return [Frame(dict(entry["raw"], frames=[grid]), entry["frame"]._numeric) for grid in entry["raw"]["frames"]]
+    return [Frame(entry["raw"], [grid], entry["numeric"]) for grid in entry["grids"]]
+
+
+def show(value=None, region=None, scale=None):
+    grid = _cells(value) if value is not None else _H[-1]["grids"][-1]
+    if region:
+        r0, c0, r1, c1 = region
+        grid = [row[c0:c1] for row in grid[r0:r1]]
+    if len(_S["images"]) >= MAX_IMAGES:
+        raise RuntimeError("show() queues at most %d images per call" % MAX_IMAGES)
+    _S["images"].append({"grid": [list(row) for row in grid], "scale": scale})
+    return "show: image queued"
+
+
+class _WorkLoader:
+    def __init__(self, name, path, package):
+        self.name, self.path, self.package = name, path, package
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        module.__file__ = self.path
+        if self.package:
+            module.__path__ = ["work/" + self.name.replace(".", "/")]
+        exec(compile(_file("read", self.path), self.path, "exec"), module.__dict__)
+
+
+class _WorkFinder:
+    def find_spec(self, name, path=None, target=None):
+        if name.startswith("_"):
+            return None
+        base = name.replace(".", "/")
+        for candidate, package in (("work/" + base + ".py", False), ("work/" + base + "/__init__.py", True),
+                                   ("work/harness/lib/" + base + ".py", False)):
+            try:
+                _file("read", candidate)
+            except (FileNotFoundError, PermissionError):
+                continue
+            spec = importlib.util.spec_from_loader(name, _WorkLoader(name, candidate, package), is_package=package)
+            if package:
+                spec.submodule_search_locations = ["work/" + base]
+            return spec
+        return None
 
 
 def _append(raw, numeric, result=None):
-    entry = {"raw": raw, "action": raw["action"], "frame": Frame(raw, numeric)}
-    if raw["action"] and _H:
-        _T.append(Transition(raw["action"], _H[-1]["frame"], entry["frame"], result or {}))
+    grids = [_freeze(frame) for frame in raw["frames"]]
+    previous = _H[-1] if _H else None
+    entry = {"raw": raw, "action": raw["action"], "grids": grids, "numeric": numeric,
+             "changed": bool(previous) and diff(previous["grids"][-1], grids[-1])["count"] > 0,
+             "hash": _grid_hash(grids[-1])}
+    if raw["action"] and previous is not None:
+        _T.append({"action": raw["action"], "before": previous, "after": entry, "result": result or {}})
     _H.append(entry)
+
+
+def _frame(entry):
+    return Frame(entry["raw"], entry["grids"], entry["numeric"])
 
 
 def _bind():
     ns = _S["ns"]
-    last = _T[-1] if _T else None
-    ns.update(current_frame=_H[-1]["frame"], previous_frame=last.before_frame if last else None,
-              history=[HistoryEntry(e["action"], e["frame"]) for e in _H], transitions=list(_T), last_transition=last,
+    history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H]
+    transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T]
+    last = transitions[-1] if transitions else None
+    ns.update(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
+              history=history, transitions=transitions, last_transition=last,
               last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
               valid_actions=list(_S["valid"]), valid_actions_raw=list(_S["valid_raw"]))
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False):
     items = [actions] if isinstance(actions, (str, dict)) else list(actions)
-    lines, executed, reason = [], 0, None
+    lines, executed, reason, level_changed, reset = [], 0, None, False, False
     for item in items:
         call = {"action": item} if isinstance(item, str) else dict(item)
         call["action"] = str(call["action"]).upper()
@@ -162,7 +237,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             call["x"] = call.pop("col")
         if reasoning:
             call["reasoning"] = str(reasoning)
-        before = _H[-1]["frame"]
+        before = _H[-1]
         reply = _rpc({"t": "act", "call": call, "confirm_full_reset": bool(confirm_full_reset), "expect": repr(expect) if expect is not None else None})
         if "stopped" in reply:
             reason = reply["stopped"]
@@ -171,16 +246,26 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         _append(reply["entry"], _S["numeric"], reply["result"])
         _bind()
         executed += 1
+        reset = reset or call["action"] == "RESET"
+        level_changed = level_changed or _H[-1]["raw"]["levels_completed"] != before["raw"]["levels_completed"]
         lines.append(reply["line"])
         if reply.get("halt"):
             reason = reply["halt"]
             break
-        after = _H[-1]["frame"]
-        if stop_on == "change" and diff(before, after)["count"] or stop_on == "no_change" and not diff(before, after)["count"] \
-                or callable(stop_on) and stop_on(before, after):
+        after = _H[-1]
+        if stop_on == "change" and diff(before["grids"][-1], after["grids"][-1])["count"] or \
+                stop_on == "no_change" and not diff(before["grids"][-1], after["grids"][-1])["count"] or \
+                callable(stop_on) and stop_on(_frame(before), _frame(after)):
             reason = "stop_on"
             break
-    return {"executed_count": executed, "requested": len(items), "stopped_early": reason is not None, "stop_reason": reason, "lines": lines}
+    latest = _H[-1]["raw"]
+    summary = {"executed_count": executed, "requested": len(items), "stopped_early": reason is not None,
+               "stop_reason": reason, "level": latest["level"], "levels_completed": latest["levels_completed"],
+               "win_levels": latest.get("win_levels", 0), "state": latest["state"], "level_changed": level_changed,
+               "reset": reset, "valid_actions": list(_S["valid"]), "lines": lines}
+    _S["last_result"] = summary
+    _bind()
+    return summary
 
 
 def _file(op, path, data=None):
@@ -216,7 +301,8 @@ def _open(path, mode="r", *args, **kwargs):
 
 
 def _cell(req):
-    _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"], last_result=req["last_action_result"], numeric=req["numeric_grid"])
+    _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
+              last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[])
     if req["reset_history"]:
         _H.clear()
         _T.clear()
@@ -225,23 +311,31 @@ def _cell(req):
     if _S["ns"] is None or req["reset_namespace"]:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions, "segment": segment,
-                    "diff": diff, "ascii": ascii, "frames_of": frames_of}
+                    "diff": diff, "ascii": ascii, "show": show, "frames_of": frames_of}
+        if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
+            sys.meta_path.append(_WorkFinder())
     _bind()
+    ns = _S["ns"]
+    ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     try:
         tree = ast.parse(req["code"], "<python>")
         last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            exec(compile(tree, "<python>", "exec"), _S["ns"])
+            exec(compile(tree, "<python>", "exec"), ns)
             if last is not None:
-                value = eval(compile(ast.Expression(last.value), "<python>", "eval"), _S["ns"])
+                value = eval(compile(ast.Expression(last.value), "<python>", "eval"), ns)
+            if ns.get("result") is not None:
+                value = ns["result"]
     except BaseException as problem:
         frames = [f for f in traceback.extract_tb(problem.__traceback__) if f.filename == "<python>"]
         error = "".join(traceback.format_list(frames)) + "%s: %s" % (type(problem).__name__, problem)
     text = out.getvalue()
     if value is not None:
-        text += repr(value)
-    return {"text": text[:200000], "error": error}
+        shown = value if isinstance(value, str) else repr(value)
+        text += ("" if not text or text.endswith("\n") else "\n") + shown
+    return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
+            "last_result": dict(_S["last_result"])}
 
 
 _req = input

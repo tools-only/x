@@ -16,7 +16,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   const game: any = { level: 1, levels_completed: 0, win_levels: 3, state: "NOT_FINISHED", step: 0, actions_used: 0, budget_left: 40,
     valid_actions: ["UP", "RESET"], frame: grid };
   const python: any = { next: null, runs: 0, init: async () => game, state: () => game, close() {},
-    async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, metrics: {} }; } };
+    async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {} }; } };
   const root = mkdtempSync(join(tmpdir(), "layered-"));
   installLayered(pi, python, { scale: 4, gridLines: false, reminder: false, contextTarget: 0, idleContinuations: 2, segmentSeconds: 600,
     segmentTokens: 100000, maxActionsPerCall: 16, outputTokens: 0, root, ...overrides } as any);

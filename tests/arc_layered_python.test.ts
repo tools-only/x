@@ -129,3 +129,60 @@ test("a timed-out call ends the kernel; the next call restores history but not n
   assert.match(timedOut.text, /compute time.*\nThe Python kernel ended/s);
   assert.match(after.text, /^False 2 UP/);
 });
+
+test("system frame data is copied out, so a model edit cannot corrupt it", async () => {
+  const { python } = await session();
+  const out = await python.run("copy = current_frame.grid\ncopy[0][0] = 15\nprint(current_frame.grid[0][0])\ncurrent_frame._grids = ()\n");
+  const next = await python.run("print(current_frame.grid[0][0], 2 in [cell for row in current_frame.grid for cell in row])");
+  python.close();
+  assert.match(out.text, /^0/);
+  assert.match(next.text, /^0 True/);
+});
+
+test("a value assigned to result is returned like Duck's return slot", async () => {
+  const { python } = await session();
+  const out = await python.run("x = 1\nresult = {'answer': x + 1}\nprint('noise')");
+  python.close();
+  assert.match(out.text, /^noise\n\{'answer': 2\}$/);
+});
+
+test("show() queues at most two raw grids for the tool result", async () => {
+  const { python } = await session();
+  const out = await python.run("show(region=(0, 0, 2, 2))\nshow(current_frame, scale=2)\nprint('ok')");
+  const third = await python.run("show()\nshow()\nshow()");
+  python.close();
+  assert.equal(out.images.length, 2);
+  assert.deepEqual(out.images[0], { grid: [[0, 0], [0, 0]], scale: null });
+  assert.equal(out.images[1].scale, 2);
+  assert.match(third.text, /show\(\) queues at most 2 images per call/);
+});
+
+test("modules written under work/ and work/harness/lib can be imported", async () => {
+  const { python } = await session();
+  const first = await python.run([
+    "with open('work/world_model.py', 'w') as f: f.write('VALUE = 7\\n')",
+    "with open('work/harness/lib/helpers.py', 'w') as f: f.write('def twice(v): return v * 2\\n')",
+    "import world_model, helpers",
+    "print(world_model.VALUE, helpers.twice(3))",
+  ].join("\n"));
+  const second = await python.run([
+    "with open('work/world_model.py', 'w') as f: f.write('VALUE = 8\\n')",
+    "import importlib, world_model",
+    "print(importlib.reload(world_model).VALUE)",
+  ].join("\n"));
+  python.close();
+  assert.match(first.text, /^7 6\n/);
+  assert.match(second.text, /^8\n/);
+});
+
+test("history carries changed and hash; the batch summary lands in last_action_result", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "first = history[-1]",
+    "batch = submit_actions('UP')",
+    "print(first.changed, isinstance(first.hash, str), history[-1].changed, isinstance(history[-1].hash, str))",
+    "print(batch['executed_count'], last_action_result['executed_count'], last_action_result['stop_reason'], last_action_result['levels_completed'])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^False True True True\n1 1 None 0\n/);
+});

@@ -295,6 +295,8 @@ run 开始：system（附录 C）+ user（初始状态消息 + 最新帧图像�
 - `layered` 已实现设计文档里的单一 Python 工具、游戏状态变量、动作执行后刷新变量、唯一动作网关、最新帧图像、`World model:` 等标签携带、上下文淘汰与段内续航。
 - API 图像已按配置画 8 格网线并标出坐标；`api-research` 提示说明坐标数字表示格子位置。PNG 尺寸和无标记的 `kaggle-local` 图像分别覆盖在 extension 测试中。
 - 必要差异：Python 内核默认每局持久（设计文档决策）；`submit_actions` 默认每批最多 16 步并在终态停止；`expect` 目前只记录；Kaggle 本地 profile 的真实模型运行仍未验证。
+- 2026-11-23 晚补齐的接口缺口（变量只读重建、`result` 返回、`show()` 图像通道、`work/` 模块 import、`history[i].changed/hash`、批量汇总写入 `last_action_result`、GAME_OVER 态的 `valid_actions` 收敛为 RESET）记录在
+  [完全对齐路线图](2026-11-23-arc-layered-full-alignment-roadmap.md)，其中还列出了对齐设计 v0.4 的全部剩余开放项 O1–O13。
 
 ### 一次真实模型运行
 

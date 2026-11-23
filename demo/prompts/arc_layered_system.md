@@ -28,18 +28,22 @@ the start of every call:
   `.step`, `.state`, `.shape`.
 - `history`: every step so far; `history[i].action` and `history[i].frame`. `history[-1].frame` is the current frame, not
   the one before it. To compare before and after an action use `previous_frame` or `last_transition`
-  (`.before_frame`, `.after_frame`, `.result`). `transitions` holds all of them.
+  (`.before_frame`, `.after_frame`, `.result`). `transitions` holds all of them. `history[i].changed` says whether that
+  step moved the board and `history[i].hash` identifies the frame contents.
 - `last_action`, `last_action_result`, `valid_actions` (natural names), `valid_actions_raw`.
 - Helpers: `segment(grid)`, `diff(a, b)`, `ascii(grid, region=(r0, c0, r1, c1))`, `frames_of(step)` (every frame one
-  action produced; the last one is the result).
+  action produced; the last one is the result), `show(grid=None, region=None, scale=None)` (queues a picture you can see
+  in the tool result; at most two per call).
 - `submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False)` is the only way to act.
   `actions` is a name, a list of names, or dicts such as `{"action": "MOUSE", "x": 7, "y": 4}`. At most
   {{max_actions_per_call}} actions per call. After each action every name above is refreshed, so the same code can look
   at the result and decide what to do next. A completed level, GAME_OVER or a win stops the batch, and later
   `submit_actions` calls in that code do nothing. `stop_on="change"` or `"no_change"`, or a function
-  `(before, after) -> bool`, stops it earlier. The return value lists what each action did and why it stopped.
+  `(before, after) -> bool`, stops it earlier. The return value lists what each action did and why it stopped; the same
+  summary is in `last_action_result`. Assigning `result = ...` at the end returns that value too.
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,
-  so put code you want to keep in a file.
+  so put code you want to keep in a file. `import` finds modules you wrote under `work/` (and `work/harness/lib/`);
+  `importlib.reload(module)` picks up an edited file.
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
 ## Working method

@@ -68,11 +68,14 @@ export function installProviderRequestAdmission(pi: ExtensionAPI, root: string, 
 			const margin = configuredMargin === undefined ? Math.max(1024, Math.ceil((capacity ?? 0) * 0.05)) : positive(configuredMargin);
 			const imageCount = Number(stats.image_count);
 			const imageReserve = imageCount ? positive(process.env.PI_PROVIDER_IMAGE_TOKEN_RESERVE) : 0;
-			const textReserve = positive(stats.text_json_utf8_bytes);
+			const bytesPerToken = process.env.PI_PROVIDER_TEXT_BYTES_PER_TOKEN === undefined ? 1
+				: positive(process.env.PI_PROVIDER_TEXT_BYTES_PER_TOKEN);
+			const textBytes = positive(stats.text_json_utf8_bytes);
+			const textReserve = textBytes && bytesPerToken ? Math.ceil(textBytes / bytesPerToken) : undefined;
 			const required = capacity && output && margin && textReserve && imageReserve !== undefined
 				? textReserve + imageCount * imageReserve + output + margin : null;
 			reason = !capacity ? "context_capacity_unknown_or_invalid" : !output ? "output_envelope_unknown_or_invalid"
-				: !margin ? "context_margin_invalid" : !textReserve ? "input_measurement_invalid"
+				: !margin ? "context_margin_invalid" : !bytesPerToken ? "text_bytes_per_token_invalid" : !textReserve ? "input_measurement_invalid"
 				: imageReserve === undefined ? "image_reserve_unknown" : required! > capacity ? "context_capacity_exceeded" : undefined;
 			row = { status: reason ? "declined" : "admitted", reason: reason ?? null,
 				context_capacity: capacity ?? null, declared_model_capacity: declared ?? null,
@@ -80,7 +83,8 @@ export function installProviderRequestAdmission(pi: ExtensionAPI, root: string, 
 				input_text_token_reserve: textReserve ?? null, output_token_reserve: output ?? null,
 				image_count: imageCount, image_token_reserve_per_image: imageReserve ?? null,
 				margin_token_reserve: margin ?? null, required_token_reserve: required,
-				text_estimate_method: "one token reserved per serialized UTF-8 text/schema byte",
+				text_estimate_method: bytesPerToken === 1 ? "one token reserved per serialized UTF-8 text/schema byte"
+					: `one token reserved per ${bytesPerToken} serialized UTF-8 text/schema bytes`,
 				image_estimate_method: imageCount ? "explicit configured reserve; actual image cost unmeasured" : "no typed images",
 				tokenizer: "conservative provider-independent estimate; not actual provider usage",
 				tool_definition_count: stats.tool_definition_count, message_count: stats.message_count };

@@ -68,6 +68,9 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             pi_env.update(PI_PROVIDER_MAX_REPORTED_TOKENS=str(max_reported_tokens), PI_PROVIDER_CONTEXT_ADMISSION="enabled",
                           PI_PROVIDER_REPORTED_ADMISSION="enabled", PI_PROVIDER_TOKEN_BUDGET_ROOT=str(harness))
         pi_env.setdefault("PI_PROVIDER_IMAGE_TOKEN_RESERVE", "4096")
+        # The admission reserve of one token per serialized byte is ~3-4x the real cost and starves long layered runs;
+        # 3 bytes per token keeps the estimate conservative while leaving usable budget.
+        pi_env.setdefault("PI_PROVIDER_TEXT_BYTES_PER_TOKEN", "3")
         pi_env.update({"PI_CODING_AGENT_DIR": str(agent_dir), "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_ACTION_TOKEN": action_token,
                        "ARC_RUN_ROOT": str(root), "ARC_GAME": game, "ARC_LAYERED_CONFIG": config, "ARC_LAYERED_COUNT_CACHE": str(int(count_cache)), "ARC_LAYERED_OUTPUT_TOKENS": str(max_output_tokens),
                        "ARC_LAYERED_SEGMENT_SECONDS": str(segment_seconds), "ARC_LAYERED_SEGMENT_TOKENS": str(segment_tokens),

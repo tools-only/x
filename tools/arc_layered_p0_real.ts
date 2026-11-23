@@ -29,6 +29,11 @@ const cells = [
   "r = submit_actions(['RIGHT'] * 8, stop_on='change')\nprint(r['executed_count'], r['stop_reason'])\nprint(last_action_result)",
   "print(submit_actions('RESET')['executed_count'], submit_actions('RESET')['stop_reason'])",
   "with open('work/notes.md', 'w') as f: f.write('step %d' % current_frame.step)\nprint(open('notes.md').read(), len(transitions))",
+  "copy = current_frame.grid\ncopy[0][0] = 15\nprint('edit visible?', current_frame.grid[0][0] == 15)",
+  "result = {'changed': history[-1].changed, 'hash': history[-1].hash, 'step': current_frame.step}\nprint('noise')",
+  "print(show(region=(0, 0, 4, 4)))",
+  "with open('work/world_model.py', 'w') as f: f.write('TAG = \"wm-%d\"\\n' % current_frame.step)\nimport world_model\nprint(world_model.TAG)",
+  "print('restored?', current_frame.grid[0][0] != 15, isinstance(history[-1].hash, str))",
 ];
 for (const code of cells) {
   const outcome = await python.run(code);

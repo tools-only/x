@@ -145,7 +145,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const from = Date.now(), outcome = await python.run(params.code, signal), batch = outcome.acted, state = python.state();
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
-        level: state.level, step: state.step, metrics: outcome.metrics });
+        level: state.level, step: state.step, images: outcome.images.length, metrics: outcome.metrics });
       if (batch) {
         actedThisTurn = true;
         idle = 0;
@@ -154,7 +154,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         if (endReason) pending = batch;
         else pi.sendMessage({ customType: STATE_TYPE, content: content(batch), display: false }, { deliverAs: "steer" });
       }
-      return { content: [{ type: "text", text: outcome.text }], details: { acted: batch }, ...(endReason ? { terminate: true } : {}) };
+      const parts: Content = [{ type: "text", text: outcome.text }];
+      for (const image of outcome.images) parts.push({ type: "image", mimeType: "image/png",
+        data: framePng(image.grid, image.scale ?? options.scale, options.gridLines).toString("base64") });
+      return { content: parts, details: { acted: batch }, ...(endReason ? { terminate: true } : {}) };
     } });
 
   pi.on("before_agent_start", async () => {
