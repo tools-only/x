@@ -1,0 +1,159 @@
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
+import { TASK_PYTHON_FORMAT, taskPythonLimits, taskPythonRuntimeIdentity } from "./pi_task_python.ts";
+import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
+
+export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
+  timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean };
+export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
+  step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][] };
+export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
+  level_changed: boolean; game_over: boolean; win: boolean };
+export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; error?: string;
+  kernelRestarted?: boolean; metrics: Record<string, number> };
+
+export const COLOR_LEGEND = "W=white, w=light gray, g=gray, G=dark gray, c=charcoal, B=black, M=magenta, P=pink, " +
+  "R=red, b=blue, S=sky blue, Y=yellow, O=orange, r=dark red, N=light green, p=purple";
+const NATURAL: Record<string, string> = { ACTION1: "UP", ACTION2: "DOWN", ACTION3: "LEFT", ACTION4: "RIGHT",
+  ACTION5: "SPACE", ACTION6: "MOUSE", ACTION7: "UNDO", RESET: "RESET" };
+const RAW = Object.fromEntries(Object.entries(NATURAL).map(([raw, name]) => [name, raw]));
+const FILE_BYTES = 256 * 1024, WORK_BYTES = 4 * 1024 * 1024;
+
+export class BridgeClient {
+  constructor(private baseUrl: string, private token: string) {}
+  private async call(path: string, body?: unknown) {
+    const response = await fetch(this.baseUrl + path, body === undefined ? undefined : { method: "POST",
+      headers: { "Content-Type": "application/json", "X-ARC-Action-Token": this.token }, body: JSON.stringify(body) });
+    const data: any = await response.json();
+    if (!response.ok) throw new Error(String(data.error ?? response.status));
+    return data;
+  }
+  state() { return this.call("/state"); }
+  act(call: { action: string; x?: number; y?: number; reasoning?: string }) { return this.call("/action", call); }
+}
+
+export class LayeredPython {
+  private kernel: PythonKernel;
+  private history: Array<Record<string, unknown>> = [];
+  private sent = 0;
+  private raw: any;
+  private lastResult: Record<string, unknown> = {};
+  private lastAction?: string;
+  private workDir: string;
+
+  constructor(private bridge: BridgeClient, private config: LayeredConfig) {
+    const limits = { timeout_ms: config.timeoutMs };
+    this.kernel = new PythonKernel({ format: TASK_PYTHON_FORMAT, limits, effective_limits: taskPythonLimits(limits),
+      runtime: taskPythonRuntimeIdentity(), source: readFileSync(new URL("./arc_layered_prelude.py", import.meta.url), "utf8") });
+    this.workDir = resolve(config.workDir);
+    mkdirSync(this.workDir, { recursive: true });
+  }
+
+  private entry(action: string, raw: any) {
+    return { action, frames: raw.frames, level: Math.min(raw.levels_completed + 1, raw.win_levels), step: raw.action_budget?.total_used ?? 0,
+      state: raw.state, levels_completed: raw.levels_completed };
+  }
+  private valid(raw: any) {
+    return (raw.agent_available_actions as string[]).filter(name => this.config.undo || name !== "ACTION7");
+  }
+
+  async init() {
+    this.raw = await this.bridge.state();
+    this.history = [this.entry("", this.raw)];
+    this.kernel.prewarm();
+    return this.state();
+  }
+
+  state(): LayeredState {
+    const raw = this.raw, budget = raw.action_budget ?? {};
+    return { level: Math.min(raw.levels_completed + 1, raw.win_levels), levels_completed: raw.levels_completed, win_levels: raw.win_levels,
+      state: raw.state, step: budget.total_used ?? 0, actions_used: budget.total_used ?? 0,
+      budget_left: budget.total_maximum == null ? undefined : budget.total_maximum - budget.total_used,
+      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1) };
+  }
+
+  private async act(request: KernelRequest, batch: ActionBatch & { halt?: string }) {
+    const call = request.call as { action: string; x?: number; y?: number; reasoning?: string };
+    const name = call.action, raw = RAW[name] ?? name;
+    const refuse = (stopped: string) => { batch.stop_reason ??= stopped; return { stopped }; };
+    if (batch.halt) return refuse(`previous_${batch.halt}`);
+    if (batch.executed >= this.config.maxActionsPerCall) return refuse(`the limit of ${this.config.maxActionsPerCall} actions per call was reached`);
+    if (raw === "ACTION7" && !this.config.undo) return refuse("UNDO is not available");
+    if (this.raw.state === "GAME_OVER" && raw !== "RESET") return refuse("the game is over: only RESET is allowed");
+    if (raw === "RESET" && this.lastAction === "RESET" && !this.config.competition && !request.confirm_full_reset)
+      return refuse("a second consecutive RESET restarts the whole game: pass confirm_full_reset=True if you mean it");
+    const payload: Record<string, unknown> = { action: raw };
+    if (raw === "ACTION6") Object.assign(payload, { x: call.x, y: call.y });
+    if (call.reasoning) payload.reasoning = call.reasoning;
+    let after: any;
+    try { after = await this.bridge.act(payload as any); } catch (error) { return refuse(`refused: ${(error as Error).message}`); }
+    const before = this.raw;
+    this.raw = after;
+    this.lastAction = raw;
+    const label = raw === "ACTION6" ? `MOUSE(x=${call.x},y=${call.y})` : name;
+    const entry = { ...this.entry(label, after), expect: request.expect ?? null };
+    this.history.push(entry);
+    this.sent = this.history.length;
+    const levelChanged = after.levels_completed !== before.levels_completed;
+    const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
+      levels_completed: after.levels_completed, state: after.state, level_changed: levelChanged,
+      game_over: after.state === "GAME_OVER", win: after.state === "WIN", step: entry.step };
+    this.lastResult = result;
+    const line = `${label}: ${result.changed_cells} cells changed, level ${entry.level}, ${after.state}`;
+    batch.executed += 1; batch.actions.push(label); batch.lines.push(line);
+    batch.level_changed ||= levelChanged; batch.game_over ||= result.game_over; batch.win ||= result.win;
+    batch.halt = result.win ? "win" : result.game_over ? "game_over" : levelChanged ? "level_change" : undefined;
+    if (batch.halt) batch.stop_reason ??= batch.halt;
+    return { entry, result, line, halt: batch.halt, valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(after) };
+  }
+
+  private file(request: KernelRequest) {
+    const relative = String(request.path).replace(/\\/g, "/").replace(/^(\.\/|\/)?work\//, "");
+    const target = resolve(this.workDir, relative);
+    if (!target.startsWith(this.workDir + sep)) return { error: `only files under work/ are available: ${request.path}` };
+    if (request.op === "read") return existsSync(target) ? { data: readFileSync(target, "utf8") } : { error: `no such file: ${request.path}`, missing: true };
+    const data = String(request.data ?? ""), bytes = Buffer.byteLength(data);
+    if (bytes > FILE_BYTES) return { error: `a work/ file is limited to ${FILE_BYTES} bytes (got ${bytes})` };
+    const used = (readdirSync(this.workDir, { recursive: true }) as string[]).map(name => join(this.workDir, name))
+      .filter(path => path !== target && statSync(path).isFile()).reduce((sum, path) => sum + statSync(path).size, 0);
+    if (used + bytes > WORK_BYTES) return { error: `work/ is limited to ${WORK_BYTES} bytes in total` };
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, data, "utf8");
+    return { data: null };
+  }
+
+  async run(code: string, signal?: AbortSignal): Promise<PythonOutcome> {
+    if (!this.kernel.alive) this.sent = 0;
+    const batch: ActionBatch & { halt?: string } = { executed: 0, actions: [], lines: [], level_changed: false, game_over: false, win: false };
+    let attempted = false;
+    const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
+      reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
+      valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult };
+    this.sent = this.history.length;
+    const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
+    let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {};
+    try {
+      const run = await this.kernel.run(request, onRequest, signal);
+      error = run.result.error ?? undefined;
+      text = run.result.text + (error ? (run.result.text ? "\n" : "") + error : "");
+      metrics = { ...run.metrics };
+    } catch (problem) {
+      error = String((problem as Error).message ?? problem);
+      kernelRestarted = true;
+      text = `${error}\nThe Python kernel ended and the next call starts a new one: names you defined are gone; files in work/ remain.`;
+    }
+    const truncated = text.length > this.config.outputChars;
+    if (truncated) text = `${text.slice(0, this.config.outputChars)}\n... [truncated ${text.length - this.config.outputChars} chars]`;
+    if (attempted) {
+      const state = this.state();
+      text += `\n[env] executed ${batch.executed}${batch.actions.length ? ` (${batch.actions.join(" ")})` : ""}` +
+        `${batch.stop_reason ? `, stopped: ${batch.stop_reason}` : ""} | level ${state.level}/${state.win_levels} ${state.state}` +
+        ` | step ${state.step}${state.budget_left === undefined ? "" : `, budget left ${state.budget_left}`} | valid: ${state.valid_actions.join(" ")}`;
+    }
+    const { halt: _halt, ...acted } = batch;
+    return { text, truncated, acted: batch.executed ? acted : null, ...(error ? { error } : {}),
+      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed } };
+  }
+
+  close() { this.kernel.close(); }
+}

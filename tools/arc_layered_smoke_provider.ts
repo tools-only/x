@@ -1,0 +1,55 @@
+/** Offline scripted provider for the layered profile: emits python calls; every request it receives is recorded in
+ * <ARC_RUN_ROOT>/smoke-requests.jsonl so that the run can show what the model was actually sent. */
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transport.ts";
+
+const ACT = "a = [v for v in valid_actions if v not in ('RESET', 'MOUSE')] or [{'action': 'MOUSE', 'x': 10, 'y': 10}]\n" +
+  "before = current_frame\nr = submit_actions(a[:2])\nprint(r['lines'], 'refreshed:', before is not current_frame)";
+const SCRIPT: Array<{ text?: string; code?: string; stop?: "length"; filler?: boolean }> = [
+  { code: "seg = current_frame.segmentation\nprint(len(seg['nodes']), valid_actions)" },
+  { text: "World model: first guess\nPlan: try the first action", code: ACT },
+  { text: "I will think about it." },
+  { text: "World model: revised guess", code: ACT },
+  { text: "cut off", stop: "length" },
+  { text: "Cross-level notes: kept after the length stop", code: ACT },
+  { text: "x".repeat(60000), code: "print('y' * 9000)" },
+  { code: ACT },
+  { code: ACT },
+];
+
+export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
+  let step = 0;
+  pi.registerProvider("offline-arc-layered-smoke", {
+    api: "openai-completions", apiKey: "offline", baseUrl: "http://unused.invalid",
+    models: [{ id: "scripted", name: "scripted", reasoning: false, input: ["text", "image"], contextWindow: 175000, maxTokens: 16384,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    streamSimple: scriptedProviderTransport((model, context) => {
+      const stream = createAssistantMessageEventStream();
+      const row = SCRIPT[step] ?? { text: "done" };
+      step += 1;
+      const messages: any[] = context.messages ?? [], system = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
+      const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];
+      const talk = messages.filter(message => message.role !== "system");
+      const parts = (message: any) => typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+      const users = talk.filter(message => message.role === "user");
+      appendFileSync(join(process.env.ARC_RUN_ROOT!, "smoke-requests.jsonl"), JSON.stringify({ step, tools: tools.map(tool => tool.name),
+        system_start: system.slice(0, 80), system_chars: system.length, roles: talk.map(message => message.role),
+        images: talk.flatMap(parts).filter((part: any) => part.type === "image").length,
+        calls: talk.filter(m => m.role === "assistant").flatMap(m => m.content.filter((p: any) => p.type === "toolCall").map((p: any) => p.id)),
+        results: talk.filter(m => m.role === "toolResult").map(m => m.toolCallId),
+        last_user: users.length ? parts(users.at(-1)).map((p: any) => p.type === "text" ? p.text : "[image]").join("\n") : null }) + "\n");
+      const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [],
+        stopReason: row.stop ?? (row.code ? "toolUse" : "stop"), timestamp: Date.now(),
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      stream.push({ type: "start", partial: output });
+      if (row.text) output.content.push({ type: "text", text: row.text });
+      if (row.code) output.content.push({ type: "toolCall", id: `call-${step}`, name: "python", arguments: { code: row.code } });
+      stream.push({ type: "done", reason: output.stopReason as any, message: output });
+      stream.end();
+      return stream;
+    }),
+  });
+}
