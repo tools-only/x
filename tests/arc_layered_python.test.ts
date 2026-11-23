@@ -186,3 +186,37 @@ test("history carries changed and hash; the batch summary lands in last_action_r
   python.close();
   assert.match(out.text, /^False True True True\n1 1 None 0\n/);
 });
+
+test("an expect miss stops the batch, marks surprise and tracks the hit rate", async () => {
+  const { python } = await session();
+  const hit = await python.run("result = submit_actions('UP', expect=(1, 3))");
+  assert.match(hit.text, /'surprise': False/);
+  assert.match(hit.text, /'expect_hits': '1\/1'/);
+  assert.equal(hit.acted?.surprise, undefined);
+  const miss = await python.run("result = submit_actions(['UP', 'UP'], expect=(5, 9))");
+  assert.match(miss.text, /SURPRISE: did not match expect/);
+  assert.match(miss.text, /'stop_reason': 'surprise'/);
+  assert.match(miss.text, /'expect_hits': '1\/2'/);
+  assert.equal(miss.acted?.surprise, true);
+  assert.equal(miss.acted?.expect_hits, "1/2");
+  const invalid = await python.run("try:\n    submit_actions('UP', expect='big change')\nexcept ValueError:\n    print('rejected')");
+  python.close();
+  assert.match(invalid.text, /rejected/);
+});
+
+test("graph helpers summarise seen states; known no-ops are skipped unless forced", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "submit_actions(['UP', 'DOWN'])",
+    "g = graph_summary()",
+    "print(g['states'], g['edges'], g['frontier_count'], replay_to(current_frame.hash), replay_to('ffffffff'))",
+  ].join("\n"));
+  assert.match(out.text, /^2 2 2 \[\] None/);
+  const skip = await python.run("result = submit_actions(['DOWN', 'UP'], skip_known_noops=True)");
+  assert.match(skip.text, /DOWN: skipped, a known no-op/);
+  assert.match(skip.text, /'executed_count': 1/);
+  assert.match(skip.text, /'skipped_noops': 1/);
+  const route = await python.run("print(bfs_graph(lambda f: f.grid[5][3] == 2))\nprint(submit_actions('DOWN', force=True, skip_known_noops=True)['executed_count'])");
+  python.close();
+  assert.match(route.text, /^\['UP'\]\n1/);
+});

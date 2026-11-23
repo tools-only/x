@@ -167,6 +167,67 @@ def show(value=None, region=None, scale=None):
     return "show: image queued"
 
 
+def _edges():
+    edges, reps = {}, {}
+    for t in _T:
+        reps.setdefault(t["before"]["hash"], t["before"])
+        reps.setdefault(t["after"]["hash"], t["after"])
+        edges.setdefault(t["before"]["hash"], {})[t["action"]] = t["after"]["hash"]
+    if _H:
+        reps.setdefault(_H[-1]["hash"], _H[-1])
+    return edges, reps
+
+
+def _call_of(label):
+    if label.startswith("MOUSE("):
+        parts = dict(piece.split("=") for piece in label[6:-1].split(","))
+        return {"action": "MOUSE", "x": int(parts["x"]), "y": int(parts["y"])}
+    return label
+
+
+def graph_summary():
+    edges, reps = _edges()
+    moves = [name for name in _S["valid"] if name != "RESET"]
+    frontier = [h for h in reps if set(moves) - set(edges.get(h, {}))]
+    return {"states": len(reps), "edges": sum(len(out) for out in edges.values()),
+            "frontier_count": len(frontier), "frontier": frontier[:20], "current": _H[-1]["hash"]}
+
+
+def _bfs(stop):
+    edges, reps = _edges()
+    start = _H[-1]["hash"]
+    seen, queue = {start: []}, [start]
+    while queue:
+        here = queue.pop(0)
+        if stop(here, reps):
+            return [_call_of(label) for label in seen[here]]
+        for label, there in edges.get(here, {}).items():
+            if there not in seen:
+                seen[there] = seen[here] + [label]
+                queue.append(there)
+    return None
+
+
+def bfs_graph(goal):
+    return _bfs(lambda h, reps: bool(goal(_frame(reps[h]))))
+
+
+def replay_to(target_hash):
+    return _bfs(lambda h, reps: h == target_hash)
+
+
+def _expect_ok(expect, before, after, result):
+    if callable(expect):
+        try:
+            return bool(expect(_frame(before), _frame(after)))
+        except Exception:
+            return False
+    if isinstance(expect, int) and not isinstance(expect, bool):
+        return after["raw"]["levels_completed"] - before["raw"]["levels_completed"] == expect
+    lo, hi = expect
+    return lo <= result.get("changed_cells", 0) <= hi
+
+
 class _WorkLoader:
     def __init__(self, name, path, package):
         self.name, self.path, self.package = name, path, package
@@ -225,9 +286,16 @@ def _bind():
               valid_actions=list(_S["valid"]), valid_actions_raw=list(_S["valid_raw"]))
 
 
-def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False):
+def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
+                   skip_known_noops=False, force=False):
+    if expect is not None and not (callable(expect) or (isinstance(expect, int) and not isinstance(expect, bool))
+                                   or (isinstance(expect, (tuple, list)) and len(expect) == 2)):
+        raise ValueError("expect must be a (lo, hi) changed-cell range, an int levels_completed increase, "
+                         "or a callable (before, after) -> bool")
     items = [actions] if isinstance(actions, (str, dict)) else list(actions)
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
+    skipping = (skip_known_noops or _S.get("skip_noops")) and not force
+    skipped, surprise = 0, False
     for item in items:
         call = {"action": item} if isinstance(item, str) else dict(item)
         call["action"] = str(call["action"]).upper()
@@ -238,6 +306,11 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         if reasoning:
             call["reasoning"] = str(reasoning)
         before = _H[-1]
+        label = call["action"] if call["action"] != "MOUSE" else "MOUSE(x=%s,y=%s)" % (call.get("x"), call.get("y"))
+        if skipping and _edges()[0].get(before["hash"], {}).get(label) == before["hash"]:
+            lines.append("%s: skipped, a known no-op in this state (force=True to send)" % label)
+            skipped += 1
+            continue
         reply = _rpc({"t": "act", "call": call, "confirm_full_reset": bool(confirm_full_reset), "expect": repr(expect) if expect is not None else None})
         if "stopped" in reply:
             reason = reply["stopped"]
@@ -249,6 +322,16 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         reset = reset or call["action"] == "RESET"
         level_changed = level_changed or _H[-1]["raw"]["levels_completed"] != before["raw"]["levels_completed"]
         lines.append(reply["line"])
+        if expect is not None:
+            hit = _expect_ok(expect, before, _H[-1], reply["result"])
+            log = _S.setdefault("expect_log", [])
+            log.append(bool(hit))
+            del log[:-10]
+            if not hit:
+                surprise = True
+                reason = "surprise"
+                lines[-1] += "  <- SURPRISE: did not match expect"
+                break
         if reply.get("halt"):
             reason = reply["halt"]
             break
@@ -259,10 +342,12 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             reason = "stop_on"
             break
     latest = _H[-1]["raw"]
+    log = _S.get("expect_log") or []
     summary = {"executed_count": executed, "requested": len(items), "stopped_early": reason is not None,
                "stop_reason": reason, "level": latest["level"], "levels_completed": latest["levels_completed"],
                "win_levels": latest.get("win_levels", 0), "state": latest["state"], "level_changed": level_changed,
-               "reset": reset, "valid_actions": list(_S["valid"]), "lines": lines}
+               "reset": reset, "valid_actions": list(_S["valid"]), "lines": lines, "skipped_noops": skipped,
+               "surprise": surprise, "expect_hits": "%d/%d" % (sum(log), len(log)) if log else None}
     _S["last_result"] = summary
     _bind()
     return summary
@@ -302,7 +387,8 @@ def _open(path, mode="r", *args, **kwargs):
 
 def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
-              last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[])
+              last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
+              skip_noops=bool(req.get("skip_noops")))
     if req["reset_history"]:
         _H.clear()
         _T.clear()
@@ -311,7 +397,8 @@ def _cell(req):
     if _S["ns"] is None or req["reset_namespace"]:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions, "segment": segment,
-                    "diff": diff, "ascii": ascii, "show": show, "frames_of": frames_of}
+                    "diff": diff, "ascii": ascii, "show": show, "frames_of": frames_of,
+                    "graph_summary": graph_summary, "bfs_graph": bfs_graph, "replay_to": replay_to}
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
             sys.meta_path.append(_WorkFinder())
     _bind()

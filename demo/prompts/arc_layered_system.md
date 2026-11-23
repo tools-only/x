@@ -34,6 +34,9 @@ the start of every call:
 - Helpers: `segment(grid)`, `diff(a, b)`, `ascii(grid, region=(r0, c0, r1, c1))`, `frames_of(step)` (every frame one
   action produced; the last one is the result), `show(grid=None, region=None, scale=None)` (queues a picture you can see
   in the tool result; at most two per call).
+- Graph helpers over everything you have seen: `graph_summary()` (states, edges, and the frontier of states with
+  untried actions), `bfs_graph(goal)` (shortest known action sequence to a frame where `goal(frame)` is true),
+  `replay_to(hash)` (action sequence to a previously seen frame hash; returned, not executed).
 - `submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False)` is the only way to act.
   `actions` is a name, a list of names, or dicts such as `{"action": "MOUSE", "x": 7, "y": 4}`. At most
   {{max_actions_per_call}} actions per call. After each action every name above is refreshed, so the same code can look
@@ -41,6 +44,12 @@ the start of every call:
   `submit_actions` calls in that code do nothing. `stop_on="change"` or `"no_change"`, or a function
   `(before, after) -> bool`, stops it earlier. The return value lists what each action did and why it stopped; the same
   summary is in `last_action_result`. Assigning `result = ...` at the end returns that value too.
+- Say what you expect before acting: `expect=(lo, hi)` is a changed-cell range per action, an int is the
+  `levels_completed` increase, a callable `(before, after) -> bool` is a prediction. A miss stops the batch and is
+  reported as SURPRISE; your recent hit rate is shown in the state message. Use it on every batch you are confident
+  about: it turns wrong beliefs into signals instead of wasted actions.
+- `submit_actions(..., skip_known_noops=True)` skips actions already proven to do nothing in the current state
+  (`force=True` sends them anyway).
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,
   so put code you want to keep in a file. `import` finds modules you wrote under `work/` (and `work/harness/lib/`);
   `importlib.reload(module)` picks up an edited file.
@@ -50,10 +59,15 @@ the start of every call:
 1. Look first. Find the objects with the segmentation, check what changed after the last action, and read only small
    regions as text.
 2. Build a model: what each action does, what the goal seems to be, and which observations support each belief.
-3. Once the goal is clear, search for a route inside your model in Python (BFS or similar) instead of walking it by
-   hand in the game.
-4. Send sequences you trust in one batch. After a level change or GAME_OVER, look at the new board before acting again.
-5. When a level is done, write two or three lines about what carried over.
+3. When you think you know the dynamics, write them into `work/world_model.py` as `predict(frame, action) -> grid` (or a
+   comparable interface) plus a `test_world_model(transitions)` that replays every recorded transition and compares your
+   prediction with what actually happened. Run it. Fix the model until it passes.
+4. Only search for routes inside a model that passed its back-test: BFS over predicted states, or `bfs_graph` over states
+   you have really seen. Walking the game by hand is the expensive fallback, not the default.
+5. Send sequences you trust in one batch, with an `expect`. A SURPRISE means the model is wrong somewhere: go back to
+   step 3 and re-test before acting further. After a level change or GAME_OVER, look at the new board before acting again.
+6. When a level is done, write two or three lines about what carried over, and re-run the back-test on the new level
+   before trusting the old model.
 
 ## Traps
 - Bars or strips along the edge of the board are usually a HUD or a move/time counter, not something to click or reach.

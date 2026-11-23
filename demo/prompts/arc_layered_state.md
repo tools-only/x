@@ -4,6 +4,7 @@
 Level {{level}} of {{win_levels}} | {{state}} | step {{step}} | actions used {{actions_used}}{{budget}}
 Valid actions: {{valid}}
 {{memory}}
+{{notebook}}
 The image shows the latest frame.
 ## reminder
 Use `python` to look at `current_frame.segmentation` and compare with `previous_frame`, then act with

@@ -4,11 +4,13 @@ import { TASK_PYTHON_FORMAT, taskPythonLimits, taskPythonRuntimeIdentity } from 
 import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
 
 export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
-  timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean };
+  timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean;
+  skipNoops?: boolean };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
-  step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][] };
+  step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
+  stale_steps: number };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
-  level_changed: boolean; game_over: boolean; win: boolean };
+  level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number> };
@@ -19,6 +21,12 @@ const NATURAL: Record<string, string> = { ACTION1: "UP", ACTION2: "DOWN", ACTION
   ACTION5: "SPACE", ACTION6: "MOUSE", ACTION7: "UNDO", RESET: "RESET" };
 const RAW = Object.fromEntries(Object.entries(NATURAL).map(([raw, name]) => [name, raw]));
 const FILE_BYTES = 256 * 1024, WORK_BYTES = 4 * 1024 * 1024;
+
+const hashGrid = (grid: number[][]) => {
+  let value = 2166136261;
+  for (const row of grid) for (const cell of row) value = Math.imul(value ^ cell, 16777619) >>> 0;
+  return value.toString(16).padStart(8, "0");
+};
 
 export class BridgeClient {
   constructor(private baseUrl: string, private token: string) {}
@@ -41,6 +49,8 @@ export class LayeredPython {
   private lastResult: Record<string, unknown> = {};
   private lastAction?: string;
   private workDir: string;
+  private seenHashes = new Set<string>();
+  private stale = 0;
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -62,6 +72,7 @@ export class LayeredPython {
   async init() {
     this.raw = await this.bridge.state();
     this.history = [this.entry("", this.raw)];
+    this.seenHashes.add(hashGrid(this.raw.frames.at(-1)));
     this.kernel.prewarm();
     return this.state();
   }
@@ -71,7 +82,7 @@ export class LayeredPython {
     return { level: Math.min(raw.levels_completed + 1, raw.win_levels), levels_completed: raw.levels_completed, win_levels: raw.win_levels,
       state: raw.state, step: budget.total_used ?? 0, actions_used: budget.total_used ?? 0,
       budget_left: budget.total_maximum == null ? undefined : budget.total_maximum - budget.total_used,
-      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1) };
+      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale };
   }
 
   private async act(request: KernelRequest, batch: ActionBatch & { halt?: string }) {
@@ -92,6 +103,9 @@ export class LayeredPython {
     const before = this.raw;
     this.raw = after;
     this.lastAction = raw;
+    const seen = hashGrid(after.frames.at(-1));
+    if (this.seenHashes.has(seen)) this.stale += 1;
+    else { this.seenHashes.add(seen); this.stale = 0; }
     const label = raw === "ACTION6" ? `MOUSE(x=${call.x},y=${call.y})` : name;
     const entry = { ...this.entry(label, after), expect: request.expect ?? null };
     this.history.push(entry);
@@ -130,7 +144,8 @@ export class LayeredPython {
     let attempted = false;
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
-      valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult };
+      valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
+      skip_noops: !!this.config.skipNoops };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
@@ -155,6 +170,11 @@ export class LayeredPython {
         ` | step ${state.step}${state.budget_left === undefined ? "" : `, budget left ${state.budget_left}`} | valid: ${state.valid_actions.join(" ")}`;
     }
     const { halt: _halt, ...acted } = batch;
+    const lastSummary: any = this.lastResult;
+    if (batch.executed && lastSummary && typeof lastSummary === "object") {
+      if (lastSummary.surprise) acted.surprise = true;
+      if (lastSummary.expect_hits) acted.expect_hits = lastSummary.expect_hits;
+    }
     return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
       ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed } };
   }

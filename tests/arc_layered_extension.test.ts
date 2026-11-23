@@ -3,27 +3,27 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { evict, extractTags, framePng, installLayered, MEMORY_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
+import { compactHistory, evict, extractTags, fold, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
 
 const grid = Array.from({ length: 64 }, () => Array(64).fill(0));
 
 function setup(overrides: Record<string, unknown> = {}) {
-  const handlers: Record<string, any> = {}, sent: any[] = [], entries: any[] = [];
-  let tool: any;
-  const pi: any = { on: (name: string, handler: any) => { handlers[name] = handler; }, registerTool: (definition: any) => { tool = definition; },
+  const handlers: Record<string, any> = {}, sent: any[] = [], entries: any[] = [], tools: Record<string, any> = {};
+  const pi: any = { on: (name: string, handler: any) => { handlers[name] = handler; }, registerTool: (definition: any) => { tools[definition.name] = definition; },
     sendMessage: (message: any, options: any) => sent.push({ message, options }),
     appendEntry: (type: string, data: any) => entries.push({ type, data }) };
   const game: any = { level: 1, levels_completed: 0, win_levels: 3, state: "NOT_FINISHED", step: 0, actions_used: 0, budget_left: 40,
-    valid_actions: ["UP", "RESET"], frame: grid };
+    valid_actions: ["UP", "RESET"], frame: grid, stale_steps: 0 };
   const python: any = { next: null, runs: 0, init: async () => game, state: () => game, close() {},
     async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {} }; } };
-  const root = mkdtempSync(join(tmpdir(), "layered-"));
+  const root = (overrides.root as string) ?? mkdtempSync(join(tmpdir(), "layered-"));
   installLayered(pi, python, { scale: 4, gridLines: false, reminder: false, contextTarget: 0, idleContinuations: 2, segmentSeconds: 600,
-    segmentTokens: 100000, maxActionsPerCall: 16, outputTokens: 0, root, ...overrides } as any);
+    segmentTokens: 100000, maxActionsPerCall: 16, outputTokens: 0, root, stuckAfter: 8, foldAfter: 3, compactMargin: 16384,
+    notebook: false, ...overrides } as any);
   const rows = (kind: string) => readFileSync(join(root, "harness", "layered.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line))
     .filter(row => row.kind === kind);
-  return { handlers, sent, entries, game, python, rows, tool: () => tool,
-    call: () => tool.execute("id", { code: "x" }, undefined, undefined, {}) };
+  return { handlers, sent, entries, game, python, rows, root, tools, tool: () => tools.python,
+    call: () => tools.python.execute("id", { code: "x" }, undefined, undefined, {}) };
 }
 const batch = (extra = {}) => ({ executed: 12, actions: Array(12).fill("UP"), lines: [], level_changed: false, game_over: false, win: false, ...extra });
 const say = (text: string, extra = {}) => ({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }],
@@ -175,4 +175,80 @@ test("frames are scaled PNGs", () => {
   assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [528, 524]);
   const plain = framePng(grid, 4, false);
   assert.deepEqual([plain.readUInt32BE(16), plain.readUInt32BE(20)], [grid[0].length * 4, grid.length * 4]);
+});
+
+test("stuck steps raise an escalating STUCK event", async () => {
+  const { handlers, game } = setup();
+  game.stale_steps = 8;
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 8 steps without a new state\. Change strategy\./);
+  game.stale_steps = 17;
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 17 steps[\s\S]*Enumerate what you have not tried/);
+  game.stale_steps = 40;
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 40 steps[\s\S]*change the approach/);
+});
+
+test("a surprise batch is announced with the running hit rate", async () => {
+  const { handlers, sent, python, call } = setup();
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  python.next = batch({ surprise: true, expect_hits: "7/10", stop_reason: "surprise" });
+  await call();
+  const text = textOf(sent[0].message.content);
+  assert.match(text, /SURPRISE: the last action did not match expect/);
+  assert.match(text, /Expectations: 7\/10 recent predictions held/);
+});
+
+test("folding collapses old tool results to their env line and strips their images", () => {
+  const block = (id: string, text: string) => [{ role: "user", content: [{ type: "text", text: id }] },
+    { role: "assistant", content: [{ type: "toolCall", id, name: "python", arguments: {} }] },
+    { role: "toolResult", toolCallId: id, content: [{ type: "text", text }, { type: "image", data: "x", mimeType: "image/png" }] }];
+  const messages = [...block("1", "noise\n[env] executed 1 | level 1"), ...block("2", "only noise"), ...block("3", "recent")];
+  const { messages: out, folded } = fold(messages, 1);
+  assert.equal(folded, 3);
+  assert.match(out[2].content[0].text, /^\[env\] executed 1 \| level 1\n\[folded \d+ chars\]$/);
+  assert.equal(out[5].content[0].text, "only noise");
+  assert.equal(out[5].content.length, 1);
+  assert.equal(out[2].content.length, 1);
+  assert.deepEqual(out[8], messages[8]);
+  assert.equal(fold(messages, 0).folded, 0);
+});
+
+test("near the window the history is compacted into one summary message plus the last block", async () => {
+  const { handlers, rows, root } = setup({ contextTarget: 1e9 });
+  await handlers.before_agent_start({});
+  handlers.message_end(say("World model: gray walls block movement"));
+  const block = (text: string) => [{ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text }] },
+    { role: "assistant", content: [{ type: "text", text: "t".repeat(400) }] }];
+  const messages = [...block("one"), ...block("two"), ...block("three")];
+  const out = handlers.context({ messages }, { model: { contextWindow: 200 } }).messages;
+  assert.equal(out.length, 3);
+  assert.match(out[0].content[0].text, /^Earlier history was compacted away[\s\S]*World model: gray walls[\s\S]*Progress: level 1 of 3/);
+  assert.equal(out[1].content[0].text, "three");
+  assert.equal(rows("compact").length, 1);
+  const snapshot = readFileSync(join(root, "harness", "context.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(snapshot.at(-1).messages.length, 3);
+  assert.equal(typeof snapshot.at(-1).total_estimate, "number");
+  assert.equal(compactHistory([{ role: "user", content: [] }], "s"), null);
+});
+
+test("the notebook tool patches sections, persists them and the state message carries them", async () => {
+  const { handlers, tools, entries } = setup({ notebook: true });
+  await tools.notebook.execute("id", { op: "replace", section: "controls", text: "UP moves the cursor" });
+  await tools.notebook.execute("id", { op: "append", section: "controls", text: "SPACE confirms" });
+  const bad = await tools.notebook.execute("id", { op: "replace", section: "nonsense", text: "x" });
+  assert.match(bad.content[0].text, /Unknown section/);
+  assert.equal(entries.filter(entry => entry.type === NOTEBOOK_TYPE).length, 2);
+  const opened = await handlers.before_agent_start({});
+  assert.match(textOf(opened.message.content), /controls: UP moves the cursor\nSPACE confirms/);
+  await tools.notebook.execute("id", { op: "delete", section: "controls" });
+  assert.doesNotMatch(textOf((await handlers.before_agent_start({})).message.content), /UP moves the cursor/);
+});
+
+test("memory survives a process restart through memory.json", async () => {
+  const first = setup();
+  await first.handlers.before_agent_start({});
+  first.handlers.message_end(say("World model: two keys open two doors"));
+  const second = setup({ root: first.root });
+  const opened = await second.handlers.before_agent_start({});
+  assert.match(textOf(opened.message.content), /World model: two keys open two doors/);
 });

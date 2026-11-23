@@ -8,7 +8,10 @@ in the same session. Design: docs/plans/2026-11-23-arc-layered-duck-aligned-dev-
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import json
+import subprocess
 import time
 from collections import Counter
 from pathlib import Path
@@ -27,12 +30,51 @@ MAX_PROVIDER_ERRORS = 3
 MAX_IDLE_SEGMENTS = 2
 
 
+def _scan_work(root: Path, harness: Path, segment: int, seen: dict[str, str]) -> tuple[int, list[str]]:
+    """Record model-authored work/ file changes at a segment boundary; report files that do not parse."""
+    work, changes, errors = root / "work", 0, []
+    for path in sorted(work.rglob("*.py")) if work.is_dir() else []:
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        if seen.get(rel) == digest:
+            continue
+        seen[rel] = digest
+        try:
+            ast.parse(text)
+            status = "ok"
+        except SyntaxError as exc:
+            status = f"syntax error line {exc.lineno}: {exc.msg}"
+            errors.append(f"{rel}: {status}")
+        changes += 1
+        with (harness / "evolution.jsonl").open("a", encoding="utf-8") as sink:
+            sink.write(json.dumps({"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "segment": segment,
+                                   "path": rel, "hash": digest, "status": status}) + "\n")
+    return changes, errors
+
+
+def _git_snapshot(root: Path) -> str | None:
+    """Version the model's work/ directory at run end; None when there is nothing to snapshot or git is unavailable."""
+    work = root / "work"
+    if not work.is_dir() or not any(work.rglob("*.py")):
+        return None
+    base = ["git", "-c", "user.email=arc@local", "-c", "user.name=arc-layered"]
+    try:
+        subprocess.run([*base, "init", "-q"], cwd=work, check=False, capture_output=True, timeout=30)
+        subprocess.run([*base, "add", "-A"], cwd=work, check=False, capture_output=True, timeout=30)
+        subprocess.run([*base, "commit", "-q", "-m", "run snapshot"], cwd=work, check=False, capture_output=True, timeout=30)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work, check=False, capture_output=True, text=True, timeout=10)
+        return head.stdout.strip() or None
+    except OSError:
+        return None
+
+
 def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: str, pi_model: str, config: str = "api-research",
                         provider_extension: Path | None = None, agent_dir: Path | None = None, thinking: str | None = None,
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
                         segment_seconds: float = 1200.0, segment_tokens: int = 200_000, idle_continuations: int = 3,
                         idle_timeout: float = 300.0, max_output_tokens: int = 12000, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
-                        kernel_class: type[PiKernel] = PiKernel) -> Path:
+                        fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
     root = root.resolve()
@@ -50,6 +92,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     kernel: PiKernel | None = None
     closed = False
     state: dict[str, Any] = {}
+    work_hashes: dict[str, str] = {}
+    evolution_changes, evolution_errors = 0, 0
     trace = (root / "pi-events.jsonl").open("a", encoding="utf-8")
     try:
         ready = _wait_for_bridge(root, bridge, timeout=60.0, launch_id=launch_id)
@@ -86,7 +130,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             **{key: summary[key] for key in ("format", "game", "config", "provider", "model", "thinking")},
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
             "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
-            "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {}, "command": command,
+            "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
+            "fresh_level_session": fresh_level_session, "command": command,
             "pi_version": _pi_cli_version(Path(cli)),
         }, indent=2) + "\n", encoding="utf-8")
 
@@ -95,8 +140,17 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                 trace.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
                 trace.flush()
 
-        kernel = kernel_class(command, cwd=str(root), env=pi_env, timeout=120.0, deadline=deadline, event_sink=persist,
-                              event_projector=lambda event: None if event.get("type") == "message_update" else event).start()
+        session_index = 0
+
+        def start_kernel() -> PiKernel:
+            nonlocal session_index
+            session_index += 1
+            cmd = list(command)
+            cmd[cmd.index("--session") + 1] = str(root / ("session.jsonl" if session_index == 1 else f"session-{session_index}.jsonl"))
+            return kernel_class(cmd, cwd=str(root), env=pi_env, timeout=120.0, deadline=deadline, event_sink=persist,
+                                event_projector=lambda event: None if event.get("type") == "message_update" else event).start()
+
+        kernel = start_kernel()
         # RPC set_auto_compaction writes the agent dir's settings.json, which may be the user's own profile. The extension
         # cancels every compaction instead.
         pi_state = kernel.send("get_state").get("data", {})
@@ -149,7 +203,15 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             if idle_segments >= MAX_IDLE_SEGMENTS:
                 summary["stop_reason"] = "idle"
                 break
+            changed, parse_errors = _scan_work(root, harness, summary["segments"], work_hashes)
+            evolution_changes += changed
+            evolution_errors += len(parse_errors)
             prompt = "Continue playing."
+            if parse_errors:
+                prompt += "\nThese files under work/ do not parse:\n" + "\n".join(parse_errors)
+            if fresh_level_session and reason == "level_change":
+                kernel.close()
+                kernel = start_kernel()
         state = _bridge_state(bridge_url, attempts=1) or state
         reply = _post_json(bridge_url + "/close", {}, timeout=60.0, action_token=action_token)
         _append_events(root, reply.pop("events", []))
@@ -168,6 +230,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     rows = _read_jsonl(harness / "layered.jsonl")
     calls = [row for row in rows if row.get("kind") == "python"]
     evictions = [row for row in rows if row.get("kind") == "evict"]
+    changed, parse_errors = _scan_work(root, harness, summary.get("segments", 0), work_hashes)
     budget = state.get("action_budget") or {}
     requests = _request_accounting(_read_jsonl(harness / "request-events.jsonl"))
     summary.update({
@@ -181,6 +244,11 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                    "stop_reasons": dict(Counter(row["stop_reason"] for row in calls if row["stop_reason"])),
                    "mean_ms": round(sum(row["ms"] for row in calls) / len(calls)) if calls else None},
         "evictions": {"count": len(evictions), "tokens_removed": sum(row["tokens_removed"] for row in evictions)},
+        "folds": sum(row["parts"] for row in rows if row.get("kind") == "fold"),
+        "compactions": sum(1 for row in rows if row.get("kind") == "compact"),
+        "evolution": {"changes": evolution_changes + changed, "syntax_errors": evolution_errors + len(parse_errors)},
+        "work_snapshot": _git_snapshot(root),
+        "sessions": max(1, sum(1 for _ in root.glob("session*.jsonl"))),
         "context_overflows": sum(1 for row in rows if row.get("kind") == "context_overflow"),
     })
     path = root / "summary.json"
@@ -203,15 +271,17 @@ def main() -> None:
     parser.add_argument("--max-reported-tokens", type=int)
     parser.add_argument("--wall-seconds", type=float, default=3600.0)
     parser.add_argument("--segment-seconds", type=float, default=1200.0)
+    parser.add_argument("--fresh-level-session", action="store_true")
     parser.add_argument("--dotenv-root", type=Path, default=PROJECT_ROOT)
     args = parser.parse_args()
     path = run_arc_layered_e2e(args.root, game=args.game, arc_root=args.arc_root, pi_provider=args.provider, pi_model=args.model,
                                config=args.config, provider_extension=args.provider_extension, agent_dir=args.agent_dir,
                                thinking=args.thinking, max_actions=args.max_actions, max_reported_tokens=args.max_reported_tokens,
-                               wall_seconds=args.wall_seconds, segment_seconds=args.segment_seconds, dotenv_root=args.dotenv_root)
+                               wall_seconds=args.wall_seconds, segment_seconds=args.segment_seconds,
+                               fresh_level_session=args.fresh_level_session, dotenv_root=args.dotenv_root)
     summary = json.loads(path.read_text(encoding="utf-8"))
     print(json.dumps({key: summary.get(key) for key in ("stop_reason", "segments", "actions", "levels_completed", "requests",
-                                                         "reported_tokens", "error")}, ensure_ascii=False))
+                                                         "reported_tokens", "evolution", "sessions", "error")}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

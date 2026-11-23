@@ -130,11 +130,33 @@
 - 勘误：16 动作/调用上限在系统提示里本来就有（扩展启动时替换 systemPrompt，session.jsonl 存的是替换前默认提示）。
   模型一次请求 21 个被截停属于采用层面观察，不是提示缺失。
 
+## 2.1 实施记录（2026-11-23，用户授权跳过消融、除 O13 全部直接实现）
+
+| 项 | 状态 | 实现位置 | 默认 |
+|---|---|---|---|
+| O1 可执行世界模型提示 | 已实现 | `demo/prompts/arc_layered_system.md` 方法节改为 write→back-test→search→expect 闭环 | 常开 |
+| O2 折叠 | 已实现 | `fold()`（`demo/arc_layered_extension.ts`），旧 toolResult 收成 `[env]` 行并剥图像 | `ARC_LAYERED_FOLD_AFTER=3` |
+| O3 摘要压缩 | 已实现（确定性拼接版） | `compactHistory()`：记忆标签 + notebook + 进度 + 最近动作行，窗口减 `ARC_LAYERED_COMPACT_MARGIN`（16384）触发 | 常开 |
+| O4 expect + SURPRISE | 已实现 | prelude `submit_actions(expect=...)`：区间/关卡增量/谓词，落空停批、滚动 10 次命中率；状态消息 SURPRISE/Expectations 行 | 常开（模型自选用） |
+| O5 STUCK | 已实现 | host 按帧 FNV 哈希记 `stale_steps`，1×/2×/4× 阈值三级措辞 | `ARC_LAYERED_STUCK_AFTER=8` |
+| O6 notebook | 已实现 | `notebook(op, section, text)` 工具，7 固定分区，`notebook.json` 持久化并注入状态消息 | `ARC_LAYERED_NOTEBOOK=1` 才开（API 档） |
+| O7 状态图 helper | 已实现 | prelude `graph_summary()` / `bfs_graph(goal)` / `replay_to(hash)`，边 =(帧哈希, 动作标签) | 常开（仅查询） |
+| O8 no-op 拦截 | 已实现 | `submit_actions(skip_known_noops=True)` / `ARC_LAYERED_SKIP_NOOPS=1`，`force=True` 覆盖 | 默认关 |
+| O9 关卡边界新 session | 已实现 | runner `--fresh-level-session`；记忆经 `harness/memory.json` 跨进程恢复 | 默认关 |
+| O10 遥测 | 已实现 | `harness/context.jsonl` 请求骨架快照；`tools/arc_layered_score.py`（与 scorecard 对账）；`tools/arc_layered_diagnostics.py`（HTML 热力图） | 快照常开 |
+| O11 进化激活 | 已实现 | runner 段边界 `_scan_work`（ast 校验 + `evolution.jsonl`，解析失败写进下一段提示），run 结束 `_git_snapshot(work/)` | 常开 |
+| O12 子代理 | 未实现 | 维持设计 v0.4 判断：仅当真实轨迹显示"模型反复手动模拟多分支"再立项；当前无此证据 | — |
+
+验证：30/30 Node 单测 + 2 pytest（`tests/test_arc_layered_evolution.py`）；真实桥 + 官方 SDK 闭环
+（ls20，`runs/arc-layered-p0-closure-20261123c/p0-real.json`）覆盖 expect→SURPRISE、图 helper、RESET 守卫、
+scorecard 关闭校验；计分/诊断脚本在真实 scorecard（su15 两次运行）上执行，重算得分与官方 0.000 一致（有完成关卡的对账
+还需未来样本）。跳过消融是用户决定，收益判断推迟到下一轮 provider 运行。
+
 ## 3. 证据层级（本文变更）
 
 | 层级 | 状态 | 说明 |
 |---|---|---|
-| 功能正确 | 已验证 | 22/22 Node 单测（`tests/arc_layered_python.test.ts`、`tests/arc_layered_extension.test.ts`） |
-| 全链路可达 | 已验证 | 真实 bridge + 官方 SDK（ls20，OFFLINE 计分口径之外的真实 API）脚本化跑通全部新能力，scorecard 正常关闭；`runs/arc-layered-p0-closure-20261123b/p0-real.json` |
-| 自主采用 | 未验证 | 尚无模型在新能力（show/result/import/changed/hash）上的真实对局 |
-| 净收益 | 未验证 | 开放方案 O1–O13 全部未实施，无对照 |
+| 功能正确 | 已验证 | 30/30 Node 单测 + 2 pytest（§2.1 实现后的最新计数） |
+| 全链路可达 | 已验证 | 真实 bridge + 官方 SDK 脚本化跑通全部新能力（含 expect/SURPRISE、图 helper），scorecard 正常关闭；`runs/arc-layered-p0-closure-20261123c/p0-real.json` |
+| 自主采用 | 未验证 | 尚无模型在 O1–O11 新能力上的真实对局 |
+| 净收益 | 未验证 | 消融被跳过（用户决定）；O12 未实施、O13 未动，无对照 |

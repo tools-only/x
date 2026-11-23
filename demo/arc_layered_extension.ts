@@ -1,5 +1,5 @@
-/** ARC `layered` profile: one python tool, state messages, context eviction, carried note blocks, bounded continuation. */
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+/** ARC `layered` profile: one python tool, state messages, context eviction/folding/compaction, carried note blocks, bounded continuation. */
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -12,11 +12,14 @@ import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
 
 export const STATE_TYPE = "arc-layered-state";
 export const MEMORY_TYPE = "arc-layered-memory";
+export const NOTEBOOK_TYPE = "arc-layered-notebook";
 export const TAGS = ["World model", "Goal model", "Action model", "Recent findings", "Open questions", "Plan", "Cross-level notes"];
+export const NOTEBOOK_SECTIONS = ["controls", "entities", "rules", "goal_hypotheses", "levels", "open_questions", "dead_ends"];
 const IMAGE_TOKENS = 1000;
 
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextTarget: number;
-  idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string };
+  idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
+  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close">;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
@@ -96,6 +99,36 @@ export function evict(input: any[], target: number, extraBlocks: number) {
   return { messages: messages.slice(cut), blocks, removed, before };
 }
 
+/** Folding (context level 2): old tool results collapse to their `[env]` line; images are stripped. Pairing stays intact. */
+export function fold(input: any[], keepBlocks: number) {
+  const starts = input.flatMap((message, index) => message.role === "user" || message.role === "custom" ? [index] : []);
+  const cutoff = keepBlocks > 0 && starts.length > keepBlocks ? starts[starts.length - keepBlocks] : 0;
+  let folded = 0;
+  if (!cutoff) return { messages: input, folded };
+  const messages = input.map((message, index) => {
+    if (index >= cutoff || message.role !== "toolResult" || !Array.isArray(message.content)) return message;
+    const content = message.content.flatMap((part: any) => {
+      if (part.type === "image") { folded += 1; return []; }
+      if (part.type !== "text") return [part];
+      const lines = part.text.split("\n");
+      const kept = lines.find((line: string) => line.startsWith("[env]")) ?? lines[0] ?? "";
+      if (kept === part.text) return [part];
+      folded += 1;
+      return [{ type: "text", text: `${kept}\n[folded ${part.text.length} chars]` }];
+    });
+    return { ...message, content };
+  });
+  return { messages, folded };
+}
+
+/** Compaction (context level 3): everything before the last block becomes one deterministic summary message. */
+export function compactHistory(input: any[], summary: string) {
+  const starts = input.flatMap((message, index) => message.role === "user" || message.role === "custom" ? [index] : []);
+  const last = starts.at(-1) ?? 0;
+  if (last <= 0) return null;
+  return [{ role: "user", content: [{ type: "text", text: summary }] }, ...input.slice(last)];
+}
+
 export function installLayered(pi: ExtensionAPI, python: Python, options: LayeredOptions) {
   const store = join(options.root, "harness");
   mkdirSync(store, { recursive: true });
@@ -107,6 +140,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const system = prompt("arc_layered_system.md").replaceAll("{{color_legend}}", COLOR_LEGEND)
     .replaceAll("{{max_actions_per_call}}", String(options.maxActionsPerCall));
   let memory: Record<string, string> = {};
+  let notebook: Record<string, string> = {};
+  let trail: string[] = [];
+  try { memory = JSON.parse(readFileSync(join(store, "memory.json"), "utf8")); } catch {}
+  try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
@@ -123,13 +160,23 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (state.state === "WIN") events.push("WIN: the game is finished.");
     if (state.budget_left !== undefined && state.budget_left <= Math.max(5, 0.1 * (state.actions_used + state.budget_left)))
       events.push(`BUDGET: ${state.budget_left} actions left.`);
+    if (options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter) {
+      const rounds = Math.floor(state.stale_steps / options.stuckAfter);
+      events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and change the approach: ` +
+        "re-read the goal, try a different action type, or reset with a new plan."
+        : rounds >= 2 ? `STUCK: ${state.stale_steps} steps without a new state. Enumerate what you have not tried, then test one new hypothesis.`
+        : `STUCK: ${state.stale_steps} steps without a new state. Change strategy.`);
+    }
+    if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
+    if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     const shown = batch?.actions.slice(0, 10).join(" ");
     const values: Record<string, string> = { events: events.join("\n"),
       batch: batch ? `Last batch: ${batch.executed} executed: ${shown}${batch.executed > 10 ? ` (+${batch.executed - 10} more)` : ""}` +
         `${batch.stop_reason ? `; stopped: ${batch.stop_reason}` : ""}` : "",
       level: String(state.level), win_levels: String(state.win_levels), state: state.state, step: String(state.step),
       actions_used: String(state.actions_used), budget: state.budget_left === undefined ? "" : ` | budget left ${state.budget_left}`,
-      valid: state.valid_actions.join(" "), memory: TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n") };
+      valid: state.valid_actions.join(" "), memory: TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
+      notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "" };
     const text = [nudge ? template.nudge : "", template.state.replace(/\{\{(\w+)\}\}/g, (_, key) => values[key]),
       options.reminder ? template.reminder : ""].join("\n").replace(/\n{2,}/g, "\n").trim();
     return [{ type: "text", text }, { type: "image", mimeType: "image/png",
@@ -150,6 +197,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         actedThisTurn = true;
         idle = 0;
         segmentActions += batch.executed;
+        trail.push(...batch.lines.slice(-3));
+        trail = trail.slice(-12);
         endReason = batch.win ? "win" : state.budget_left === 0 ? "budget" : batch.level_changed ? "level_change" : softLimit();
         if (endReason) pending = batch;
         else pi.sendMessage({ customType: STATE_TYPE, content: content(batch), display: false }, { deliverAs: "steer" });
@@ -158,6 +207,21 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       for (const image of outcome.images) parts.push({ type: "image", mimeType: "image/png",
         data: framePng(image.grid, image.scale ?? options.scale, options.gridLines).toString("base64") });
       return { content: parts, details: { acted: batch }, ...(endReason ? { terminate: true } : {}) };
+    } });
+
+  if (options.notebook) pi.registerTool({ name: "notebook", label: "notebook", executionMode: "sequential",
+    description: `Durable game notes, injected into every state message. Sections: ${NOTEBOOK_SECTIONS.join(", ")}.`,
+    parameters: Type.Object({ op: Type.Union([Type.Literal("replace"), Type.Literal("append"), Type.Literal("delete")]),
+      section: Type.String(), text: Type.Optional(Type.String()) }),
+    async execute(_id, params) {
+      if (!NOTEBOOK_SECTIONS.includes(params.section))
+        return { details: {}, content: [{ type: "text", text: `Unknown section. Use one of: ${NOTEBOOK_SECTIONS.join(", ")}` }] };
+      if (params.op === "delete") delete notebook[params.section];
+      else notebook[params.section] = params.op === "append" && notebook[params.section]
+        ? `${notebook[params.section]}\n${params.text ?? ""}` : params.text ?? "";
+      pi.appendEntry(NOTEBOOK_TYPE, { ...notebook });
+      writeFileSync(join(store, "notebook.json"), JSON.stringify(notebook, null, 1), "utf8");
+      return { details: {}, content: [{ type: "text", text: `notebook ${params.section} ${params.op} ok` }] };
     } });
 
   pi.on("before_agent_start", async () => {
@@ -177,7 +241,30 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const result = evict(event.messages, target, extraBlocks);
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
       tokens_removed: result.removed, estimate_before: result.before, target });
-    return { messages: result.messages };
+    const folding = fold(result.messages, options.foldAfter);
+    if (folding.folded) log("fold", { parts: folding.folded, keep_blocks: options.foldAfter });
+    let messages = folding.messages;
+    const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;
+    if (estimate > hardTarget) {
+      const state = python.state();
+      const summary = ["Earlier history was compacted away. What you know so far:",
+        TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
+        options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
+        `Progress: level ${state.level} of ${state.win_levels}, ${state.state}, ${state.actions_used} actions used` +
+          `${state.budget_left === undefined ? "" : `, ${state.budget_left} budget left`}.`,
+        trail.length ? `Recent action results:\n${trail.join("\n")}` : ""].filter(Boolean).join("\n\n");
+      const compacted = compactHistory(messages, summary);
+      if (compacted) {
+        log("compact", { messages_before: messages.length, messages_after: compacted.length, estimate_before: estimate, target: hardTarget });
+        messages = compacted;
+      }
+    }
+    write("context.jsonl", { t: new Date().toISOString(), segment, decision: decision + 1,
+      total_estimate: messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+      messages: messages.map(message => ({ role: message.role, type: message.customType,
+        tokens: estimateTokens(message), image: Array.isArray(message.content) && message.content.some((part: any) => part.type === "image") })) });
+    return { messages };
   });
   pi.on("before_provider_request", (event, ctx) => {
     if (request) requests.finish(request);
@@ -205,7 +292,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       log("context_overflow", { error: message.errorMessage, extra_blocks: extraBlocks });
     }
     const found = extractTags(message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n"));
-    if (Object.keys(found).length) pi.appendEntry(MEMORY_TYPE, memory = { ...memory, ...found });
+    if (Object.keys(found).length) {
+      pi.appendEntry(MEMORY_TYPE, memory = { ...memory, ...found });
+      writeFileSync(join(store, "memory.json"), JSON.stringify(memory, null, 1), "utf8");
+    }
   });
 
   pi.on("agent_before_settle", event => {
@@ -234,10 +324,12 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
   const python = new LayeredPython(new BridgeClient(env.PI_ARC_BRIDGE_URL!, env.PI_ARC_ACTION_TOKEN!), {
     numericGrid: env.ARC_LAYERED_NUMERIC_GRID !== "0", namespaceResetPerCall: env.ARC_LAYERED_NAMESPACE_RESET === "1",
     undo: env.ARC_LAYERED_UNDO === "1", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
-    competition: env.ARC_LAYERED_COMPETITION === "1" });
+    competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1" });
   installLayered(pi, python, { scale: local ? 4 : 8, gridLines: !local, reminder: local, root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
     contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? (local ? 32000 : 0)),
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
-    segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1200), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 200000) });
+    segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1200), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 200000),
+    stuckAfter: Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 3),
+    compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 16384), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local });
 }

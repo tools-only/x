@@ -34,6 +34,8 @@ const cells = [
   "print(show(region=(0, 0, 4, 4)))",
   "with open('work/world_model.py', 'w') as f: f.write('TAG = \"wm-%d\"\\n' % current_frame.step)\nimport world_model\nprint(world_model.TAG)",
   "print('restored?', current_frame.grid[0][0] != 15, isinstance(history[-1].hash, str))",
+  "r = submit_actions('UP', expect=(0, 0))\nprint('expect:', r['surprise'], r['stop_reason'], r['expect_hits'])",
+  "g = graph_summary()\nprint('graph:', g['states'] > 1, g['edges'] > 0, g['frontier_count'] >= 0, replay_to(current_frame.hash))",
 ];
 for (const code of cells) {
   const outcome = await python.run(code);
