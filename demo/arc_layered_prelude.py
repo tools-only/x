@@ -290,6 +290,22 @@ def _expect_ok(expect, before, after, result):
     return lo <= result.get("changed_cells", 0) <= hi
 
 
+def review(layer, diagnosis, evidence, change, test):
+    """Name the failing layer with evidence; required to unfreeze submit_actions after the host froze it."""
+    if layer not in ("action", "rule", "goal", "representation"):
+        raise ValueError("layer must be one of: action, rule, goal, representation")
+    steps = list(evidence) if isinstance(evidence, (list, tuple)) else None
+    if not steps or not all(isinstance(s, int) and not isinstance(s, bool) and 0 <= s < len(_H) for s in steps):
+        raise ValueError("evidence must be a non-empty list of history step numbers (0..%d)" % (len(_H) - 1))
+    for name, value in (("diagnosis", diagnosis), ("change", change), ("test", test)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s must be a non-empty string; change='none' is allowed, a missing test is not" % name)
+    _rpc({"t": "review", "review": {"layer": layer, "diagnosis": diagnosis, "evidence": steps,
+                                    "change": change, "test": test}})
+    _S["review_required"] = None
+    return {"ok": True, "layer": layer, "unfrozen": True}
+
+
 class _WorkLoader:
     def __init__(self, name, path, package):
         self.name, self.path, self.package = name, path, package
@@ -350,6 +366,10 @@ def _bind():
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
                    skip_known_noops=False, force=False, stop_on_noop=True):
+    if _S.get("review_required"):
+        raise RuntimeError("ReviewRequired: call review(layer=..., diagnosis=..., evidence=[history steps], "
+                           "change=..., test=...) first — see harness_state for evidence. Trigger: %s"
+                           % _S["review_required"])
     if expect is not None and not _S.get("expect_on"):
         raise ValueError("expect is disabled in this run; drop the expect argument")
     if expect is not None and not (callable(expect) or (isinstance(expect, int) and not isinstance(expect, bool))
@@ -379,6 +399,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             reason = reply["stopped"]
             break
         _S["valid"], _S["valid_raw"], _S["last_result"] = reply["valid_actions"], reply["valid_actions_raw"], reply["result"]
+        _S["review_required"] = reply.get("review_required")
         _append(reply["entry"], _S["numeric"], reply["result"])
         _bind()
         executed += 1
@@ -462,24 +483,36 @@ def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
               skip_noops=bool(req.get("skip_noops")), expect_on=bool(req.get("expect_enabled")),
-              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {})
+              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {},
+              review_on=bool(req.get("review_enabled")), review_required=req.get("review_required"))
     if req["reset_history"]:
         _H.clear()
         _T.clear()
     for raw in req["new_history"]:
         _append(raw, req["numeric_grid"])
-    if _S["ns"] is None or req["reset_namespace"]:
+    fresh = _S["ns"] is None or req["reset_namespace"]
+    if fresh:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
                     "diff": diff, "ascii": ascii, "frames_of": frames_of, "frame_diff": frame_diff}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
+        if _S["review_on"]:
+            _S["ns"]["review"] = review
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
             sys.meta_path.append(_WorkFinder())
     _bind()
     ns = _S["ns"]
+    if fresh and req.get("startup_source"):
+        try:
+            exec(compile(req["startup_source"], "work/startup.py", "exec"), ns)
+        except BaseException as exc:
+            _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
+    startup_note = _S.pop("startup_error", None)
+    if startup_note:
+        out.write(startup_note + "\n")
     try:
         tree = ast.parse(req["code"], "<python>")
         last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None

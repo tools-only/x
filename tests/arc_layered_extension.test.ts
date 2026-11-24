@@ -15,7 +15,8 @@ function setup(overrides: Record<string, unknown> = {}) {
   const game: any = { level: 1, levels_completed: 0, win_levels: 3, state: "NOT_FINISHED", step: 0, actions_used: 0, budget_left: 40,
     valid_actions: ["UP", "RESET"], frame: grid, stale_steps: 0 };
   const python: any = { next: null, runs: 0, init: async () => game, state: () => game, close() {},
-    async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {} }; } };
+    async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {},
+      ...(this.reviews ? { reviews: this.reviews } : {}) }; } };
   const root = (overrides.root as string) ?? mkdtempSync(join(tmpdir(), "layered-"));
   installLayered(pi, python, { scale: 4, gridLines: false, reminder: false, contextTarget: 0, idleContinuations: 2, segmentSeconds: 600,
     segmentTokens: 100000, maxActionsPerCall: 16, outputTokens: 0, root, stuckAfter: 8, foldAfter: 3, compactMargin: 16384,
@@ -186,6 +187,25 @@ test("stuck steps raise an escalating STUCK event", async () => {
   assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 17 steps[\s\S]*Enumerate 2-3 alternative framings/);
   game.stale_steps = 40;
   assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 40 steps[\s\S]*Stop and review in full/);
+});
+
+test("a review freeze shows in the state message and echoes an active revision", async () => {
+  const { handlers, sent, python, game, call, root } = setup({ flags: { review: true } });
+  const opened = await handlers.before_agent_start({});
+  assert.match(opened.systemPrompt, /REVIEW REQUIRED[\s\S]*Active revision/);
+  handlers.turn_start();
+  game.review_required = "GAME_OVER number 2 on this level";
+  python.next = batch({ executed: 1, actions: ["UP"], stop_reason: "review required" });
+  python.reviews = [{ t: "now", trigger: "GAME_OVER number 2 on this level", layer: "representation",
+    diagnosis: "the moving strip is a timer", evidence: [3], change: "treat the top strip as HUD",
+    test: "interior unchanged when the strip ticks" }];
+  await call();
+  const text = textOf(sent[0].message.content);
+  assert.match(text, /REVIEW REQUIRED \(GAME_OVER number 2 on this level\)[\s\S]*review\(layer=/);
+  assert.match(text, /Active revision: treat the top strip as HUD/);
+  const row = JSON.parse(readFileSync(join(root, "harness", "review.jsonl"), "utf8").trim());
+  assert.equal(row.layer, "representation");
+  assert.equal(row.trigger, "GAME_OVER number 2 on this level");
 });
 
 test("a surprise batch is announced with the running hit rate", async () => {

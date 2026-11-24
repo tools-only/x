@@ -20,7 +20,7 @@ const IMAGE_TOKENS = 1000;
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean;
-  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean } };
+  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close">;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
@@ -141,7 +141,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const [, ...parts] = prompt("arc_layered_state.md").split(/^## (\w+)\s*$/m);
   const template = Object.fromEntries(parts.flatMap((name, index) => index % 2 ? [] : [[name, parts[index + 1].trim()]])) as
     Record<"state" | "reminder" | "nudge", string>;
-  const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false, ...options.flags };
+  const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false, review: false,
+    ...options.flags };
   flags.no_model = !flags.model;
   const system = prompt("arc_layered_system.md")
     .replace(/\{\{\?(\w+)\}\}\n?([\s\S]*?)\{\{\/\1\}\}\n?/g, (_, name, body) => flags[name] ? body : "")
@@ -150,8 +151,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let memory: Record<string, string> = {};
   let notebook: Record<string, string> = {};
   let trail: string[] = [];
+  let activeRevision = "";
   try { memory = JSON.parse(readFileSync(join(store, "memory.json"), "utf8")); } catch {}
   try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
+  try {
+    for (const line of readFileSync(join(store, "review.jsonl"), "utf8").trim().split("\n")) {
+      const row = JSON.parse(line);
+      if ((row.layer === "goal" || row.layer === "representation") && row.change !== "none") activeRevision = row.change;
+    }
+  } catch {}
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
@@ -189,6 +197,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`Unchecked: your last ${state.unchecked_batches} action batches carried no expect; without a prediction a ` +
         "wrong belief costs actions instead of becoming a signal.");
     }
+    if (state.review_required) events.push(`REVIEW REQUIRED (${state.review_required}): submit_actions is frozen; everything ` +
+      "else still works. Inspect the evidence, then call review(layer=..., diagnosis=..., evidence=[history steps], " +
+      'change=..., test=...) to unfreeze. change="none" is allowed; a test that tells the new reading from the old is not optional.');
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     const shown = batch?.actions.slice(0, 10).join(" ");
@@ -199,6 +210,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       actions_used: String(state.actions_used), budget: state.budget_left === undefined ? "" : ` | budget left ${state.budget_left}`,
       valid: state.valid_actions.join(" "), memory: TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
       notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
+      revision: activeRevision ? `Active revision: ${activeRevision}` : "",
       tags_hint: flags.tags ? " Start your reply with updated `World model:`, `Goal model:`, `Action model:` and `Plan:` blocks." : "" };
     const parts: Content = [];
     let diffNote = "";
@@ -227,6 +239,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
         level: state.level, step: state.step, images: outcome.images.length, metrics: outcome.metrics });
+      for (const review of outcome.reviews ?? []) {
+        write("review.jsonl", review);
+        log("review", { layer: review.layer, trigger: review.trigger });
+        if ((review.layer === "goal" || review.layer === "representation") && review.change !== "none")
+          activeRevision = String(review.change);
+      }
       if (batch) {
         actedThisTurn = true;
         idle = 0;
@@ -351,6 +369,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 export default function arcLayeredExtension(pi: ExtensionAPI) {
   const env = process.env, root = env.ARC_RUN_ROOT ?? process.cwd(), local = env.ARC_LAYERED_CONFIG === "kaggle-local";
   const maxActionsPerCall = 16;
+  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW !== "0";
+  const reviewTriggers = env.ARC_LAYERED_REVIEW_TRIGGERS
+    ? env.ARC_LAYERED_REVIEW_TRIGGERS.split(",").map(part => part.trim()).filter(Boolean) : undefined;
   if (env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
     const store = join(root, "harness");
     mkdirSync(store, { recursive: true });
@@ -361,15 +382,16 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     numericGrid: env.ARC_LAYERED_NUMERIC_GRID !== "0", namespaceResetPerCall: env.ARC_LAYERED_NAMESPACE_RESET === "1",
     undo: env.ARC_LAYERED_UNDO !== "0", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
     competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
-    expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1" });
+    expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
+    review, reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
     contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? 131072), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? 57344),
     diffImage: env.ARC_LAYERED_DIFF_IMAGE !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
-    stuckAfter: Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
+    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     flags: { expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
-      work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1" } });
+      work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1", review } });
 }

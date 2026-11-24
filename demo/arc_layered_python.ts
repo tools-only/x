@@ -5,15 +5,16 @@ import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
 
 export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
   timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean;
-  skipNoops?: boolean; expect?: boolean; graph?: boolean };
+  skipNoops?: boolean; expect?: boolean; graph?: boolean; review?: boolean; reviewStuckSteps?: number;
+  reviewTriggers?: string[] };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
-  stale_steps: number; unchecked_batches: number };
+  stale_steps: number; unchecked_batches: number; review_required: string | null };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
-  kernelRestarted?: boolean; metrics: Record<string, number> };
+  kernelRestarted?: boolean; metrics: Record<string, number>; reviews?: Array<Record<string, unknown>> };
 
 export const COLOR_LEGEND = "W=white, w=light gray, g=gray, G=dark gray, c=charcoal, B=black, M=magenta, P=pink, " +
   "R=red, b=blue, S=sky blue, Y=yellow, O=orange, r=dark red, N=light green, p=purple";
@@ -63,6 +64,11 @@ export class LayeredPython {
   private errors: string[] = [];
   private calls = 0;
   private batchHadExpect = false;
+  private reviewRequired: string | null = null;
+  private gameOversThisLevel = 0;
+  private budgetReviewFired = false;
+  private levelStartBudgetLeft: number | undefined;
+  private pendingReviews: Array<Record<string, unknown>> = [];
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -85,6 +91,7 @@ export class LayeredPython {
     this.raw = await this.bridge.state();
     this.history = [this.entry("", this.raw)];
     this.seenHashes.add(hashGrid(this.raw.frames.at(-1)));
+    this.levelStartBudgetLeft = this.state().budget_left;
     this.kernel.prewarm();
     return this.state();
   }
@@ -95,7 +102,7 @@ export class LayeredPython {
       state: raw.state, step: budget.total_used ?? 0, actions_used: budget.total_used ?? 0,
       budget_left: budget.total_maximum == null ? undefined : budget.total_maximum - budget.total_used,
       valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale,
-      unchecked_batches: this.unchecked };
+      unchecked_batches: this.unchecked, review_required: this.reviewRequired };
   }
 
   /** Evidence about the run itself, bound as the read-only `harness_state` variable at the start of every call. */
@@ -118,12 +125,18 @@ export class LayeredPython {
     };
   }
 
+  private startupSource(): string | undefined {
+    const path = join(this.workDir, "startup.py");
+    return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+  }
+
   private async act(request: KernelRequest, batch: ActionBatch & { halt?: string }) {
     const call = request.call as { action: string; x?: number; y?: number; reasoning?: string };
     const name = call.action, raw = RAW[name] ?? name;
     if (request.expect != null) this.batchHadExpect = true;
     const refuse = (stopped: string) => { batch.stop_reason ??= stopped; return { stopped }; };
     if (batch.halt) return refuse(`previous_${batch.halt}`);
+    if (this.config.review && this.reviewRequired) return refuse(`review required: ${this.reviewRequired}`);
     if (batch.executed >= this.config.maxActionsPerCall) return refuse(`the limit of ${this.config.maxActionsPerCall} actions per call was reached`);
     if (raw === "ACTION7" && !this.config.undo) return refuse("UNDO is not available");
     if (this.raw.state === "GAME_OVER" && raw !== "RESET") return refuse("the game is over: only RESET is allowed");
@@ -148,6 +161,30 @@ export class LayeredPython {
     this.sent = this.history.length;
     const levelChanged = after.levels_completed !== before.levels_completed;
     this.stepsSinceLevel = levelChanged ? 0 : this.stepsSinceLevel + 1;
+    if (this.config.review) {
+      const trig = (name: string) => !this.config.reviewTriggers || this.config.reviewTriggers.includes(name);
+      if (trig("level") && levelChanged && after.state !== "WIN")
+        this.reviewRequired ??= `level ${before.levels_completed + 1} is complete: consolidate what carries over before the next level`;
+      if (after.state === "GAME_OVER" && before.state !== "GAME_OVER") {
+        this.gameOversThisLevel += 1;
+        if (trig("game_over") && this.gameOversThisLevel >= 2)
+          this.reviewRequired ??= `GAME_OVER number ${this.gameOversThisLevel} on this level`;
+      }
+      const steps = this.config.reviewStuckSteps ?? 0;
+      if (trig("stuck") && steps > 0 && this.stale > 0 && this.stale % steps === 0)
+        this.reviewRequired ??= `${this.stale} steps without a new state`;
+      const left = this.state().budget_left;
+      if (trig("budget") && !levelChanged && !this.budgetReviewFired && this.levelStartBudgetLeft !== undefined && left !== undefined
+          && left <= this.levelStartBudgetLeft / 2) {
+        this.budgetReviewFired = true;
+        this.reviewRequired ??= "half the level budget is spent and the level is not done";
+      }
+    }
+    if (levelChanged) {
+      this.gameOversThisLevel = 0;
+      this.budgetReviewFired = false;
+      this.levelStartBudgetLeft = this.state().budget_left;
+    }
     const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
       levels_completed: after.levels_completed, state: after.state, level_changed: levelChanged,
       game_over: after.state === "GAME_OVER", win: after.state === "WIN", step: entry.step };
@@ -159,7 +196,15 @@ export class LayeredPython {
     batch.level_changed ||= levelChanged; batch.game_over ||= result.game_over; batch.win ||= result.win;
     batch.halt = result.win ? "win" : result.game_over ? "game_over" : levelChanged ? "level_change" : undefined;
     if (batch.halt) batch.stop_reason ??= batch.halt;
-    return { entry, result, line, halt: batch.halt, valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(after) };
+    return { entry, result, line, halt: batch.halt, valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(after),
+      review_required: this.reviewRequired };
+  }
+
+  private review(request: KernelRequest) {
+    const record = { t: new Date().toISOString(), trigger: this.reviewRequired, ...(request.review as Record<string, unknown>) };
+    this.pendingReviews.push(record);
+    this.reviewRequired = null;
+    return { ok: true };
   }
 
   private file(request: KernelRequest) {
@@ -183,13 +228,16 @@ export class LayeredPython {
     let attempted = false;
     this.calls += 1;
     this.batchHadExpect = false;
+    this.pendingReviews = [];
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
-      harness_state: this.harnessState() };
+      harness_state: this.harnessState(), review_enabled: !!this.config.review, review_required: this.reviewRequired,
+      startup_source: this.startupSource() };
     this.sent = this.history.length;
-    const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
+    const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch))
+      : req.t === "review" ? this.review(req) : this.file(req);
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
     try {
       const run = await this.kernel.run(request, onRequest, signal);
@@ -233,7 +281,8 @@ export class LayeredPython {
       if (acted.expect_hits) this.expectHits = acted.expect_hits;
     }
     return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
-      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed } };
+      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed },
+      ...(this.pendingReviews.length ? { reviews: this.pendingReviews } : {}) };
   }
 
   close() { this.kernel.close(); }

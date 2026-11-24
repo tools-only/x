@@ -9,6 +9,8 @@ import { BridgeClient, LayeredPython } from "../demo/arc_layered_python.ts";
 
 const out = resolve(process.argv[2]), game = process.argv[3] ?? "ls20";
 mkdirSync(out, { recursive: true });
+mkdirSync(join(out, "work"), { recursive: true });
+writeFileSync(join(out, "work", "startup.py"), "STARTUP_TAG = 'boot-ok'\n");
 const dotenv = Object.fromEntries(readFileSync("D:/autoresearch_pi_project/.env", "utf8").split(/\r?\n/)
   .filter(line => /^[A-Z_0-9]+=/.test(line)).map(line => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 const arcRoot = dotenv.ARC_AGI_3_ROOT, token = randomBytes(24).toString("hex");
@@ -22,9 +24,10 @@ if (ready.status !== "ready") throw new Error(JSON.stringify(ready));
 const base = `http://127.0.0.1:${ready.port}`;
 const python = new LayeredPython(new BridgeClient(base, token), { numericGrid: true, namespaceResetPerCall: false, undo: false,
   timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(out, "work"), competition: false,
-  expect: true, graph: true });
+  expect: true, graph: true, review: true, reviewStuckSteps: 32 });
 const log: unknown[] = [{ init: await python.init() }];
 const cells = [
+  "print('startup:', STARTUP_TAG)",
   "seg = current_frame.segmentation\nprint(current_frame, valid_actions)\nprint(len(seg['nodes']), 'objects;', sorted({n['color'] for n in seg['nodes']}))",
   "before = current_frame\nr = submit_actions(['UP', 'UP', 'LEFT'])\nprint(r['executed_count'], r['stop_reason'], r['lines'])\nprint('refreshed:', before is not current_frame, len(history), last_action, diff(before, current_frame)['count'])",
   "r = submit_actions(['RIGHT'] * 8, stop_on='change')\nprint(r['executed_count'], r['stop_reason'])\nprint(last_action_result)",
@@ -38,6 +41,8 @@ const cells = [
   "r = submit_actions('UP', expect=(0, 0))\nprint('expect:', r['surprise'], r['stop_reason'], r['expect_hits'])",
   "g = graph_summary()\nprint('graph:', g['states'] > 1, g['edges'] > 0, g['frontier_count'] >= 0, replay_to(history[-1].hash))",
   "h = harness_state\nprint('harness:', h['progress'], h['predictions'])\nprint(len(h['attempts']['recent']), [e[-60:] for e in h['errors']], h['artifacts'], h['cost'])",
+  "try:\n    submit_actions('UP')\n    print('not frozen')\nexcept RuntimeError as e:\n    print(str(e)[:14])",
+  "r = review(layer='rule', diagnosis='half the budget is gone with no level done', evidence=[len(history) - 1], change='none', test='the next UP changes the frame')\nprint('review:', r['unfrozen'], submit_actions('UP')['executed_count'])",
 ];
 for (const code of cells) {
   const outcome = await python.run(code);

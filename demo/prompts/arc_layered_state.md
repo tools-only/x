@@ -3,6 +3,7 @@
 {{batch}}
 Level {{level}} of {{win_levels}} | {{state}} | step {{step}} | actions used {{actions_used}}{{budget}}
 Valid actions: {{valid}}
+{{revision}}
 {{memory}}
 {{notebook}}
 The image shows the latest frame.

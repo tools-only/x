@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LayeredPython, type LayeredConfig } from "../demo/arc_layered_python.ts";
@@ -254,4 +254,71 @@ test("harness_state is bound with run evidence and refreshes between calls", asy
   python.close();
   assert.match(second.text, /^5 4 1 3\n5 division by zero work\/notes\.md 0/);
   assert.match(third.text, /^0 1\/1/);
+});
+
+test("a completed level freezes submit_actions until a review unfreezes it", async () => {
+  const { python } = await session({ review: true });
+  const levelUp = await python.run("print(submit_actions(['UP'] * 3)['stop_reason'])");
+  assert.match(levelUp.text, /^level_change/);
+  const frozen = await python.run([
+    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print(str(e)[:14])",
+    "try:\n    review(layer='vibes', diagnosis='d', evidence=[1], change='c', test='t')\nexcept ValueError:\n    print('bad layer')",
+    "try:\n    review(layer='goal', diagnosis='d', evidence=[], change='c', test='t')\nexcept ValueError:\n    print('no evidence')",
+    "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='none', test=' ')\nexcept ValueError:\n    print('no test')",
+    "r = review(layer='goal', diagnosis='reach row 4', evidence=[1, 2], change='go up fast', test='two UPs complete a level')",
+    "print(r['unfrozen'], submit_actions('UP')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(frozen.text, /^ReviewRequired\nbad layer\nno evidence\nno test\nTrue 1/);
+  assert.equal(frozen.reviews?.length, 1);
+  assert.equal((frozen.reviews?.[0] as any).layer, "goal");
+  assert.match(String((frozen.reviews?.[0] as any).trigger), /complete/);
+});
+
+test("stagnation freezes acting mid-batch and the freeze survives calls", async () => {
+  const { python } = await session({ review: true, reviewStuckSteps: 2 });
+  const out = await python.run("r = submit_actions(['DOWN'] * 4, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  assert.match(out.text, /^2 review required: 2 steps without a new state/);
+  const blocked = await python.run([
+    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen')",
+    "review(layer='rule', diagnosis='DOWN does nothing here', evidence=[1, 2], change='none', test='UP changes the frame')",
+    "print(submit_actions('UP')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(blocked.text, /^frozen\n1/);
+});
+
+test("a half-spent level budget freezes acting once", async () => {
+  const { python } = await session({ review: true });
+  await python.run("submit_actions(['DOWN'] * 16, stop_on_noop=False)");
+  const out = await python.run("r = submit_actions(['DOWN'] * 16, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  python.close();
+  assert.match(out.text, /^9 review required: half the level budget/);
+});
+
+test("review triggers can be restricted to a subset", async () => {
+  const { python } = await session({ review: true, reviewStuckSteps: 2, reviewTriggers: ["game_over"] });
+  const out = await python.run("r = submit_actions(['DOWN'] * 8, stop_on_noop=False)\nprint(r['executed_count'], r.get('stop_reason'))");
+  python.close();
+  assert.match(out.text, /^8 None/);
+});
+
+test("work/startup.py runs once at kernel start and surfaces errors", async () => {
+  const { python } = await session();
+  const dir = (python as any).workDir as string;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "startup.py"), "GREETING = 'from-startup'\n");
+  const out = await python.run("print(GREETING)");
+  assert.match(out.text, /^from-startup/);
+  const again = await python.run("print(GREETING)");
+  assert.match(again.text, /^from-startup/);
+  python.close();
+  const { python: broken } = await session();
+  const dir2 = (broken as any).workDir as string;
+  mkdirSync(dir2, { recursive: true });
+  writeFileSync(join(dir2, "startup.py"), "raise ValueError('boom')\n");
+  const bad = await broken.run("print('alive')");
+  broken.close();
+  assert.match(bad.text, /\[startup\] work\/startup.py failed: ValueError: boom/);
+  assert.match(bad.text, /alive/);
 });

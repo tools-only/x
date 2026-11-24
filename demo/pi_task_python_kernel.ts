@@ -13,7 +13,7 @@ const host = fileURLToPath(new URL("./pi_task_python_kernel.py", import.meta.url
 const KERNEL_MEMORY_BYTES = 256 * 1024 * 1024;
 
 /** What a cell asks the host mid-execution; the answer is returned to the guest as is. */
-export type KernelRequest = { t: "act" | "file"; [key: string]: unknown };
+export type KernelRequest = { t: "act" | "file" | "review"; [key: string]: unknown };
 export type KernelMetrics = { wall_ms: number; wait_ms: number; compute_ms: number; startup_ms?: number; compile_ms?: number };
 type Cell = { resolve(value: { result: any; metrics: KernelMetrics }): void; reject(error: Error): void;
   onRequest(request: KernelRequest): Promise<unknown> };

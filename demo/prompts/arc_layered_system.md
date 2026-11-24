@@ -78,10 +78,23 @@ the start of every call:
 - `submit_actions(..., skip_known_noops=True)` skips actions already proven to do nothing in the current state
   (`force=True` sends them anyway).
 {{/graph}}
+{{?review}}
+- At structural failure points (a second GAME_OVER on a level, long stagnation, half the level budget gone with the
+  level not done, or a completed level) the host freezes `submit_actions` and the state message says REVIEW REQUIRED;
+  querying, computing and reading history still work. Unfreeze with `review(layer=..., diagnosis=..., evidence=[history
+  step numbers], change=..., test=...)`. `layer` names where the failure is: "action" (wrong move), "rule" (wrong
+  dynamics), "goal" (wrong objective) or "representation" (wrong reading of what the objects are). `change` may be
+  "none"; `test` must be a check that would tell the new reading from the old. A goal or representation change is
+  echoed into every later state message as `Active revision:` until your next such review replaces it.
+{{/review}}
 {{?work}}
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,
   so put code you want to keep in a file. `import` finds modules you wrote under `work/` (and `work/harness/lib/`);
   `importlib.reload(module)` picks up an edited file.
+- `work/startup.py`, if you create it, runs automatically whenever a kernel starts: put the imports, wrappers and
+  constants you want in every session there.
+- Keep constraints you have verified in `work/claims.json` (your own format; record which steps support each one),
+  so they survive context loss and kernel restarts.
 {{/work}}
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 

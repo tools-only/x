@@ -1,37 +1,262 @@
-# layered 架构上的自进化：E1–E4 设计开发方案
+# layered 架构上的自进化：设计方案 v2
 
-日期：2026-11-24（Asia/Shanghai）。状态：设计，未实现。
+日期：2026-11-24（Asia/Shanghai）。状态：D1/D2 已实现（见 §5 实施记录），D3 起为设计。
 基线：tag `layered-v1-duck-dafr-aligned`（commit `5e6d25e6`）。
 上游依据：[三层设计 v0.4](2026-11-23-arc-agi-3-layered-design-v0.4.md)、[迁移方案](2026-11-23-arc-evo-layered-migration.md)、
-[对齐路线图](2026-11-23-arc-layered-full-alignment-roadmap.md) §2.3 消融证据、用户提供的七条自进化原则（分辨率优先 /
-证伪门 / 约束为单位 / 路径即知识 / 宿主给怎么做 / 梯度对齐 / 框架迁移）。
+[对齐路线图](2026-11-23-arc-layered-full-alignment-roadmap.md) §2.3 消融证据、自进化原则讨论
+（七原则 / 七时刻 / 转换器与尺度 / 载体形态阶梯）。
 
-## 0. 三个前置裁定
+v2 重写说明：v1 按讨论时序累积（评审轮→证伪门→七对象→时刻→尺度→吸纳→阶梯），主线不可见。本版重组为
+**问题建模（§1）→ 进化规则（§2）→ 自进化路径（§3）** 三段，并新增核心裁定：**自进化在 Python 环境内以
+coding 的方式进行（§3.1）**。v1 的七对象分类归入 §1.4（可优化对象的分类），七时刻归入 §3.2（路径触发），
+实施记录原样保留在 §5。
 
-1. **E1 在任务轮做，不开独立上下文。** 诊断"我在哪层失败"需要完整的交互路径（原则四：路径即知识）。独立上下文的
-   评审者只能看到摘要，得到的恰是"无摩擦传递的脆知识"。独立上下文只保留给局间整合（E4），那时路径已经关闭。
-2. **7-pass 的保留形式：一次不可绕过的结构化评审轮，按层组织，不按载体。** 7-pass 的真正价值是"agent 无法绕过的
-   自我评审"；它的成本问题出在七个载体各开一轮、且在游戏上下文里暂停。新形式：宿主在结构性条件下冻结行动权，
-   agent 必须交出一份四字段评审（层 / 诊断 / 证据 / 下一步差异）才能继续行动。一轮、四字段、不可绕过。
-3. **语义→能力只有两条真实转换介质**（回答"分析判断如何变成 harness 能力"）：
-   - **机器可读的记录 + agent 自己写的消费代码**：claims / world_model 以结构化形式存在，agent 的搜索与验证代码
-     把它们当输入来执行。约束收紧搜索空间，代码是约束的执行形式。
-   - **宿主在正确时刻回显 agent 写下的内容**：评审结论、有效修订、框架索引，由宿主注入后续状态消息或下局提示。
-     宿主是记忆的搬运工，内容全部 agent 产出。
-   其余形态（更多散文笔记、更多提醒）不构成能力，不投资。
+## 1. 问题建模：自进化的基础对象
 
-## 1. E1：看见自己在哪层失败（任务轮，零额外回合）
+前提：layered 架构已把游戏变成 coding 问题——观测是 Python 变量，行动是 Python 调用（`submit_actions`）。
+一局之内，agent = 固定权重的模型 × 上下文 × `work/` 目录 × 循环。权重局内不可改，harness 不能给模型增加
+能力，只能做三件事：用框架语句**激活**模型的潜在能力、把模型做不好的精确部分**外化**成代码、把感知管道
+**调**到模型长处上。自进化的全部对象是模型之外的东西。
 
-### 1.1 `harness_state` 变量
+### 1.1 四个基础对象（判别法定义，不是描述）
 
-与 `current_frame` 同列，每次 python 调用开头由宿主计算并绑定（`demo/arc_layered_python.ts` 组装进 request，
-`demo/arc_layered_prelude.py` 的 `_cell`/`_bind` 绑定）。内容全部来自宿主已有的内存计数器，不读文件：
+| 对象 | 定义 | 判别法 | 住处与寿命 |
+|---|---|---|---|
+| **经验** | 发生过什么：帧-动作-结果序列 + 本回合临时代码 + **模型的推理文本**（"为什么"主要在这里） | 绑定具体情境，换个输入即失效 | 上下文 / `history`，按驱逐淘汰；"为什么"的持久载体是 agent 写进谓词/笔记的 rationale（当时的证据步号 + 排除了什么），否则随驱逐消失 |
+| **知识** | 什么为真：**作用在 transition 上的谓词函数**（`check(transition) -> True/False/None`，None=不适用），附 rationale | 可执行核对——宿主能在任意 transition 上跑它 | `work/claims/*.py`；support/反例/尺度/状态由宿主执行算出，按尺度带走 |
+| **能力** | 转换器：对**未见过的输入**产出正确输出的可执行过程 | 五条全满足：对未见输入可执行 / 可测试 / 可组合 / 知识以参数形式进入不写死 / 有调用点和退役条件 | `work/` 代码 + 启动程序，按尺度带走 |
+| **可优化对象** | agent 能改的全集 | agent 的 Python 写操作能触达：work/ 下的文件、内核命名空间里的名字 | `work/` 全目录 + 命名空间包装。**自我 = work/ 全目录**（§1.3 四元组是其核心子集，frameworks/render 包装同属自我） |
+
+知识与能力的分工：知识缩**假设空间**（少猜），能力缩**下一条知识的获取成本**（验证更便宜）。经验是两者的
+原料。散文策略句（"新关先查新元素"）是最弱载体上的知识，永不直接算能力——它丢失适用边界。
+"第三关红块在左上角"是操作数不是知识条目；"UP 使这类对象上移一格，除非被挡，12 个 transition 支持 0 反例"
+是知识；"给任意帧和任意动作算出下一帧的 `predict`+回测"是能力。
+
+### 1.2 两个坐标轴
+
+每个留存对象有两个独立坐标，进化就是在这两根轴上受规则约束的移动：
+
+- **尺度轴**（在多大范围成立）：step → level → game → global。依据 ARC 的层级结构：同一局的关卡共享机制，
+  不同局共享交互方式（未知控制、未知目标、确定性环境、有限动作）。
+- **形态轴**（以多强的自动性执行）：0 模型每次重推 → 1 提示文字 → 2 可调用函数 → 3 挂钩（每动作后自动跑、
+  结果进视野）→ 4 门（条件不满足不让行动）。可靠性与成本递增：文字上下文一紧就失效；函数可能忘调；
+  挂钩会空跑；门会错卡。
+
+### 1.3 "自我"与进化的定义
+
+- **自我** = 四元组（`claims.json` 知识账本，`work/lib` 能力库，`work/startup.py` 启动程序，
+  `work/prompt.md` 编排规则）。全部是文件，git 版本化即进化史。
+- **自进化** = 四元组内容在两根轴上的移动：经验归纳为知识（约束化），知识编译为能力（函数/挂钩/门），
+  能力产生新经验；证据反转时反向流动。
+- **梯度** = 每获得一条约束付出的动作数。由 ARC 成本结构（动作贵、内核计算免费）给出，是唯一的进化方向量。
+
+ARC 能力清单（七类，整合评审的盘点维度）：
+感知（帧→对象/变化/瞬态/分区，含渲染配置——它决定模型能看见什么）、建模（`predict`+不变量+目标谓词+回测；
+**没有回测的模型不是能力，是猜**）、规划（以 predict 和目标谓词为参数的搜索与实验设计；搜索器跨局通用、
+predict 按局换）、验证（期望核对/不变量监测/守卫，几乎不该停在形态 1——价值全在不依赖记得）、学习（假设表
+更新规则/框架切换/换关程序/GAME_OVER 程序，形态 1 最容易赖着不走的地方）、节律（阶段划分/批大小/探测→搜索
+切换点）、上下文（留什么原文/压缩成什么具名基元/怎么命名）。
+
+### 1.4 可优化对象的分类（七对象视图）
+
+旧 7-pass 的七个对象不是独立的机制，而是**可优化对象全集按用途的分类**。每个对象承载哪种基础对象，
+决定它适用哪些规则（知识走 R1/R2/R5，能力走 R1–R3/R5，经验驻留走 R4）：
+
+| 7-pass 对象 | 承载的基础对象 | v2 载体 | 激活通道 |
+|---|---|---|---|
+| Prompt | 知识的形态 1 载体（编排/方法规则的文字形态，待编译为更高形态） | `work/prompt.md` | 宿主边界注入系统提示尾部 |
+| Context | 经验与证据的驻留策略：agent 决定什么常驻（memory 标签、Active revision、索引引用） | 既有回显内容 | 回显通道 |
+| Skill | 跨局尺度的知识+能力复合：框架 = 一组约束检查 + 进入路径 | `work/frameworks/*.md`（D6） | 索引 + `open()` 按需读 |
+| Tool | 能力（形态 2 转换器） | `work/lib/*.py` 具名基元 | startup.py import |
+| Subagent | 能力的执行方式：界内 = 内核离线计算（搜索/回测，免费）；跨上下文 = 局间整合会话 | 内核代码 / D6 会话 | 执行即激活 |
+| Memory | 知识（账本）+ 经验（路径记录，保留"为什么"） | `claims.json` + 路径记录 + 标签 | 回显 + `open()` |
+| Loop | 节律能力（形态 1→4 皆可）：阶段/批大小/切换点；宿主循环（预算/安全/评审时机）不交出 | prompt.md 规则 + startup.py 包装 | 行为即激活 |
+
+## 2. 进化规则
+
+从 §1 定义推出。每条注明执行形式：**结构门**（宿主机械执行，agent 绕不过）或**脚手架**（提示里的
+方法论，判断归 agent）。修订（fable 评审，2026-11-24）：原 R1/R2/R5 的"陈述条目+手工元数据"形态使三条
+结构门退化为记账（expect 挂 id 字符串无法保证检验的是该陈述、agent 可直接写 validated、核对的是引用位置
+而非成立性、降级只改字段不改行为）。现合并为谓词机制，状态/尺度/连坐全部从执行结果算出。
+
+| # | 规则 | 内容 | 执行形式 |
+|---|---|---|---|
+| R1 = 验证+尺度+来源（R2/R5 并入） | 谓词验证 | agent 写谓词（语义：`work/claims/*.py` 的 `check(transition)`），**宿主在每个新 transition 上机械执行全部谓词**，support/反例/尺度由执行结果算出；状态由宿主单独持有（agent 只读）；validated 需 ≥3 support 且 0 反例，升尺度需 origin 外的关/局出现 support；出反例自动降级（不删除）；依赖从 `import` 关系静态推出并连坐 | 结构门：agent 写不进状态字段，"绕不过"才真成立 |
+| R3 | 形态 | 形态升降凭**宿主可测量的**使用记录：import 次数、文件读写、宿主可见拒绝。函数调用/挂钩命中/门拦截在请求层不可见，**不得作为规则依据**（除非先实现 prelude 登记约定） | 脚手架 + 仅可见量计数 |
+| R4 | 住处 | 操作数与证据住上下文和账本（按尺度淘汰），转换器住代码。坐标/路线/"这局是某类游戏"是操作数；**未经检验的散文不得常驻回显**（Active revision 改为一次性，见 D2.1）；单关机制当通则是尺度错位 | 脚手架 + 淘汰策略（evict 丢最旧整段，不用摘要替换） |
+| R6 | 分工 | agent 做全部语义判断（写什么谓词、归纳什么函数、写什么进启动程序）；宿主只做机械五项（§3.3） | 架构约束 |
+| R7 | 梯度（代理量） | "每条约束的获取动作数"**不可直接测量**（一个探测动作服务多条约束，且可被拆细刷分），不再宣告为唯一方向量。可测代理：每关动作数 vs baseline、SURPRISE 率、重复序列数、谓词 support 增速。进化活动本身的 token/时间列入运行预算 | harness_state.cost + 运行预算参数 |
+
+统一状态机（宿主单独持有，谓词与函数通用；此前 disputed/stale/死路的去向未定义）：
+
+- `hypothesis` --(宿主执行达标)--> `validated` --(新反例)--> `falsified`（归档为死路，不删除）；
+- `validated` --(依赖被证伪)--> `disputed`（按 hypothesis 待遇，复验达标可回）；
+- 任何状态 --(来源文件被 agent 改写)--> 重置为 `hypothesis` 重新累计。
+- 函数的状态 = 自身回测结果 ∧ 其 import 的谓词中最弱状态。
+- 通道后果：validated 进索引首栏；hypothesis 进索引尾栏；falsified 不进索引、`open()` 可查。
+
+## 3. 自进化路径
+
+### 3.0 生命周期裁定（fable 评审后新增，2026-11-24）
+
+此前文档假设"每到新会话或新关，内核重启并执行 startup.py"。与代码不符。真实运行时：
+
+- 一局 = 一个 Pi 进程 + 一个常驻 Python 内核；**换关不重启**（除非显式 `fresh_level_session` 或内核崩溃）。
+- `work/` 按运行目录创建，**不跨局**。
+- 推论：agent 定义的函数与变量局内本来就常驻，**局内"吸纳"无事可做**；startup.py 的真实作用域只有两个
+  ——内核崩溃恢复、跨局启动。
+
+裁定：**保持连续会话 + 常驻内核**（不选"每关开新会话"——那会丢掉路径，与"路径即知识"冲突）。后果：
+
+1. 吸纳的真问题在**跨局**：D4 从"startup.py 注入命名空间"改为**把 work/ 带到下一局**（跨局通道），
+   验收改为跨局复用。
+2. `prompt.md` **不注入系统提示尾部**：系统提示在每段开始重算，中途改写使整段前缀缓存失效。改为
+   **开局第一条用户消息注入一次**（新局启动时读取，一次性）。
+3. startup.py 出错不得阻塞内核：prelude 捕获并以 `[startup]` 行回显，agent 可修文件后手动重载；
+   宿主对 work/ 的 git 快照提供回滚。
+
+### 3.1 核心裁定：自进化在 Python 环境内进行
+
+游戏已经 coding 化，自进化同样 coding 化——不建专用工具面，自我就是一组 Python 文件加一个启动程序。
+对照表（v1 曾设计的专用机制 → Python 原生形式）：
+
+| 自进化动作 | v1 设计 | Python 原生形式（v2 采用） |
+|---|---|---|
+| 吸纳（让能力默认在场） | 宿主按账本状态分级注入命名空间/提示 | agent 写 `work/startup.py`；宿主在内核启动时执行它（崩溃恢复与跨局启动，见 §3.0；局内名字本来常驻，吸纳的真场景是跨局） |
+| 挂钩/门（形态 3/4） | `register_hook`/`register_gate` RPC | 普通包装：`submit_actions` 就是命名空间里的函数，会话内 `submit_actions = guarded(submit_actions)`，跨会话写进 startup.py。**宿主门在 RPC 层、位于一切 agent 包装之下，不可被 agent 代码绕过** |
+| 知识账本 | `claim()` 专用工具 | agent 写 `work/claims/*.py` 谓词（`check(transition)`，附 rationale）；**宿主在每个新 transition 上执行全部谓词**，support/反例/尺度/状态由执行结果算出且由宿主单独持有，agent 只读（R1）。无双写者问题 |
+| 回测/编译/搜索/实验设计 | — | 本来就是代码 |
+| 感知配置 | `render()` 工具 | agent 置 `render = {"zoom":…, "diff":…, "frame":…}` 字典，宿主每次 python 调用后读取、决定下一回合注入的图像 |
+| 自我评审 | `review()`（保留） | **不 Python 化**：评审冻结约束的是行动权本身，必须在 agent 代码够不到的层（实现见 §5.2） |
+
+不进 Python 的只有两样：评审冻结门（§5.2）与预算/安全。其余专用面全部取消（无 claim()/register_*/
+notebook() 工具），agent 接口 = python 工具 + `submit_actions(expect=, claim=)` 两个参数 + 冻结时的
+`review()`。这同时满足轻量化原则与 Duck 的发现（手工预置工具有害；agent 自造的不在此列）。
+
+代价要明说：startup.py 由 agent 全权决定，宿主不再强制"只有 validated 才能默认在场"——约束降级为脚手架
+（索引里状态可见 + 提示说明只有 validated 值得进启动程序）。换来的是 R6 的纯粹性和机制面的大幅缩减；
+若真实运行显示 agent 把垃圾塞进 startup.py，再评估收紧（先改门不改提醒，按 R1 的精神）。
+
+### 3.2 六阶段路径（每阶段：载体 / 门 / 执行者）
+
+```
+①轨迹        ②约束化              ③候选化               ④验证
+history ───→ claims/*.py 谓词 ───→ work/lib 函数 ───────→ 回测 / 新关实例
+(宿主录制)    门:宿主逐transition执行  触发:七时刻(下表)      门:R1(宿主执行算出)
+             写谓词:agent            归纳:agent             跑验证:agent
+
+④通过 ──→ ⑤吸纳                    ──→ ⑥升降级
+          agent 写进 startup.py /        使用记录+证伪驱动(宿主计数、连坐、回显)
+          prompt.md(跨局执行/开局注入)    移动决定:agent
+```
+
+- ②约束化：agent 把观察写成谓词文件（初始状态 hypothesis）；宿主在每个新 transition 上自动执行，
+  support/反例由执行结果累计，状态升降全自动（R1）。`expect=` 保留为**批内即时核对**（SURPRISE 停批），
+  不再承担 claim 状态更新——"expect 挂 id 字符串无法保证检验的是该陈述"的模糊性由谓词自动核对消解。
+- ③候选化：在七时刻（下表）触发下，agent 把重复做过的过程归纳成参数化函数——**编译**：被验证的约束变成
+  predict 里的一个分支，被反复遵守的程序文字变成门，被反复选择的观察习惯变成渲染配置。
+- ⑤吸纳：形态 2 的吸纳 = startup.py 里 import（跨局生效，见 §3.0）；形态 1 的吸纳 = prompt.md 段落
+  （开局第一条用户消息一次性注入）；形态 3/4 的吸纳 = startup.py 里安装包装。
+- ⑥反向编译：回测失败的分支退回假设表；空跑的门退回函数；被更大尺度证伪的条目降回原尺度。
+
+流水线的触发时刻（七时刻是同一条流水线的触发，不是七套机制；信号全部来自已有机制）：
+
+| 时刻 | 信号 | 流水线动作 |
+|---|---|---|
+| 成功 | expect 连续兑现 / 过关 | 尺度验证通过，可升级（③→⑤） |
+| 空闲 | 动作贵/计算免费的价差 | 建转换器成本最低的时候（③：预测器、不变量监测、状态索引、小测试集） |
+| 不确定 | 账本并存多个 hypothesis | 主动实验：用能区分两个假设的动作制造检验实例（④） |
+| 重复 | 盘点中数量涨、引用不涨 | 重构/减法：merge/remove 是合格产出 |
+| 边界 | 换关/换局/驱逐事件 | 尺度判定时刻（R2）；具体变参数（位移规律而非"红块往右推"） |
+| 自我认识 | errors 中重复失败方式 | 找缺失的转换器：weakness 条目 + 补偿代码（让代码数而不是自己数） |
+| 节律 | 进度曲线形状（cost） | 改最顶层转换器（loop 规则进 prompt.md/startup.py） |
+
+评审轮与流水线的衔接：失败评审（§5.2 四触发中的前三个）按失败层定位后**走对应出口**——action/rule/goal
+层走②修假设；**representation 层失败允许直接产出新的感知函数（③）**，不限于修假设（否则换分辨率的出口
+被堵死）。过关整合评审要求 consolidation 形状——`review(layer="consolidation", path=[步号区间],
+constraints=[claim ids])`，并按 **§1.3 七类能力**（唯一盘点维度；§1.4 七对象是历史映射视图，不作盘点
+清单）各交一个 change|no_change 决定（宿主提供盘点，no_change 须给一句理由）。系统扫描属于整合时刻，
+定位属于失败时刻，两者不混。
+
+### 3.3 宿主机制全清单（五项，全部机械）
+
+1. **持久化与启动**：`work/` 跨会话保留；内核启动时执行 `work/startup.py`；注入一行级索引
+   （条目名+状态+尺度+引用数，细节 agent 用 `open()` 按需读）。
+2. **结构标记**：expect 兑现/SURPRISE 更新所挂 claim 的状态；持久化时核对尺度（validated 于 level 以上
+   要求 support 含 origin 外实例，不符标 disputed 并回显）；依赖连坐（R5）。
+3. **不可绕过门**：评审冻结（触发条件见 §5.2，agent 自建门不参与判定、凌驾于 agent 包装之上）、预算。
+4. **机械计数**：harness_state（§5.1）+ 使用记录（import/调用/挂钩命中与空跑/门拦截）。
+5. **回显**：Active revision、SURPRISE/降级/disputed 注明、索引注入、STUCK 分层措辞。
+
+### 3.4 agent 侧负担核对（轻量化验收）
+
+- 每回合常驻新增 ≈ 状态消息 2–3 行（unchecked_batches、必要时 STUCK/降级注明）。
+- 专用记忆负担：无——"自我"全在文件里，新会话醒来时 startup.py 已执行、索引已注入。
+- 专用动作：仅 `expect=`/`claim=` 两个参数和冻结时的 `review()`；其余全部是普通 Python。
+
+### 3.5 路径在七对象上的实例化
+
+六阶段路径（§3.2）对七个承载对象（§1.4）逐一成立——同一条流水线，原料、候选形态、验证门、吸纳通道
+按对象不同而具体化。这是"路径 × 对象"的完整矩阵，整合评审的七类盘点即按此逐行检查：
+
+| 对象 | ①②原料与捕获 | ③候选形态 | ④验证门 | ⑤吸纳通道 | ⑥升降级依据 |
+|---|---|---|---|---|---|
+| Memory（知识账本） | 观察→claim 条目（hypothesis）；expect 挂条目 | 条目本身即候选 | expect 兑现 / 非来源实例复现（R1） | 索引注入 + 回显 | 状态机升降 + 尺度升降（R2）；证伪归档为死路不删除 |
+| Tool（基元） | 临时代码被第二次需要；依赖 validated claims | `work/lib` 参数化函数（账本状态 hypothesis，记 `induced_from`/`depends_on`） | 回测 / 下一关复现 + 尺度核对 | startup.py import | 调用计数升形态（函数→挂钩→门）；依赖证伪连坐降级（R5） |
+| Subagent（执行方式） | 重复出现的离线计算模式（搜索/回测/枚举） | 内核离线计算代码；跨上下文需求记入 D6 议程 | 同 Tool | startup.py / D6 会话 | 同 Tool |
+| Prompt（文字规则） | 评审结论、被反复遵守的行为模式 | `work/prompt.md` 段落，**必须引用来源**（validated claim 或 review id） | 来源健康 + 下一会话被遵守的使用记录 | 宿主边界注入系统提示尾部 | 升级 = 编译为函数/门（形态轴上移，R3）；来源证伪→宿主标 stale |
+| Context（驻留策略） | 被反复查阅/引用的内容 | 常驻选择：memory 标签、索引引用、Active revision | 引用计数（宿主被动统计） | 既有回显通道 | 引用不涨→agent 清除（重复时刻的减法） |
+| Skill（框架） | 局内 validated claims + 走通的路径 | D6 局间会话蒸馏成 `work/frameworks/*.md`（约束检查 + 进入路径） | held-out 他局/他游戏评测；约束检查通过才激活 | 框架索引注入 + `open()` | game→global 尺度升降（R2）；检查不过不激活 |
+| Loop（节律） | 自己的行为模式与效率曲线（R7 量） | 节律规则：prompt.md 文字或 startup.py 包装 | 效率量变化（每条约束的获取动作数下降） | prompt.md 注入 / startup.py 执行 | 文字→门的形态升级；效率劣化回退 |
+
+读法：每行都是"经验→知识→能力"的同一次旅行，区别只在候选形态和门的证据类型。Memory 是其余各行的
+依赖源头（Tool/Prompt/Skill 都要引用它的条目），所以 R5 连坐天然沿此矩阵传播：一条 claim 被证伪，
+依赖它的基元、prompt 段落、框架同时降级，宿主一次机械完成。
+
+## 4. 开发切片
+
+### 4.0 实施顺序裁定：MEL 优先，门按失败证据后置（2026-11-24）
+
+问题：核心闭环（①→⑥）从未在真实轨迹走通过一次，而 D3–D6 的多数机制是对"闭环已在转"之后才会出现的
+失败模式的解法（尺度门防跨关泛化错误——但从未过过关；连坐防基元变脆——但从未有过基元）。按项目规则
+"start with a real failure"，裁定：
+
+- **最小进化环（MEL）先行**：expect（窄区间，已有）+ `work/` 持久化（已有）+ `work/startup.py` 内核启动
+  自动执行（本次新增，宿主读文件随 request 下发、prelude 在新建命名空间时执行一次，出错以 `[startup]`
+  行可见）。claims.json 降为**文件格式约定**（提示 2 行，agent 自管），宿主暂不建状态机/尺度门/连坐。
+- **D2 降级验证**：新增 `ARC_LAYERED_REVIEW_TRIGGERS`（逗号列表：level/game_over/stuck/budget，缺省全开）；
+  MEL 运行只开 `game_over`。
+- **D5/D6 冻结**为"观测到对应失败后的预案"。
+- MEL 判定实验（su15 本地离线 + az gpt-6-luna low 一次）只回答一个问题：**agent 会不会自主写一个文件并在
+  后续用它**。会→闭环存在，再按 §4 表推进；不会→问题在提示/模型层，先修基础再谈上层。
+- MEL 运行环境：`ARC_LAYERED_EXPECT=1 ARC_LAYERED_WORK=1 ARC_LAYERED_REVIEW_TRIGGERS=game_over`，其余缺省。
+
+| 切片 | 状态 | 改动点 | 预估 | 验收命题（可证伪） |
+|---|---|---|---|---|
+| D1 | 已实现 | harness_state + STUCK 分层措辞 + unchecked_batches（§5.1） | — | 真实轨迹出现一次完整链：发现解释失效→修订对应层假设→设计区分性验证→改变下一步 |
+| D2 | 已实现 | 评审冻结门 + `review()` 四字段 + Active revision 回显（§5.2） | — | 评审产出的 `test` 至少一次被后续动作真实执行且改变行为 |
+| D3 | 设计 | `claims.json` 文件约定 + `submit_actions(claim=)` 结构标记 + 尺度核对（R2）+ 依赖连坐（R5）+ expect 默认开 + 提示脚手架（§1 定义 + §2 规则含 R4 不吸纳界定，约 10 行） | ~120 | 至少一条 claim 经预测兑现进 validated 且无"做了就成功"型被标 validated；至少一次尺度核对标出 disputed 或一次降级回原尺度而非删除 |
+| D4 | 设计 | startup.py 启动执行 + work/ 持久化衔接 + 索引注入 + import/调用计数 | ~80 | 一个晋升条目被 agent 写进 startup.py 后，在下一关/会话被零成本使用并减少同类重推 |
+| D5 | 设计 | `render` 字典读取 + 挂钩/门包装的使用记录（命中/空跑/拦截计数进 harness_state） | ~60 | agent 至少完成一次有使用记录依据的形态移动（文字→函数、函数→挂钩或挂钩→门） |
+| D6 = E4 | 设计后置 | 局间整合会话 + 框架库（每框架带约束检查函数，检查通过才激活，防错激活锁死探索）+ 跨局索引 | 后置 | 一个 su15 框架让 ls20/ft09 首关请求数或动作数下降 |
+
+- 默认值：D1–D3 默认开（含 expect 翻转默认开）；`model/graph/work/notebook` 旧开关维持默认关。
+- 验证：每切片单测增量跑绿后，su15+ls20 本地离线各一次真实运行对照 tag 基线，按功能/全链路/自主采用/
+  净收益四层分别汇报；评审轮触发次数与成本单列。
+- 回退：任一切片使分数或成本显著劣化，env 开关关回并记录。
+
+## 5. 实施记录（v1 原文保留）
+
+### 5.1 D1：harness_state 与分层诊断（已实现，2026-11-24）
+
+`harness_state` 与 `current_frame` 同列，每次 python 调用开头由宿主计算并绑定（`demo/arc_layered_python.ts`
+组装进 request，`demo/arc_layered_prelude.py` 绑定）。内容全部来自宿主已有内存计数器，不读文件：
 
 ```python
 harness_state = {
   "progress":  {"stale_steps": 14, "steps_since_level": 83, "level": 2, "resets": 3, "game_overs": 2},
-  "attempts":  {"recent": [...last 12 batch lines...], "repeated_sequences": 2},   # 同一动作序列哈希重放次数
-  "predictions": {"expect_hits": "7/10", "surprises": 1, "unchecked_batches": 5},  # 没带 expect 的行动批数
+  "attempts":  {"recent": [...last 12 batch lines...], "repeated_sequences": 2},
+  "predictions": {"expect_hits": "7/10", "surprises": 1, "unchecked_batches": 5},
   "errors":    [...last 5 python exceptions, truncated...],
   "artifacts": [{"path": "work/lib/path.py", "imported": 3, "last_backtest": None}, ...],
   "claims":    {"validated": 2, "hypothesis": 4, "falsified": 1},
@@ -39,49 +264,26 @@ harness_state = {
 }
 ```
 
-上下文成本：`harness_state` 只存在于 REPL 命名空间，不进入任何消息文本，agent 不查则为 0 token；查看时走
-现有 4096 字符截断，全量 dump 约 300–500 token，且旧输出会被驱逐/折叠清掉。常驻增量只有状态消息里的
-`unchecked_batches` 一项（约 10 token）和触发时的 STUCK 行。护栏：`attempts.recent` 限 12 条、`errors`
-限 5 条截断、`artifacts` 限 20 个文件。独立上下文方案省的不是 token 而是打断，代价是结论要序列化传回，
-形成双份上下文和无摩擦摘要（违反原则四），故不采用。
+上下文成本：只存在于 REPL 命名空间，agent 不查则 0 token；查看走 4096 字符截断。常驻增量只有状态消息的
+`unchecked_batches`（约 10 token）和触发时的 STUCK 行。STUCK 三档四层措辞（8 步：问在哪层失败——动作选择/
+规则假设/目标理解/对象表征；2×：枚举替代框架并用已有证据先筛；4×：触发评审轮）。向上走（重估目标/结构）
+和向下走（查细节/中间帧）都在提示词汇里给出，方向由 agent 选。
 
-D1 实施记录（2026-11-24）：宿主计数器 + `harness_state` 组装绑定、STUCK 默认 8 并换四层诊断三档措辞、
-状态消息加 `unchecked_batches`（expect 开启时）、系统提示 +6 行。`claims` 字段待 D3，`artifacts.imported`/
-`last_backtest` 待 D4，`cost.requests/evictions` 宿主 python 层不可见、以 `python_calls` 代替。验证：
-单测 32/32；真实链路 `runs/arc-layered-d1-real-20261124-ls20b`（本地离线 ls20、真实 bridge、无模型）
-13 个单元全绿，harness_state 各节在 6 动作 + 1 RESET + 1 SURPRISE 后取值正确。自主采用/净收益未验证，
-待下一次 provider 运行。
+实施记录：宿主计数器 + 绑定、STUCK 默认 8、状态消息加 `unchecked_batches`（expect 开启时）、系统提示 +6 行。
+`claims` 字段待 D3，`artifacts.imported`/`last_backtest` 待 D4，`cost.requests/evictions` 以 `python_calls`
+代替。验证：单测 32/32；真实链路 `runs/arc-layered-d1-real-20261124-ls20b`（本地离线 ls20、真实 bridge、
+无模型）13 单元全绿。自主采用/净收益未验证，待 provider 运行。
 
-### 1.2 触发：廉价信号 + 分层措辞
+### 5.2 D2：强制评审轮（已实现，2026-11-24）
 
-`STUCK` 默认打开（`ARC_LAYERED_STUCK_AFTER` 缺省 8，当前为 0）。措辞从"换策略"改为四层诊断提问：
-
-- 一档（8 步无新状态）：`STUCK: 14 steps without a new state. Before acting: which layer is failing — action
-  choice, rule hypothesis, goal reading, or object representation? harness_state has the evidence.`
-- 二档（2×）：要求枚举 2–3 个替代框架，并用 `transitions` 里已有证据先筛掉不符合的，再行动。
-- 三档（4×）：触发 §2 的强制评审轮。
-
-向上走（重估目标/结构）和向下走（查细节/中间帧）都在提示词汇里给出，方向由 agent 选。
-
-### 1.3 梯度补全
-
-状态消息已含 budget/expect_hits。补一项：`unchecked_batches`（连续多少个行动批没带预测）。这让"感知到的梯度"
-包含预期差的缺失本身，而不只有成败（原则六）。
-
-## 2. 强制评审轮（7-pass 的继承者）
-
-### 2.1 触发条件（宿主判定，结构性，agent 不能跳过）
-
-1. 同一关第二次 GAME_OVER；
-2. `stale_steps` 达到 4× 阈值；
-3. 当前关预算耗去 50% 且 `levels_completed` 未变；
-4. 过关时（最便宜的整合时刻，兼任 da-fr 的 level-transfer 引导）。
-
-### 2.2 机制
-
-- 宿主置 `review_required`，随 request 进内核；此后 `submit_actions` 抛出
-  `ReviewRequired: call review(...) first — see harness_state for evidence`（查询、计算、读历史全部照常）。
-- prelude 新增：
+7-pass 的继承形式：宿主在结构性条件下冻结行动权，agent 必须交出四字段评审才能继续。一轮、四字段、不可绕过。
+与旧 7-pass 的差异：按载体扫七轮→失败时按层一轮定位（整合时按七类能力盘点）；独立 Meta 窗口→同会话同
+上下文（路径即知识，独立上下文只留给 D6）；`reflect_component` 版本化→写普通 Python 文件 git 版本化；
+固定节拍兜底→结构性信号触发；可见改动为合格产出→区分性检查/使用记录为合格产出。
+触发（宿主判定）：同关第 2 次 GAME_OVER；stale_steps 达 4× 阈值（缺省 32）的整数倍；本关预算耗去 50% 且
+未过关（每关一次）；过关时（最便宜的整合时刻）。冻结双层执行：批内后续动作被宿主拒绝
+（`stop_reason: review required`），新 `submit_actions` 在 prelude 入口抛 `ReviewRequired`；查询、计算、
+读历史照常。
 
 ```python
 review(layer="rule",              # action | rule | goal | representation
@@ -91,68 +293,19 @@ review(layer="rule",              # action | rule | goal | representation
        test="走到 (31,40) 时计时条应 >40%")   # 能区分新旧解释的检查
 ```
 
-- `review()` 经 RPC 上报宿主：写 `harness/review.jsonl`、解除行动冻结；`layer in (goal, representation)` 的
-  `change` 作为一行 `Active revision: ...` 由宿主回显进后续每条状态消息，直到被下一次评审覆盖——这是评审结论
-  转为持续行为约束的通道（转换介质二）。
-- `no_change`（`change="none"`）合法，但 `test` 字段必填：没有区分性检查的评审不解除冻结。
-- 成本：每次触发一个回合。四个触发条件在 su15 实测轨迹上估算每局 3–6 次。
+校验（层枚举、evidence 非空步号、test 必填）在 prelude 完成；RPC 上报宿主解冻，写 `harness/review.jsonl`；
+goal/representation 的 change 作为 `Active revision:` 注入状态消息并跨会话恢复。WIN 不触发。开关
+`ARC_LAYERED_REVIEW`（缺省开）。验证：单测 36/36；真实链路 `runs/arc-layered-d2-real-20261124-ls20`
+（本地离线、真实 bridge、无模型）：预算触发冻结→ReviewRequired→`review()` 解冻→动作恢复，scorecard 关闭。
+GAME_OVER 分支与自主采用未验证，待 provider 运行。
 
-### 2.3 与旧 7-pass 的对照
-
-| 旧 7-pass | 新评审轮 |
-|---|---|
-| 按载体扫七轮 | 按失败层一轮定位，载体由层决定 |
-| 暂停游戏、独立 Meta 窗口 | 同会话同上下文，保留路径 |
-| `reflect_component` 版本化写入 | 评审只产出判断；改文件仍走普通 work/ 写入 |
-| 固定节拍兜底（50 动作） | 结构性失败信号触发 |
-| 可见改动为合格产出 | 区分性检查为合格产出 |
-
-## 3. E2：证伪门——什么有资格被留下
-
-- `expect` 默认打开（消融中唯一高采用且省成本的机制；它就是"先预测后兑现"的最小结构）。
-- prelude 新增约束账本：
-
-```python
-claim("walls-block", "灰色格拒绝进入", support=[3, 9], kills="灰色是装饰")
-submit_actions([...], expect=(2, 6), claim="walls-block")
-```
-
-- 状态机：`hypothesis` --(挂此 claim 的 expect 兑现)--> `validated`；--(挂此 claim 的 SURPRISE)--> `falsified`，
-  并由宿主在下一条状态消息注明。`validated` 只能经由兑现的预测到达——门是结构，不是提醒。
-- 持久化：宿主写 `work/claims.jsonl`（带 support/kills/状态/兑现计数）；内核绑定 `claims` 变量供 agent 代码消费
-  （转换介质一：BFS 的后继函数可以直接排除违反 validated claim 的动作）。
-- `world_model.py` 的回测（已有 O1 约定）同理：`test_world_model(transitions)` 通过 → 宿主在
-  `harness_state.artifacts` 标记 `last_backtest`，agent 据此决定是否信任它做离线搜索。通过回测的函数可提升为
-  具名基元直接调用；被新证据证伪就降回假设（粗粒化只对验证过的做）。
-
-## 4. E3/E4：复用与框架迁移
-
-- **局内复用**：validated claims + 可信 world_model → agent 写 `work/lib/*.py` 搜索/验证函数。宿主的唯一职责是
-  `harness_state.artifacts.imported` 计数（采用度量）。
-- **局间整合（独立上下文的唯一位置）**：局结束后一个独立小会话读 `review.jsonl`+`claims.jsonl`+`work/`，
-  把成立过的约束蒸馏成 `work/frameworks/*.md`（这类局面长什么样、受什么约束、在哪些情境成立过）。下局宿主把
-  框架索引（名字+一行）注入系统提示，细节由 agent 用 `open()` 按需读。跨游戏晋升走 held-out 评测（既有约定）。
-- 具体规则默认不跨局迁移，框架才迁移（原则七）。
-
-## 5. 开发切片与验收
-
-| 切片 | 改动点 | 预估行数 | 命题（可证伪） |
-|---|---|---|---|
-| D1 = E1 | `arc_layered_python.ts` 组装 harness_state；prelude 绑定；STUCK 默认开+分层措辞；提示 +6 行；测试 | ~120 | 真实轨迹出现一次完整链：发现解释失效→修订对应层假设→设计区分性验证→改变下一步。最小形态=一条带证据的评审或 World model 更新 |
-| D2 = 评审轮 | prelude `review()`+行动冻结；host 触发条件+`review.jsonl`+Active revision 回显；提示契约节 | ~150 | 评审轮产出的 `test` 至少一次在后续动作中被真实执行且改变了行为 |
-| D3 = E2 | `claim()`+状态机+`claims.jsonl`+expect 默认开；`submit_actions(claim=)` | ~120 | 至少一条 claim 经"预测兑现"进入 validated，且无"做了就成功"型记录被标 validated |
-| D4 = E3 | `artifacts.imported` 计数；回测标记接入 harness_state | ~40 | 一个 validated claim 或可信 world_model 被 agent 代码消费并减少同类失败 |
-| D5 = E4 | 局间整合会话 + 框架索引注入 | 设计后置 | 一个 su15 框架让 ls20/ft09 首关请求数或动作数下降 |
-
-- 默认值：D1–D3 直接默认开（含 expect 翻转为默认开）；`model/graph/work/notebook` 维持默认关。
-- 验证：每切片 31+ 单测增量跑绿后，su15+ls20 本地离线各一次真实运行对照 tag 基线（az gpt-6-luna low），按
-  功能 / 全链路 / 自主采用 / 净收益四层分别汇报；评审轮触发次数与成本单列。
-- 回退：任一切片使分数或成本显著劣化，env 开关关回并记录（开关为既有条件段机制，无新框架）。
+整合评审（过关触发）在 D3 起接受 consolidation 形状（§3.2 末段）。
 
 ## 6. 风险
 
-- 评审轮冻结行动权是本方案最强的干预，和"宿主只给怎么做"存在张力。边界：宿主只决定"何时必须评审"，
-  不决定"评审出什么、改什么"；触发条件全部是结构性失败信号，不是节拍。若真实运行显示评审轮产出空洞文本，
-  按原则二收紧的是门（test 字段必须随后可检验），不是加提醒。
-- claim/review 增加的提示面约 +25 行，与"接口收缩"方向相反；D1–D3 合计新增暴露名 3 个
-  （`harness_state`、`review`、`claim`），已是最小集。
+- 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是
+  结构性失败信号。若评审产出空洞文本，收紧的是门（test 必须随后可检验），不是加提醒。
+- startup.py 全权归 agent（§3.1 代价段）：若真实运行显示垃圾进启动程序，再评估收紧为"validated 才可
+  默认在场"的结构门。
+- agent 自建门（形态 4）可能错卡行动：agent 可自撤 + 宿主评审门凌驾其上；门拦截计数让空跑/错拦可见。
+- 提示面新增约 15 行（定义/规则/不吸纳清单/评审契约），与接口收缩方向相反；对价是专用工具面归零。

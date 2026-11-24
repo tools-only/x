@@ -154,7 +154,7 @@ class Kernel:
                                    "wait_ms": round(self.waited * 1000),
                                    "compute_ms": round((self.limits["timeout_ms"] / 1000 - self.budget) * 1000)}})
             self.answer(self.next_cell())
-        elif kind in ("act", "file"):
+        elif kind in ("act", "file", "review"):
             waited = time.monotonic()
             self.emit({"event": "request", "data": frame})
             message = self.incoming.get()
