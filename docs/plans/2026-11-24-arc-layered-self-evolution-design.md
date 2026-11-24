@@ -1,6 +1,8 @@
 # layered 架构上的自进化：设计方案 v2
 
 日期：2026-11-24（Asia/Shanghai）。状态：D1/D2 已实现（见 §5 实施记录），D3 起为设计。
+v2.1 修订（同日）：折入 fable 七点评审——§3.0 生命周期裁定、知识谓词化（R1 合并 R2/R5）、D2.1 评审
+降级、D3 重定义、D4 改跨局通道、D5 冻结、§4 评估协议预注册、§6 风险补全。
 基线：tag `layered-v1-duck-dafr-aligned`（commit `5e6d25e6`）。
 上游依据：[三层设计 v0.4](2026-11-23-arc-agi-3-layered-design-v0.4.md)、[迁移方案](2026-11-23-arc-evo-layered-migration.md)、
 [对齐路线图](2026-11-23-arc-layered-full-alignment-roadmap.md) §2.3 消融证据、自进化原则讨论
@@ -44,11 +46,12 @@ coding 的方式进行（§3.1）**。v1 的七对象分类归入 §1.4（可优
 
 ### 1.3 "自我"与进化的定义
 
-- **自我** = 四元组（`claims.json` 知识账本，`work/lib` 能力库，`work/startup.py` 启动程序，
-  `work/prompt.md` 编排规则）。全部是文件，git 版本化即进化史。
+- **自我** = `work/` 全目录（§1.1）；核心四元组：`work/claims/*.py` 知识谓词，`work/lib` 能力库，
+  `work/startup.py` 启动程序，`work/prompt.md` 编排规则。全部是文件，git 版本化即进化史。
 - **自进化** = 四元组内容在两根轴上的移动：经验归纳为知识（约束化），知识编译为能力（函数/挂钩/门），
   能力产生新经验；证据反转时反向流动。
-- **梯度** = 每获得一条约束付出的动作数。由 ARC 成本结构（动作贵、内核计算免费）给出，是唯一的进化方向量。
+- **梯度** = 每获得一条约束付出的动作数。由 ARC 成本结构（动作贵、内核计算免费）给出，是进化的方向
+  **概念**；它不可直接测量（R7），实际裁决用 R7 列出的代理量。
 
 ARC 能力清单（七类，整合评审的盘点维度）：
 感知（帧→对象/变化/瞬态/分区，含渲染配置——它决定模型能看见什么）、建模（`predict`+不变量+目标谓词+回测；
@@ -130,7 +133,7 @@ predict 按局换）、验证（期望核对/不变量监测/守卫，几乎不�
 | 自我评审 | `review()`（保留） | **不 Python 化**：评审冻结约束的是行动权本身，必须在 agent 代码够不到的层（实现见 §5.2） |
 
 不进 Python 的只有两样：评审冻结门（§5.2）与预算/安全。其余专用面全部取消（无 claim()/register_*/
-notebook() 工具），agent 接口 = python 工具 + `submit_actions(expect=, claim=)` 两个参数 + 冻结时的
+notebook() 工具），agent 接口 = python 工具 + `submit_actions(expect=)` 一个参数 + 冻结时的
 `review()`。这同时满足轻量化原则与 Duck 的发现（手工预置工具有害；agent 自造的不在此列）。
 
 代价要明说：startup.py 由 agent 全权决定，宿主不再强制"只有 validated 才能默认在场"——约束降级为脚手架
@@ -180,34 +183,44 @@ constraints=[claim ids])`，并按 **§1.3 七类能力**（唯一盘点维度�
 
 ### 3.3 宿主机制全清单（五项，全部机械）
 
-1. **持久化与启动**：`work/` 跨会话保留；内核启动时执行 `work/startup.py`；注入一行级索引
-   （条目名+状态+尺度+引用数，细节 agent 用 `open()` 按需读）。
-2. **结构标记**：expect 兑现/SURPRISE 更新所挂 claim 的状态；持久化时核对尺度（validated 于 level 以上
-   要求 support 含 origin 外实例，不符标 disputed 并回显）；依赖连坐（R5）。
+1. **持久化与启动**：`work/` 跨会话保留并**带到下一局**（D4）；内核启动（崩溃恢复/跨局）时执行
+   `work/startup.py`；注入一行级索引（条目名+状态+尺度+引用数，细节 agent 用 `open()` 按需读）。
+2. **谓词执行**：宿主在每个新 transition 上执行全部 `work/claims/*.py` 谓词，累计 support/反例，算出
+   尺度；状态由宿主单独持有（agent 只读）；依赖从 `import` 关系静态推出并连坐（R1/R5 合一机制）。
 3. **不可绕过门**：评审冻结（触发条件见 §5.2，agent 自建门不参与判定、凌驾于 agent 包装之上）、预算。
-4. **机械计数**：harness_state（§5.1）+ 使用记录（import/调用/挂钩命中与空跑/门拦截）。
-5. **回显**：Active revision、SURPRISE/降级/disputed 注明、索引注入、STUCK 分层措辞。
+4. **机械计数**：harness_state（§5.1）+ **宿主可测量的**使用记录（import 次数、文件读写、宿主可见拒绝）。
+   函数调用/挂钩命中/门拦截在请求层不可见，不列入——除非先实现 prelude 登记约定（最小形式：包装函数向
+   `_S["usage"]` 计数、随 summary 上报），实现后方可作为 R3/D5 的数据源。
+5. **回显**：SURPRISE/降级/disputed 注明、索引注入、STUCK 分层措辞；评审的 goal/representation 修订
+   **一次性注入**（不常驻，R4）。
 
 ### 3.4 agent 侧负担核对（轻量化验收）
 
+诚实核算（fable 指出此前漏项：专用接口没有归零，部分挪进了文件格式约定）：
+
 - 每回合常驻新增 ≈ 状态消息 2–3 行（unchecked_batches、必要时 STUCK/降级注明）。
-- 专用记忆负担：无——"自我"全在文件里，新会话醒来时 startup.py 已执行、索引已注入。
-- 专用动作：仅 `expect=`/`claim=` 两个参数和冻结时的 `review()`；其余全部是普通 Python。
+- 一次性成本：开局 prompt.md 注入（设字节上限）；评审修订注入一次。
+- 格式约定（提示面成本，计入）：claims 谓词文件约定约 4 行、prompt.md 来源引用约定约 1 行、
+  整合信封（path/constraints/七项各一句理由）约 3 行。提示面合计新增约 20 行，对价是专用工具面
+  （claim()/register_*/notebook()）归零。
+- 专用动作：仅 `expect=` 参数和冻结时的 `review()`（`claim=` 参数随谓词化取消）；其余全部是普通 Python。
 
 ### 3.5 路径在七对象上的实例化
 
 六阶段路径（§3.2）对七个承载对象（§1.4）逐一成立——同一条流水线，原料、候选形态、验证门、吸纳通道
-按对象不同而具体化。这是"路径 × 对象"的完整矩阵，整合评审的七类盘点即按此逐行检查：
+按对象不同而具体化。本矩阵是旧 7-pass 对象的**映射视图**（整合评审盘点以 §1.3 七类能力为唯一维度，
+不按本表）。诚实注记：Context 行 agent 实际能改的只有 memory 标签与清除——淘汰策略和状态消息归宿主；
+Subagent 行的"界内"就是普通内核计算（本来就有），跨上下文会话要到 D6 才存在：
 
 | 对象 | ①②原料与捕获 | ③候选形态 | ④验证门 | ⑤吸纳通道 | ⑥升降级依据 |
 |---|---|---|---|---|---|
-| Memory（知识账本） | 观察→claim 条目（hypothesis）；expect 挂条目 | 条目本身即候选 | expect 兑现 / 非来源实例复现（R1） | 索引注入 + 回显 | 状态机升降 + 尺度升降（R2）；证伪归档为死路不删除 |
+| Memory（知识账本） | 观察→`claims/*.py` 谓词（hypothesis） | 谓词本身即候选 | 宿主逐 transition 执行达标（R1） | 索引注入 + 回显 | 状态机升降 + 尺度升降；证伪归档为死路不删除 |
 | Tool（基元） | 临时代码被第二次需要；依赖 validated claims | `work/lib` 参数化函数（账本状态 hypothesis，记 `induced_from`/`depends_on`） | 回测 / 下一关复现 + 尺度核对 | startup.py import | 调用计数升形态（函数→挂钩→门）；依赖证伪连坐降级（R5） |
 | Subagent（执行方式） | 重复出现的离线计算模式（搜索/回测/枚举） | 内核离线计算代码；跨上下文需求记入 D6 议程 | 同 Tool | startup.py / D6 会话 | 同 Tool |
-| Prompt（文字规则） | 评审结论、被反复遵守的行为模式 | `work/prompt.md` 段落，**必须引用来源**（validated claim 或 review id） | 来源健康 + 下一会话被遵守的使用记录 | 宿主边界注入系统提示尾部 | 升级 = 编译为函数/门（形态轴上移，R3）；来源证伪→宿主标 stale |
-| Context（驻留策略） | 被反复查阅/引用的内容 | 常驻选择：memory 标签、索引引用、Active revision | 引用计数（宿主被动统计） | 既有回显通道 | 引用不涨→agent 清除（重复时刻的减法） |
+| Prompt（文字规则） | 评审结论、被反复遵守的行为模式 | `work/prompt.md` 段落，**必须引用来源**（validated claim 或 review id） | 来源健康 + 下一会话被遵守的使用记录 | 开局第一条用户消息一次性注入（§3.0） | 升级 = 编译为函数/门（形态轴上移，R3）；来源证伪→宿主标 stale |
+| Context（驻留策略） | 被反复查阅/引用的内容 | 常驻选择：memory 标签（agent 唯一可控项） | 文件读取计数（宿主可测） | 既有回显通道 | 引用不涨→agent 清除（重复时刻的减法） |
 | Skill（框架） | 局内 validated claims + 走通的路径 | D6 局间会话蒸馏成 `work/frameworks/*.md`（约束检查 + 进入路径） | held-out 他局/他游戏评测；约束检查通过才激活 | 框架索引注入 + `open()` | game→global 尺度升降（R2）；检查不过不激活 |
-| Loop（节律） | 自己的行为模式与效率曲线（R7 量） | 节律规则：prompt.md 文字或 startup.py 包装 | 效率量变化（每条约束的获取动作数下降） | prompt.md 注入 / startup.py 执行 | 文字→门的形态升级；效率劣化回退 |
+| Loop（节律） | 自己的行为模式与效率曲线（R7 代理量） | 节律规则：prompt.md 文字或 startup.py 包装 | R7 代理量变化（每关动作数、SURPRISE 率、重复序列数） | prompt.md 注入 / startup.py 执行 | 文字→门的形态升级；效率劣化回退 |
 
 读法：每行都是"经验→知识→能力"的同一次旅行，区别只在候选形态和门的证据类型。Memory 是其余各行的
 依赖源头（Tool/Prompt/Skill 都要引用它的条目），所以 R5 连坐天然沿此矩阵传播：一条 claim 被证伪，
@@ -223,27 +236,35 @@ constraints=[claim ids])`，并按 **§1.3 七类能力**（唯一盘点维度�
 
 - **最小进化环（MEL）先行**：expect（窄区间，已有）+ `work/` 持久化（已有）+ `work/startup.py` 内核启动
   自动执行（本次新增，宿主读文件随 request 下发、prelude 在新建命名空间时执行一次，出错以 `[startup]`
-  行可见）。claims.json 降为**文件格式约定**（提示 2 行，agent 自管），宿主暂不建状态机/尺度门/连坐。
+  行可见）。MEL 阶段知识账本暂为**文件格式约定**（提示 2 行，agent 自管），宿主暂不建谓词执行/状态机/连坐；
+  该临时形态已由 v2.1 的谓词机制（D3）取代，MEL 结束后不再扩展文件约定。
 - **D2 降级验证**：新增 `ARC_LAYERED_REVIEW_TRIGGERS`（逗号列表：level/game_over/stuck/budget，缺省全开）；
   MEL 运行只开 `game_over`。
 - **D5/D6 冻结**为"观测到对应失败后的预案"。
 - MEL 判定实验（su15 本地离线 + az gpt-6-luna low 一次）只回答一个问题：**agent 会不会自主写一个文件并在
   后续用它**。会→闭环存在，再按 §4 表推进；不会→问题在提示/模型层，先修基础再谈上层。
-- MEL 运行环境：`ARC_LAYERED_EXPECT=1 ARC_LAYERED_WORK=1 ARC_LAYERED_REVIEW_TRIGGERS=game_over`，其余缺省。
+- MEL 运行环境：`ARC_LAYERED_EXPECT=1 ARC_LAYERED_WORK=1 ARC_LAYERED_REVIEW=1
+  ARC_LAYERED_REVIEW_TRIGGERS=game_over`，其余缺省。
 
 | 切片 | 状态 | 改动点 | 预估 | 验收命题（可证伪） |
 |---|---|---|---|---|
 | D1 | 已实现 | harness_state + STUCK 分层措辞 + unchecked_batches（§5.1） | — | 真实轨迹出现一次完整链：发现解释失效→修订对应层假设→设计区分性验证→改变下一步 |
 | D2 | 已实现 | 评审冻结门 + `review()` 四字段 + Active revision 回显（§5.2） | — | 评审产出的 `test` 至少一次被后续动作真实执行且改变行为 |
-| D3 | 设计 | `claims.json` 文件约定 + `submit_actions(claim=)` 结构标记 + 尺度核对（R2）+ 依赖连坐（R5）+ expect 默认开 + 提示脚手架（§1 定义 + §2 规则含 R4 不吸纳界定，约 10 行） | ~120 | 至少一条 claim 经预测兑现进 validated 且无"做了就成功"型被标 validated；至少一次尺度核对标出 disputed 或一次降级回原尺度而非删除 |
-| D4 | 设计 | startup.py 启动执行 + work/ 持久化衔接 + 索引注入 + import/调用计数 | ~80 | 一个晋升条目被 agent 写进 startup.py 后，在下一关/会话被零成本使用并减少同类重推 |
-| D5 | 设计 | `render` 字典读取 + 挂钩/门包装的使用记录（命中/空跑/拦截计数进 harness_state） | ~60 | agent 至少完成一次有使用记录依据的形态移动（文字→函数、函数→挂钩或挂钩→门） |
+| D2.1 | 设计（降级） | review 默认改回**关**（与基线 tag 一致，开 = `ARC_LAYERED_REVIEW=1`）；goal/representation 修订改**一次性注入**（不常驻，R4）；失败评审 representation 层允许产出感知函数（change 可为"新增 work/lib 函数"）；`test` 字段谓词化（D3 后可填谓词文件名，宿主在后续 transition 上核对） | ~30 | 开 review 的运行相对关 review 的运行，至少一条 test 被宿主核对为兑现/落空（而非散文无下文） |
+| D3 | 设计（重定义） | **谓词机制**：宿主逐 transition 执行 `work/claims/*.py`、累计 support/反例、状态机（§2）、尺度核对、import 连坐；索引注入；提示约定约 6 行 | ~150 | 至少一条谓词由**宿主执行**达到 validated（agent 无直接写状态的通道）；至少一次反例自动降级且文件保留 |
+| D4 | 设计（重定义） | **跨局 work/ 通道**：上一局 work/ 带入下一局 + startup.py 跨局执行（已有内核启动执行机制）+ import/文件读取计数 | ~60 | 上一局写的函数在下一局被 import 并使用（跨局复用至少一次） |
+| D5 | **冻结** | 原"形态移动使用记录"无数据源（函数调用/挂钩命中/门拦截在请求层不可见，§3.3-4）。先决条件：prelude 登记约定；观测到"该升没升/该降没降"的真实失败后再解冻 | — | — |
 | D6 = E4 | 设计后置 | 局间整合会话 + 框架库（每框架带约束检查函数，检查通过才激活，防错激活锁死探索）+ 跨局索引 | 后置 | 一个 su15 框架让 ls20/ft09 首关请求数或动作数下降 |
 
-- 默认值：D1–D3 默认开（含 expect 翻转默认开）；`model/graph/work/notebook` 旧开关维持默认关。
-- 验证：每切片单测增量跑绿后，su15+ls20 本地离线各一次真实运行对照 tag 基线，按功能/全链路/自主采用/
-  净收益四层分别汇报；评审轮触发次数与成本单列。
-- 回退：任一切片使分数或成本显著劣化，env 开关关回并记录。
+- 默认值：**与基线 tag 一致全部默认关**，每个机制用 env 显式开（MEL 组合见 §4.0）。避免"默认配置偏离
+  对照基线"的问题重演。
+- 评估协议（预注册，不事后挑）：su15/ls20 是开发局，**ft09 是保留局**（只在切片定稿后各跑一次）；付费
+  运行设 token 上限（gpt-6-luna low ≤ 40 万 token/局）；验收命题从"至少出现一次"升级为预注册阈值——
+  D3：validated 谓词 ≥1 且假阳性（人工复核）= 0；D4：跨局 import ≥1 且该函数被调用所在批的动作未被
+  浪费（不触发 SURPRISE 即弃）；证伪阈值：开启机制的运行若每关动作数或 token 劣化 >30%，判负并关回。
+- 与 da-fr 结论的差异声明：da-fr 实验里结构化账本/强制验证/回插修订为中性或有害。本方案的差异：账本是
+  宿主执行的谓词而非 agent 记账散文；回插改一次性；评审默认关、按失败证据开。若真实运行复现 da-fr 的
+  中性/有害结论，按证伪阈值关回，不加机制补救。
 
 ## 5. 实施记录（v1 原文保留）
 
@@ -294,8 +315,9 @@ review(layer="rule",              # action | rule | goal | representation
 ```
 
 校验（层枚举、evidence 非空步号、test 必填）在 prelude 完成；RPC 上报宿主解冻，写 `harness/review.jsonl`；
-goal/representation 的 change 作为 `Active revision:` 注入状态消息并跨会话恢复。WIN 不触发。开关
-`ARC_LAYERED_REVIEW`（缺省开）。验证：单测 36/36；真实链路 `runs/arc-layered-d2-real-20261124-ls20`
+goal/representation 的 change 作为 `Active revision:` **一次性**注入下一条状态消息（D2.1；此前为常驻，
+违反 R4）。要跨会话保留，agent 自己写进 `work/prompt.md`（带来源引用）。WIN 不触发。开关
+`ARC_LAYERED_REVIEW`（**D2.1 起缺省关**，`=1` 开，与基线 tag 一致）。验证：单测 36/36；真实链路 `runs/arc-layered-d2-real-20261124-ls20`
 （本地离线、真实 bridge、无模型）：预算触发冻结→ReviewRequired→`review()` 解冻→动作恢复，scorecard 关闭。
 GAME_OVER 分支与自主采用未验证，待 provider 运行。
 
@@ -305,7 +327,19 @@ GAME_OVER 分支与自主采用未验证，待 provider 运行。
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是
   结构性失败信号。若评审产出空洞文本，收紧的是门（test 必须随后可检验），不是加提醒。
+  **工作流归属冲突的正面处理**：项目既定裁定是工作流归 agent 在运行中自己设计，宿主评审中断是包含关系
+  倒置。因此 D2.1 把 review 降为默认关的实验臂——它是待检验的干预，不是架构默认；若开臂不优于关臂，
+  整个冻结机制撤除而非调参。
 - startup.py 全权归 agent（§3.1 代价段）：若真实运行显示垃圾进启动程序，再评估收紧为"validated 才可
-  默认在场"的结构门。
-- agent 自建门（形态 4）可能错卡行动：agent 可自撤 + 宿主评审门凌驾其上；门拦截计数让空跑/错拦可见。
+  默认在场"的结构门。**出错隔离**：prelude 捕获 startup 异常、以 `[startup]` 行回显、失败不阻塞内核；
+  回滚走宿主对 work/ 的 git 快照（§3.0-3）。
+- **假 validated 跨关/跨局**是最常见的跨关失败来源：弱验证（阈值低、support 同质）会把错误约束带进下一关。
+  缓解：R1 的 ≥3 support + 0 反例 + 升尺度需 origin 外实例；兜底：保留局评测（§4 评估协议）。不能完全消除。
+- agent 自建门（形态 4）可能错卡行动：agent 可自撤 + 宿主评审门凌驾其上。**触发失效风险**：所有现有触发
+  都由动作驱动，一个拦住全部动作的门不会触发任何东西。缓解：宿主增加无动作请求计数触发（连续 N 次 python
+  调用 0 动作且 0 文件写入 → STUCK 措辞升级直至评审门按请求数触发）。
+- claims 双写冲突：谓词化后消解——状态由宿主单独持有，agent 对 `work/claims/*.py` 的改写只会把该条目
+  重置为 hypothesis（§2 状态机），不存在覆盖语义。
+- 常驻体积无上限：索引、prompt.md 注入、评审修订注入各设字节上限（索引 ≤1 KB、prompt.md ≤2 KB、修订
+  ≤512 B），超限截断并回显提示 agent 自行精简（重复时刻的减法信号）。
 - 提示面新增约 15 行（定义/规则/不吸纳清单/评审契约），与接口收缩方向相反；对价是专用工具面归零。

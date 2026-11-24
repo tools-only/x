@@ -212,6 +212,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
       revision: activeRevision ? `Active revision: ${activeRevision}` : "",
       tags_hint: flags.tags ? " Start your reply with updated `World model:`, `Goal model:`, `Action model:` and `Plan:` blocks." : "" };
+    activeRevision = "";
     const parts: Content = [];
     let diffNote = "";
     if (options.diffImage && shownFrame && shownLevel === state.level && state.frame !== shownFrame) {
@@ -369,7 +370,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 export default function arcLayeredExtension(pi: ExtensionAPI) {
   const env = process.env, root = env.ARC_RUN_ROOT ?? process.cwd(), local = env.ARC_LAYERED_CONFIG === "kaggle-local";
   const maxActionsPerCall = 16;
-  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW !== "0";
+  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW === "1";
   const reviewTriggers = env.ARC_LAYERED_REVIEW_TRIGGERS
     ? env.ARC_LAYERED_REVIEW_TRIGGERS.split(",").map(part => part.trim()).filter(Boolean) : undefined;
   if (env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
