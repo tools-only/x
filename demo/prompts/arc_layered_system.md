@@ -101,6 +101,11 @@ the start of every call:
 {{?claims}}
 - Knowledge only counts when the host can execute it. Write each falsifiable rule as a file `work/claims/<name>.py`
   defining `check(transition) -> True/False/None` (None = not applicable) with a one-line docstring stating the rule.
+  A transition has `.action` (a string such as `"UP"` or `"MOUSE(x=3,y=4)"`), `.before_frame` / `.after_frame`
+  (Frame objects: `.grid`, `.state`, `.level`) and `.result` (raw dict). Guard first, judge second:
+  return None unless the transition is one the rule speaks about (for example
+  `if "MOUSE" not in transition.action: return None`), then return whether the rule held. A check without its guard
+  judges transitions it knows nothing about and the first of them falsifies it.
   The host runs every claim on every later transition and keeps a read-only ledger in `harness_state["claims"]`:
   3 supports with no counterexample makes it validated; one counterexample falsifies it; editing the file resets its
   record. A claim whose scale shows "game" has held on more than one level. Prose notes accumulate no support - ground
@@ -125,20 +130,21 @@ the start of every call:
    regions as text.
 2. Build a model: what each action does, what the goal seems to be, and which observations support each belief.
 {{?model}}
-3. When you think you know the dynamics, write them into `work/world_model.py` as `predict(frame, action) -> grid` (or a
-   comparable interface) plus a `test_world_model(transitions)` that replays every recorded transition and compares your
-   prediction with what actually happened. Run it. Fix the model until it passes.
-4. Only search for routes inside a model that passed its back-test: BFS over predicted states, or `bfs_graph` over states
-   you have really seen. Walking the game by hand is the expensive fallback, not the default.
+3. When you think you know the dynamics, write them into `work/world_model.py` as `predict(frame, action) -> grid`.
+   The host back-tests your `predict` against the recorded transitions after every call and shows the hit rate in
+   `harness_state["model"]` and the gradient line. That measured number is the model's truth: a predict that returns
+   the frame unchanged scores visibly low, and a self-written test proves nothing the host number does not.
+4. Only search for routes inside a model whose measured back-test is good: BFS over predicted states, or `bfs_graph`
+   over states you have really seen. Walking the game by hand is the expensive fallback, not the default.
 5. Send sequences you trust in one batch, with an `expect`. A SURPRISE means the model is wrong somewhere: go back to
    step 3 and re-test before acting further. After a level change or GAME_OVER, look at the new board before acting again.
 6. When a level is done, write two or three lines about what carried over, and re-run the back-test on the new level
    before trusting the old model.
 
 Two hard rules about order:
-- Until `work/world_model.py` exists and its back-test has passed on the recorded transitions, spend actions only in
+- Until `harness_state["model"]` shows your predict getting most recorded transitions right, spend actions only in
   small probe batches (1-3 actions each), chosen to distinguish between hypotheses. By roughly ten spent actions on a
-  level you should be running the back-test, not still clicking.
+  level the back-test number should exist and be climbing, not still absent.
 - Never resend a route that already failed. A failed route or a SURPRISE means a belief is wrong: name the belief,
   fix the model, re-run the back-test, and only then act again. A RESET replays the level, not your mistakes.
 {{/model}}

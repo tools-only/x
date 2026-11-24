@@ -392,6 +392,24 @@ MEL4（su15 本地离线、az gpt-6-luna low、MODEL+CLAIMS+GRADIENT+REVIEW(game
 系统提示 work 节 +2 行（目录自动创建、文件清单在 artifacts）。单测 46/46。provider idle 恢复按用户裁定
 暂不处理。
 
+### 5.5 MEL4b 中段观测与退化采用修正（2026-11-25）
+
+MEL4b（makedirs 修复后重跑，同配置）运行中段：claims 写入链路首次真实闭环（两次评审两次落地）、expect
+纪律显著改善（9/10 命中、SURPRISE 证伪 review test 一次）。暴露的下一层问题是**退化采用**：
+
+- 谓词退化为散文：`gray_hazard.py` 第一版 `transition.result == "game_over"`（result 是 dict，恒 False）→
+  每个 transition 都是反例 → 立即 falsified；agent 把教训理解为"让它永不可证伪"，改写成 docstring +
+  `return None`。根因三个：transition 接口未在提示中文档化、None 守卫模式未示范、falsified 事件行未指出
+  "通常是缺守卫"。
+- `world_model.py` 敷衍 stub（predict 返回原帧、test 恒 True）且自评通过——自写 test 可被 stub 平凡满足，
+  硬规则失去锚点。
+
+修正（已实现，机制级，无新门）：① 提示 claims 节 +5 行（transition 接口、守卫先行模式）；② falsified
+事件行改为归因指引（缺守卫→收窄条件，保持可执行，恒 None 不积累任何东西）；③ **宿主回测 world_model**：
+R1"宿主执行谓词"延伸到能力层——宿主每调用扫描 `work/world_model.py`，prelude 在录得 transitions 上回测
+`predict`，命中率进 `harness_state["model"]` 与 gradient 行；自写 test 不再是锚点，硬规则改挂宿主实测数
+（恒等 predict 得分可见地低）。④ review_log 标题 null 修复。单测 47/47。自主采用/净收益待下一次运行。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是

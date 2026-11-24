@@ -548,6 +548,44 @@ def _is_work_path(path):
     return clean == "work" or clean.startswith("work/")
 
 
+def _same_grid(predicted, actual):
+    try:
+        cells = _cells(predicted)
+        if cells is None or len(cells) != len(actual):
+            return False
+        for row_p, row_a in zip(cells, actual):
+            if len(row_p) != len(row_a):
+                return False
+            for a, b in zip(row_p, row_a):
+                if a != b:
+                    return False
+        return True
+    except BaseException:
+        return False
+
+
+def _backtest_model(model):
+    fn = model.get("fn")
+    if not fn or not _T:
+        return None
+    tested = correct = 0
+    err = model.get("error")
+    for t in _T[-24:]:
+        try:
+            predicted = fn(_frame(t["before"]), t["action"])
+        except BaseException as exc:
+            err = "%s: %s" % (type(exc).__name__, exc)
+            continue
+        tested += 1
+        if _same_grid(predicted, t["after"]["grids"][-1]):
+            correct += 1
+    model["tested_at"] = len(_T)
+    out = {"tested": tested, "correct": correct}
+    if err:
+        out["error"] = err
+    return out
+
+
 def _makedirs(path, *args, **kwargs):
     if _is_work_path(path):
         return None
@@ -613,6 +651,20 @@ def _cell(req):
     for name in list(store):
         if name not in supplied:
             del store[name]
+    model = _S.setdefault("model", {"source": None, "fn": None, "error": None, "tested_at": -1})
+    model_source = req.get("model_source")
+    if model_source != model["source"]:
+        model.update(source=model_source, fn=None, error=None, tested_at=-1)
+        if model_source:
+            try:
+                mod = {"__name__": "work.world_model"}
+                exec(compile(model_source, "work/world_model.py", "exec"), mod)
+                if callable(mod.get("predict")):
+                    model["fn"] = mod["predict"]
+                else:
+                    model["error"] = "defines no callable predict(frame, action)"
+            except BaseException as exc:
+                model["error"] = "%s: %s" % (type(exc).__name__, exc)
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
@@ -635,9 +687,15 @@ def _cell(req):
         shown = value if isinstance(value, str) else repr(value)
         text += ("" if not text or text.endswith("\n") else "\n") + shown
     claim_errors = {name: c["error"] for name, c in (_S.get("claims") or {}).items() if c.get("error")}
+    backtest = None
+    if model.get("fn") and len(_T) != model.get("tested_at"):
+        backtest = _backtest_model(model)
+    elif model.get("error"):
+        backtest = {"tested": 0, "correct": 0, "error": model["error"]}
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
             "last_result": dict(_S["last_result"]),
-            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors}}
+            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors},
+            "model": backtest}
 
 
 _req = input

@@ -211,15 +211,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (batch?.review_placement) events.push(batch.review_placement === "placed"
       ? `Review placement: ${batch.review_artifact} was written as declared.`
       : `Review placement: the review declared ${batch.review_artifact} but the file is unchanged - write it or the conclusion is lost.`);
-    for (const name of batch?.claims_falsified ?? []) events.push(`Claim falsified: ${name} hit a counterexample - it is ` +
-      "archived as a dead end; restate it (editing the file resets its record) or drop what depended on it.");
+    for (const name of batch?.claims_falsified ?? []) events.push(`Claim falsified: ${name} hit a counterexample. ` +
+      "Most falsifications are a missing guard: the check judged a transition outside the rule's scope. Narrow the " +
+      "condition (return None when the rule does not apply) and keep the rule executable - a check that always " +
+      "returns None accumulates nothing.");
     for (const name of batch?.claims_validated ?? []) events.push(`Claim validated: ${name} (3+ supports, no counterexample).`);
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     if (options.gradient && python.gradient) {
       const g = python.gradient();
       events.push(`Gradient: ${g.actions_this_level} actions this level${g.budget_left === undefined ? "" : ` (budget left ${g.budget_left})`}` +
         ` · surprises ${g.surprises} · unchecked batches ${g.unchecked_batches} · repeated routes ${g.repeated_sequences}` +
-        `${g.expect_hits ? ` · expect hits ${g.expect_hits}` : ""}`);
+        `${g.expect_hits ? ` · expect hits ${g.expect_hits}` : ""}${g.model ? ` · model backtest ${g.model}` : ""}`);
     }
     const shown = batch?.actions.slice(0, 10).join(" ");
     const values: Record<string, string> = { events: events.join("\n"),
@@ -265,7 +267,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         activeRevision = String(review.change !== "none" ? review.change : review.diagnosis ?? "").slice(0, 200);
         mkdirSync(join(options.root, "work"), { recursive: true });
         appendFileSync(join(options.root, "work", "review_log.md"),
-          `## ${review.trigger}\n- layer: ${review.layer}\n- diagnosis: ${review.diagnosis}\n` +
+          `## ${review.trigger ?? `${review.layer} review`}\n- layer: ${review.layer}\n- diagnosis: ${review.diagnosis}\n` +
           `- change: ${review.change}\n- test: ${review.test}\n` +
           (review.place ? `- place: ${review.place} -> ${review.artifact}\n` : "") + "\n", "utf8");
       }

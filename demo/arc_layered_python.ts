@@ -61,6 +61,7 @@ export class LayeredPython {
   private seenSequences = new Set<string>();
   private repeatedSequences = 0;
   private surprises = 0;
+  private modelReport: { tested: number; correct: number; error?: string } | null = null;
   private unchecked = 0;
   private expectHits: string | null = null;
   private errors: string[] = [];
@@ -125,6 +126,7 @@ export class LayeredPython {
         levels_completed: state.levels_completed, resets: this.resets, game_overs: this.gameOvers },
       attempts: { recent: this.recentLines.slice(-12), repeated_sequences: this.repeatedSequences },
       predictions: { expect_hits: this.expectHits, surprises: this.surprises, unchecked_batches: this.unchecked },
+      ...(this.modelReport ? { model: this.modelReport } : {}),
       errors: this.errors.slice(-5),
       artifacts: files.slice(0, 20),
       reviews: this.reviewLog.slice(-5),
@@ -140,7 +142,8 @@ export class LayeredPython {
     const state = this.state();
     return { actions_this_level: this.stepsSinceLevel, budget_left: state.budget_left,
       surprises: this.surprises, unchecked_batches: this.unchecked, repeated_sequences: this.repeatedSequences,
-      expect_hits: this.expectHits };
+      expect_hits: this.expectHits,
+      model: this.modelReport ? `${this.modelReport.correct}/${this.modelReport.tested}` : undefined };
   }
 
   private scanClaims(): Array<{ name: string; source: string }> {
@@ -157,6 +160,11 @@ export class LayeredPython {
     });
     for (const name of Object.keys(this.claimLedger)) if (!seen.has(name)) delete this.claimLedger[name];
     return result;
+  }
+
+  private scanModelSource(): string | undefined {
+    const target = join(this.workDir, "world_model.py");
+    return existsSync(target) ? readFileSync(target, "utf8") : undefined;
   }
 
   private startupSource(): string | undefined {
@@ -279,7 +287,8 @@ export class LayeredPython {
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
       harness_state: this.harnessState(), review_enabled: !!this.config.review, review_required: this.reviewRequired,
-      startup_source: this.startupSource(), ...(claimSources ? { claims: claimSources } : {}) };
+      startup_source: this.startupSource(), model_source: this.scanModelSource(),
+      ...(claimSources ? { claims: claimSources } : {}) };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch))
       : req.t === "review" ? this.review(req) : this.file(req);
@@ -292,6 +301,8 @@ export class LayeredPython {
       images = Array.isArray(run.result.images) ? run.result.images : [];
       if (run.result.last_result) this.lastResult = run.result.last_result;
       metrics = { ...run.metrics };
+      const modelReport = (run.result as any).model;
+      if (modelReport) this.modelReport = modelReport;
       const report = (run.result as any).claims;
       if (this.config.claims && report) {
         for (const [name, counts] of Object.entries<any>(report.counts ?? {})) {

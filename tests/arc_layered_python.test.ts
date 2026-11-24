@@ -107,6 +107,21 @@ test("os.makedirs under work/ is a no-op and nested writes work", async () => {
   assert.match(readFileSync(join(dir, "claims", "rule.py"), "utf8"), /return None/);
 });
 
+test("the host back-tests work/world_model.py and reports the hit rate", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "with open('work/world_model.py', 'w') as f: f.write('def predict(frame, action):\\n    return frame.grid\\n')",
+    "submit_actions(['UP', 'UP'])",
+    "print('ran')",
+  ].join("\n"));
+  assert.match(out.text, /ran/);
+  await python.run("pass");
+  assert.equal(python.gradient().model, "0/2");
+  const next = await python.run("m = harness_state['model']\nprint(m['tested'], m['correct'] < m['tested'])");
+  python.close();
+  assert.match(next.text, /^2 True/);
+});
+
 test("namespace persists by default and resets per call when configured", async () => {
   const kept = await session();
   await kept.python.run("x = 41");
