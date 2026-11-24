@@ -206,6 +206,15 @@ test("a review freeze shows in the state message and echoes an active revision",
   const row = JSON.parse(readFileSync(join(root, "harness", "review.jsonl"), "utf8").trim());
   assert.equal(row.layer, "representation");
   assert.equal(row.trigger, "GAME_OVER number 2 on this level");
+  const logMd = readFileSync(join(root, "work", "review_log.md"), "utf8");
+  assert.match(logMd, /layer: representation[\s\S]*treat the top strip as HUD/);
+  python.reviews = undefined;
+  handlers.turn_start();
+  python.next = batch({ executed: 1, actions: ["UP"], review_test: "untested" });
+  await call();
+  const next = textOf(sent[1].message.content);
+  assert.match(next, /Review test: untested/);
+  assert.doesNotMatch(next, /Active revision/);
 });
 
 test("a surprise batch is announced with the running hit rate", async () => {

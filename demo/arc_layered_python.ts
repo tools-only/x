@@ -11,7 +11,8 @@ export type LayeredState = { level: number; levels_completed: number; win_levels
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
   stale_steps: number; unchecked_batches: number; review_required: string | null };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
-  level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null };
+  level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null;
+  review_test?: string; review_placement?: string; review_artifact?: string };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; reviews?: Array<Record<string, unknown>> };
@@ -65,10 +66,12 @@ export class LayeredPython {
   private calls = 0;
   private batchHadExpect = false;
   private reviewRequired: string | null = null;
+  private pendingPlacement?: { artifact: string; before: string | null };
   private gameOversThisLevel = 0;
   private budgetReviewFired = false;
   private levelStartBudgetLeft: number | undefined;
   private pendingReviews: Array<Record<string, unknown>> = [];
+  private reviewLog: Array<Record<string, unknown>> = [];
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -121,6 +124,7 @@ export class LayeredPython {
       predictions: { expect_hits: this.expectHits, surprises: this.surprises, unchecked_batches: this.unchecked },
       errors: this.errors.slice(-5),
       artifacts: files.slice(0, 20),
+      reviews: this.reviewLog.slice(-5),
       cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null, python_calls: this.calls },
     };
   }
@@ -201,10 +205,20 @@ export class LayeredPython {
   }
 
   private review(request: KernelRequest) {
-    const record = { t: new Date().toISOString(), trigger: this.reviewRequired, ...(request.review as Record<string, unknown>) };
+    const review = request.review as Record<string, unknown>;
+    const record = { t: new Date().toISOString(), trigger: this.reviewRequired, ...review };
     this.pendingReviews.push(record);
+    this.reviewLog.push(record);
     this.reviewRequired = null;
+    if (typeof review.artifact === "string")
+      this.pendingPlacement = { artifact: review.artifact, before: this.workContent(review.artifact) };
     return { ok: true };
+  }
+
+  private workContent(path: string): string | null {
+    const target = resolve(this.workDir, path.replace(/\\/g, "/").replace(/^(\.\/|\/)?work\//, ""));
+    if (!target.startsWith(this.workDir + sep) || !existsSync(target)) return null;
+    return readFileSync(target, "utf8");
   }
 
   private file(request: KernelRequest) {
@@ -271,6 +285,19 @@ export class LayeredPython {
     if (batch.executed && lastSummary && typeof lastSummary === "object") {
       if (lastSummary.surprise) acted.surprise = true;
       if (lastSummary.expect_hits) acted.expect_hits = lastSummary.expect_hits;
+      if (lastSummary.review_test) {
+        acted.review_test = lastSummary.review_test;
+        const lastReview = this.reviewLog[this.reviewLog.length - 1];
+        if (lastReview) lastReview.test_outcome = lastSummary.review_test;
+        if (this.pendingPlacement) {
+          const current = this.workContent(this.pendingPlacement.artifact);
+          const placed = current !== null && current !== this.pendingPlacement.before;
+          acted.review_placement = placed ? "placed" : "unplaced";
+          acted.review_artifact = this.pendingPlacement.artifact;
+          if (lastReview) lastReview.placed = placed;
+          this.pendingPlacement = undefined;
+        }
+      }
     }
     if (batch.executed) {
       const key = batch.actions.join(">");

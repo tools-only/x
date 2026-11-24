@@ -157,7 +157,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   try {
     for (const line of readFileSync(join(store, "review.jsonl"), "utf8").trim().split("\n")) {
       const row = JSON.parse(line);
-      if ((row.layer === "goal" || row.layer === "representation") && row.change !== "none") activeRevision = row.change;
+      activeRevision = String(row.change !== "none" ? row.change : row.diagnosis ?? "").slice(0, 200);
     }
   } catch {}
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
@@ -199,8 +199,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
     if (state.review_required) events.push(`REVIEW REQUIRED (${state.review_required}): submit_actions is frozen; everything ` +
       "else still works. Inspect the evidence, then call review(layer=..., diagnosis=..., evidence=[history steps], " +
-      'change=..., test=...) to unfreeze. change="none" is allowed; a test that tells the new reading from the old is not optional.');
+      'change=..., test=..., place=..., artifact=...) to unfreeze. change="none" is allowed; a test that tells the new ' +
+      "reading from the old is not optional, and any real change must land in the declared work/ file.");
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
+    if (batch?.review_test) events.push(batch.review_test === "hit"
+      ? "Review test: the expect on your first batch after the review held."
+      : batch.review_test === "surprise"
+        ? "Review test: the expect on your first batch after the review failed - the revised reading is also wrong."
+        : "Review test: untested - your first batch after the review carried no expect, so the revision was never checked.");
+    if (batch?.review_placement) events.push(batch.review_placement === "placed"
+      ? `Review placement: ${batch.review_artifact} was written as declared.`
+      : `Review placement: the review declared ${batch.review_artifact} but the file is unchanged - write it or the conclusion is lost.`);
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     const shown = batch?.actions.slice(0, 10).join(" ");
     const values: Record<string, string> = { events: events.join("\n"),
@@ -243,8 +252,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       for (const review of outcome.reviews ?? []) {
         write("review.jsonl", review);
         log("review", { layer: review.layer, trigger: review.trigger });
-        if ((review.layer === "goal" || review.layer === "representation") && review.change !== "none")
-          activeRevision = String(review.change);
+        activeRevision = String(review.change !== "none" ? review.change : review.diagnosis ?? "").slice(0, 200);
+        mkdirSync(join(options.root, "work"), { recursive: true });
+        appendFileSync(join(options.root, "work", "review_log.md"),
+          `## ${review.trigger}\n- layer: ${review.layer}\n- diagnosis: ${review.diagnosis}\n` +
+          `- change: ${review.change}\n- test: ${review.test}\n` +
+          (review.place ? `- place: ${review.place} -> ${review.artifact}\n` : "") + "\n", "utf8");
       }
       if (batch) {
         actedThisTurn = true;

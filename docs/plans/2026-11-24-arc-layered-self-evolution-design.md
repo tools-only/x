@@ -323,6 +323,38 @@ GAME_OVER 分支与自主采用未验证，待 provider 运行。
 
 整合评审（过关触发）在 D3 起接受 consolidation 形状（§3.2 末段）。
 
+评审落地修复（2026-11-24，MEL su15 运行的证据：三次评审诊断命中要害但零行为改变）：
+① `change` 填层名被 prelude 拒绝；`Active revision:` 改为回显 change（或 change='none' 时的 diagnosis），
+截断 200 字符、一次性注入。② 评审后第一个行动批的 expect 由宿主核对，结果（hit/surprise/untested）进
+状态消息与 `harness_state.predictions.last_review_test`——test 兑现与否从散文变成可测量事实，不加新冻结门。
+③ 宿主把每次评审机械追加到 `work/review_log.md`（agent 零负担、按需 `open()` 读），同时给 work/ 通道一个
+种子文件。验证：单测 39/39；真实链路 `runs/arc-layered-reviewfix-real-20261124-ls20`（本地离线、真实 bridge、
+无模型）：冻结→评审→带 expect 的批→`review_test=surprise` 正确进 harness_state，scorecard 关闭。
+自主采用未验证，待下次 MEL 运行。
+
+评审直接挂载（同日第二批，MEL2 运行中第一次评审的证据：change 已是真实修订、落盘成功，但首批 RESET 被
+标 untested、结论仍只有散文可达）：④ 历史评审作为数据挂进 `harness_state["reviews"]`（宿主持有、最近 5 条、
+含 test_outcome），agent 代码可直接读，不再依赖 `open()`。⑤ `test` 接受可调用 `(transition) -> bool|None`
+——形态 1→3 的移动：宿主侧 prelude 在每个后续动作上自动运行，失败标注在动作行，计数进
+`harness_state["predictions"]["review_checks"]`。评审结论由此从散文变成活的约束核对（D3 谓词机制的
+评审切片；文件级谓词与跨重启持久化仍按 §4.0 门控）。⑥ RESET 批不消耗 review_test 待检标记（GAME_OVER
+评审后首批必然 RESET 的误标修正）。验证：单测 40/40；真实链路
+`runs/arc-layered-reviewmount-real-20261124-ls20`：可调用 test 在动作后自动运行（`r1: 1 ok / 0 fail`），
+scorecard 关闭。自主采用未验证。
+
+评审转化协议（同日第三批，用户裁定：在 review 层挂载能力转化协议，7-pass 的收缩版——七对象从"每轮各过
+一遍"降为"每次评审的落点枚举域"，固定路径保住、负担从 7 pass 降到 1 pass）：⑦ `review()` 新增必填字段
+（仅当 `change != 'none'`）：`place=` 七对象之一（memory/tool/prompt/loop/context/skill/subagent）、
+`artifact=` 承载结论的 work/ 文件。宿主在评审时快照该文件内容，在评审后首个真实行动批（与 review_test
+同一边界）核对文件是否真的被写入/修改——只核对落地事实，不评判语义。结果进批摘要
+（`review_placement`/`review_artifact`）、状态消息事件行（`Review placement: ...`）、评审记录
+（`harness_state["reviews"][-1]["placed"]`）与 `work/review_log.md`（place 行）。方向规则进提示：
+GAME_OVER 评审走修假设/造感知函数，过关评审走压缩（解法参数化、信念变短）。已知边界：评审前已写好、
+评审后内容未变的文件会被报 unplaced（提示要求评审后写入）；敷衍落地（空文件应付核对）不惩罚，由后续
+review_test 暴露。验证：单测 42/42；真实链路 `runs/arc-layered-placement-real-20261124-ls20`（本地离线、
+真实 bridge、无模型）：评审声明 `place='memory', artifact='work/claims.md'` →写文件→行动批→下一调用
+`harness_state["reviews"][-1]` 显示 `placed=True`，scorecard 关闭验证。自主采用未验证，归 MEL3 判定。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是

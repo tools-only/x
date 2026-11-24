@@ -84,8 +84,19 @@ the start of every call:
   querying, computing and reading history still work. Unfreeze with `review(layer=..., diagnosis=..., evidence=[history
   step numbers], change=..., test=...)`. `layer` names where the failure is: "action" (wrong move), "rule" (wrong
   dynamics), "goal" (wrong objective) or "representation" (wrong reading of what the objects are). `change` may be
-  "none"; `test` must be a check that would tell the new reading from the old. A goal or representation change is
-  echoed into every later state message as `Active revision:` until your next such review replaces it.
+  "none" or the revised reading in your own words - never just a layer name; `test` must be a check that would tell
+  the new reading from the old. The strongest form of `test` is a callable `(transition) -> True/False/None`
+  (None = not applicable): it then runs automatically after every later action, failures are flagged on the action
+  line, and running counts appear in `harness_state["predictions"]["review_checks"]`. With a prose `test`, your
+  first non-RESET batch after the review should carry an `expect` that implements it: the host reports whether it
+  held, failed, or was never checked. Past reviews stay readable in `harness_state["reviews"]` and
+  `work/review_log.md`. The revised reading is echoed once into the next state message as `Active revision:`.
+- A review whose `change` is not "none" must also say where the conclusion lands: `place=` one of "memory", "tool",
+  "prompt", "loop", "context", "skill", "subagent", and `artifact=` the `work/` file that will hold it (for example
+  `work/world_model.py` or `work/lib/push.py`). Write that file after the review; at your first acting batch the host
+  reports whether the declared artifact was actually written. Direction: after a GAME_OVER review, repair the
+  hypothesis or build a perception helper; after a completed level, compress - turn the route that worked into a
+  parameterized function and shorten your beliefs. A conclusion that only lives in prose is lost at eviction.
 {{/review}}
 {{?work}}
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,

@@ -290,19 +290,40 @@ def _expect_ok(expect, before, after, result):
     return lo <= result.get("changed_cells", 0) <= hi
 
 
-def review(layer, diagnosis, evidence, change, test):
-    """Name the failing layer with evidence; required to unfreeze submit_actions after the host froze it."""
+def review(layer, diagnosis, evidence, change, test, place=None, artifact=None):
+    """Name the failing layer with evidence; required to unfreeze submit_actions after the host froze it.
+    A review whose change is not 'none' must also declare where the conclusion lands: place= one of
+    memory/tool/prompt/loop/context/skill/subagent and artifact= the work/ file that will hold it."""
     if layer not in ("action", "rule", "goal", "representation"):
         raise ValueError("layer must be one of: action, rule, goal, representation")
     steps = list(evidence) if isinstance(evidence, (list, tuple)) else None
     if not steps or not all(isinstance(s, int) and not isinstance(s, bool) and 0 <= s < len(_H) for s in steps):
         raise ValueError("evidence must be a non-empty list of history step numbers (0..%d)" % (len(_H) - 1))
-    for name, value in (("diagnosis", diagnosis), ("change", change), ("test", test)):
+    for name, value in (("diagnosis", diagnosis), ("change", change)):
         if not isinstance(value, str) or not value.strip():
             raise ValueError("%s must be a non-empty string; change='none' is allowed, a missing test is not" % name)
+    if not callable(test) and (not isinstance(test, str) or not test.strip()):
+        raise ValueError("test must be a non-empty string or a callable (transition) -> bool|None")
+    if change.strip().lower() in ("action", "rule", "goal", "representation"):
+        raise ValueError("change must be the revised reading in your own words (or 'none'), not a layer name")
+    if change.strip().lower() != "none" and (place is None or artifact is None):
+        raise ValueError("a review whose change is not 'none' must declare place= (memory, tool, prompt, loop, "
+                         "context, skill or subagent) and artifact= (the work/ file where the conclusion lands)")
+    if place is not None and place not in ("memory", "tool", "prompt", "loop", "context", "skill", "subagent"):
+        raise ValueError("place must be one of: memory, tool, prompt, loop, context, skill, subagent")
+    if artifact is not None and (not isinstance(artifact, str)
+                                 or not artifact.replace("\\", "/").lstrip("./").startswith("work/")):
+        raise ValueError("artifact must be a path under work/")
+    if callable(test):
+        checks = _S.setdefault("review_checks", [])
+        checks.append({"id": "r%d" % (len(checks) + 1), "fn": test, "ok": 0, "fail": 0})
+        test_repr = "<callable %s, run after every later action>" % getattr(test, "__name__", "test")
+    else:
+        test_repr = test
     _rpc({"t": "review", "review": {"layer": layer, "diagnosis": diagnosis, "evidence": steps,
-                                    "change": change, "test": test}})
+                                    "change": change, "test": test_repr, "place": place, "artifact": artifact}})
     _S["review_required"] = None
+    _S["review_test_pending"] = True
     return {"ok": True, "layer": layer, "unfrozen": True}
 
 
@@ -358,10 +379,19 @@ def _bind():
     history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H]
     transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T]
     last = transitions[-1] if transitions else None
+    harness = dict(_S.get("harness") or {})
+    extra = {}
+    if _S.get("last_review_test"):
+        extra["last_review_test"] = _S["last_review_test"]
+    checks = _S.get("review_checks") or []
+    if checks:
+        extra["review_checks"] = {c["id"]: "%d ok / %d fail" % (c["ok"], c["fail"]) for c in checks}
+    if extra:
+        harness["predictions"] = dict(harness.get("predictions") or {}, **extra)
     ns.update(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
               history=history, transitions=transitions, last_transition=last,
               last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
-              valid_actions=list(_S["valid"]), harness_state=dict(_S.get("harness") or {}))
+              valid_actions=list(_S["valid"]), harness_state=harness)
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
@@ -381,6 +411,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
                          "changed cells, an int levels_completed increase, or a callable" % (expect[0], expect[1]))
     items = [actions] if isinstance(actions, (str, dict)) else list(actions)
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
+    acted_real = False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
     skipped, surprise = 0, False
     for item in items:
@@ -404,6 +435,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         _bind()
         executed += 1
         reset = reset or call["action"] == "RESET"
+        acted_real = acted_real or call["action"] != "RESET"
         level_changed = level_changed or _H[-1]["raw"]["levels_completed"] != before["raw"]["levels_completed"]
         lines.append(reply["line"])
         grids = _H[-1]["grids"]
@@ -411,6 +443,17 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             transient = _transient(grids)
             if transient:
                 lines[-1] += "  [animation: %d transient cells; inspect frames_of(%d)]" % (transient, len(_H) - 1)
+        for check in _S.get("review_checks") or []:
+            try:
+                verdict = check["fn"](Transition(_T[-1]["action"], _frame(_T[-1]["before"]), _frame(_T[-1]["after"]),
+                                                 dict(_T[-1]["result"]))) if _T else None
+            except Exception:
+                verdict = None
+            if verdict is True:
+                check["ok"] += 1
+            elif verdict is False:
+                check["fail"] += 1
+                lines[-1] += "  <- review test %s failed" % check["id"]
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -437,11 +480,17 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             break
     latest = _H[-1]["raw"]
     log = _S.get("expect_log") or []
+    review_test = None
+    if executed and acted_real and _S.get("review_test_pending"):
+        _S.pop("review_test_pending")
+        review_test = "surprise" if surprise else ("hit" if expect is not None else "untested")
+        _S["last_review_test"] = review_test
     summary = {"executed_count": executed, "requested": len(items), "stopped_early": reason is not None,
                "stop_reason": reason, "level": latest["level"], "levels_completed": latest["levels_completed"],
                "win_levels": latest.get("win_levels", 0), "state": latest["state"], "level_changed": level_changed,
                "reset": reset, "valid_actions": list(_S["valid"]), "lines": lines, "skipped_noops": skipped,
-               "surprise": surprise, "expect_hits": "%d/%d" % (sum(log), len(log)) if log else None}
+               "surprise": surprise, "expect_hits": "%d/%d" % (sum(log), len(log)) if log else None,
+               "review_test": review_test}
     _S["last_result"] = summary
     _bind()
     return summary

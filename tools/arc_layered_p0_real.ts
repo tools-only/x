@@ -42,7 +42,8 @@ const cells = [
   "g = graph_summary()\nprint('graph:', g['states'] > 1, g['edges'] > 0, g['frontier_count'] >= 0, replay_to(history[-1].hash))",
   "h = harness_state\nprint('harness:', h['progress'], h['predictions'])\nprint(len(h['attempts']['recent']), [e[-60:] for e in h['errors']], h['artifacts'], h['cost'])",
   "try:\n    submit_actions('UP')\n    print('not frozen')\nexcept RuntimeError as e:\n    print(str(e)[:14])",
-  "r = review(layer='rule', diagnosis='half the budget is gone with no level done', evidence=[len(history) - 1], change='none', test='the next UP changes the frame')\nprint('review:', r['unfrozen'], submit_actions('UP')['executed_count'])",
+  "r = review(layer='rule', diagnosis='half the budget is gone with no level done', evidence=[len(history) - 1], change='UP only redraws the cursor', test=lambda t: t.result.get('changed_cells', 0) >= 0, place='memory', artifact='work/claims.md')\nwith open('work/claims.md', 'w') as f: f.write('- UP only redraws the cursor (steps %d)\\n' % len(history))\nr2 = submit_actions('UP', expect=(0, 16))\nprint('review:', r['unfrozen'], r2['executed_count'], r2['review_test'], harness_state['predictions'].get('last_review_test'), harness_state['predictions'].get('review_checks'))",
+  "print('placement:', harness_state['reviews'][-1].get('place'), harness_state['reviews'][-1].get('placed'))",
 ];
 for (const code of cells) {
   const outcome = await python.run(code);
