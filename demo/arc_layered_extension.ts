@@ -216,6 +216,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       "condition (return None when the rule does not apply) and keep the rule executable - a check that always " +
       "returns None accumulates nothing.");
     for (const name of batch?.claims_validated ?? []) events.push(`Claim validated: ${name} (3+ supports, no counterexample).`);
+    for (const name of batch?.claims_inapplicable ?? []) events.push(`Claim never applies: ${name} returned None on ` +
+      "every transition so far. A rule that never applies should not guide action - design a probe where it would " +
+      "apply, or drop it.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     if (options.gradient && python.gradient) {
       const g = python.gradient();

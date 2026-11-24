@@ -406,6 +406,39 @@ test("a counterexample falsifies a claim and editing the file resets its record"
   assert.match(fifth.text, /^hypothesis 0 0/);
 });
 
+test("a new claim is back-tested against the recorded history at load", async () => {
+  const { python } = await session({ claims: true });
+  await python.run("print(submit_actions(['UP'] * 2)['executed_count'])");
+  await python.run("print(submit_actions('UP')['executed_count'])");
+  await python.run([
+    "f = open('work/claims/up_moves.py', 'w')",
+    "f.write('def check(t):\\n    return True if t.action == \"UP\" else None\\n')",
+    "f.close()",
+  ].join("\n"));
+  const loaded = await python.run("print('loaded')");
+  const after = await python.run("c = harness_state['claims']['up_moves']\nprint(c['state'], c['support'], c['checked'])");
+  python.close();
+  assert.equal(loaded.acted?.executed, 0);
+  assert.deepEqual((loaded.acted as any)?.claims_validated, ["up_moves"]);
+  assert.match(after.text, /^validated 3 3/);
+});
+
+test("a claim that never applies is flagged after 20 checks", async () => {
+  const { python } = await session({ claims: true });
+  await python.run([
+    "f = open('work/claims/never.py', 'w')",
+    "f.write('def check(t):\\n    return None\\n')",
+    "f.close()",
+  ].join("\n"));
+  const first = await python.run("r = submit_actions(['DOWN'] * 10, stop_on_noop=False)\nprint(r['executed_count'])");
+  const second = await python.run("r = submit_actions(['DOWN'] * 10, stop_on_noop=False)\nprint(r['executed_count'])");
+  const after = await python.run("c = harness_state['claims']['never']\nprint(c['state'], c['support'], c['checked'])");
+  python.close();
+  assert.equal((first.acted as any)?.claims_inapplicable, undefined);
+  assert.deepEqual((second.acted as any)?.claims_inapplicable, ["never"]);
+  assert.match(after.text, /^hypothesis 0 20/);
+});
+
 test("stagnation freezes acting mid-batch and the freeze survives calls", async () => {
   const { python } = await session({ review: true, reviewStuckSteps: 2 });
   const out = await python.run("r = submit_actions(['DOWN'] * 4, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");

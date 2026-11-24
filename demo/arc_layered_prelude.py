@@ -455,20 +455,8 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
                 check["fail"] += 1
                 lines[-1] += "  <- review test %s failed" % check["id"]
         for claim_name, claim in sorted((_S.get("claims") or {}).items()):
-            if not claim.get("fn") or not _T:
-                continue
-            try:
-                verdict = claim["fn"](Transition(_T[-1]["action"], _frame(_T[-1]["before"]),
-                                                 _frame(_T[-1]["after"]), dict(_T[-1]["result"])))
-            except BaseException as exc:
-                claim["error"] = "%s: %s" % (type(exc).__name__, exc)
-                continue
-            if verdict is True or verdict is False:
-                box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "levels": []})
-                box["support" if verdict else "counter"] += 1
-                level = _H[-1]["raw"]["level"]
-                if verdict and level not in box["levels"]:
-                    box["levels"].append(level)
+            if claim.get("fn") and _T:
+                _judge_claim(claim_name, claim, _T[-1])
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -564,6 +552,21 @@ def _same_grid(predicted, actual):
         return False
 
 
+def _judge_claim(claim_name, claim, t):
+    try:
+        verdict = claim["fn"](Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])))
+    except BaseException as exc:
+        claim["error"] = "%s: %s" % (type(exc).__name__, exc)
+        return
+    box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "checked": 0, "levels": []})
+    box["checked"] += 1
+    if verdict is True or verdict is False:
+        box["support" if verdict else "counter"] += 1
+        level = t["after"]["raw"]["level"]
+        if verdict and level not in box["levels"]:
+            box["levels"].append(level)
+
+
 def _backtest_model(model):
     fn = model.get("fn")
     if not fn or not _T:
@@ -647,6 +650,9 @@ def _cell(req):
         except BaseException as exc:
             entry["error"] = "%s: %s" % (type(exc).__name__, exc)
         store[claim["name"]] = entry
+        if entry["fn"] and claim.get("fresh"):
+            for t in _T:
+                _judge_claim(claim["name"], entry, t)
     supplied = {claim["name"] for claim in req.get("claims") or []}
     for name in list(store):
         if name not in supplied:

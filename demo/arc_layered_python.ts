@@ -13,7 +13,7 @@ export type LayeredState = { level: number; levels_completed: number; win_levels
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null;
   review_test?: string; review_placement?: string; review_artifact?: string;
-  claims_falsified?: string[]; claims_validated?: string[] };
+  claims_falsified?: string[]; claims_validated?: string[]; claims_inapplicable?: string[] };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; reviews?: Array<Record<string, unknown>> };
@@ -69,8 +69,8 @@ export class LayeredPython {
   private batchHadExpect = false;
   private reviewRequired: string | null = null;
   private pendingPlacement?: { artifact: string; before: string | null };
-  private claimLedger: Record<string, { source: string; support: number; counter: number; levels: number[];
-    state: string; error?: string }> = {};
+  private claimLedger: Record<string, { source: string; support: number; counter: number; checked: number;
+    levels: number[]; state: string; error?: string; flaggedInapplicable?: boolean }> = {};
   private gameOversThisLevel = 0;
   private budgetReviewFired = false;
   private levelStartBudgetLeft: number | undefined;
@@ -131,7 +131,7 @@ export class LayeredPython {
       artifacts: files.slice(0, 20),
       reviews: this.reviewLog.slice(-5),
       ...(this.config.claims ? { claims: Object.fromEntries(Object.entries(this.claimLedger).map(([name, entry]) =>
-        [name, { state: entry.state, support: entry.support, counter: entry.counter,
+        [name, { state: entry.state, support: entry.support, counter: entry.counter, checked: entry.checked,
           scale: entry.levels.length >= 2 ? "game" : "level", ...(entry.error ? { error: entry.error } : {}) }])) } : {}),
       cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null, python_calls: this.calls },
     };
@@ -146,7 +146,7 @@ export class LayeredPython {
       model: this.modelReport ? `${this.modelReport.correct}/${this.modelReport.tested}` : undefined };
   }
 
-  private scanClaims(): Array<{ name: string; source: string }> {
+  private scanClaims(): Array<{ name: string; source: string; fresh?: boolean }> {
     const dir = join(this.workDir, "claims");
     const files = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith(".py")) : [];
     const seen = new Set<string>();
@@ -154,9 +154,10 @@ export class LayeredPython {
       const name = file.slice(0, -3), source = readFileSync(join(dir, file), "utf8");
       seen.add(name);
       const entry = this.claimLedger[name];
-      if (!entry || entry.source !== source)
-        this.claimLedger[name] = { source, support: 0, counter: 0, levels: [], state: "hypothesis" };
-      return { name, source };
+      const fresh = !entry || entry.source !== source;
+      if (fresh)
+        this.claimLedger[name] = { source, support: 0, counter: 0, checked: 0, levels: [], state: "hypothesis" };
+      return { name, source, ...(fresh ? { fresh } : {}) };
     });
     for (const name of Object.keys(this.claimLedger)) if (!seen.has(name)) delete this.claimLedger[name];
     return result;
@@ -293,7 +294,7 @@ export class LayeredPython {
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch))
       : req.t === "review" ? this.review(req) : this.file(req);
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
-    const claimsFalsified: string[] = [], claimsValidated: string[] = [];
+    const claimsFalsified: string[] = [], claimsValidated: string[] = [], claimsInapplicable: string[] = [];
     try {
       const run = await this.kernel.run(request, onRequest, signal);
       error = run.result.error ?? undefined;
@@ -310,11 +311,16 @@ export class LayeredPython {
           if (!entry) continue;
           entry.support += counts.support ?? 0;
           entry.counter += counts.counter ?? 0;
+          entry.checked += counts.checked ?? 0;
           for (const level of counts.levels ?? []) if (!entry.levels.includes(level)) entry.levels.push(level);
           const previous = entry.state;
           entry.state = entry.counter > 0 ? "falsified" : entry.support >= 3 ? "validated" : "hypothesis";
           if (entry.state === "falsified" && previous !== "falsified") claimsFalsified.push(name);
           if (entry.state === "validated" && previous !== "validated") claimsValidated.push(name);
+          if (entry.checked >= 20 && entry.support + entry.counter === 0 && !entry.flaggedInapplicable) {
+            entry.flaggedInapplicable = true;
+            claimsInapplicable.push(name);
+          }
         }
         for (const [name, problem] of Object.entries<any>(report.errors ?? {}))
           if (this.claimLedger[name]) this.claimLedger[name].error = String(problem);
@@ -342,6 +348,7 @@ export class LayeredPython {
     const { halt: _halt, ...acted } = batch;
     if (claimsFalsified.length) acted.claims_falsified = claimsFalsified;
     if (claimsValidated.length) acted.claims_validated = claimsValidated;
+    if (claimsInapplicable.length) acted.claims_inapplicable = claimsInapplicable;
     const lastSummary: any = this.lastResult;
     if (batch.executed && lastSummary && typeof lastSummary === "object") {
       if (lastSummary.surprise) acted.surprise = true;
@@ -368,7 +375,8 @@ export class LayeredPython {
       this.unchecked = this.batchHadExpect ? 0 : this.unchecked + 1;
       if (acted.expect_hits) this.expectHits = acted.expect_hits;
     }
-    return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
+    const claimEvents = claimsFalsified.length + claimsValidated.length + claimsInapplicable.length > 0;
+    return { text, truncated, acted: batch.executed || claimEvents ? acted : null, images, ...(error ? { error } : {}),
       ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed },
       ...(this.pendingReviews.length ? { reviews: this.pendingReviews } : {}) };
   }

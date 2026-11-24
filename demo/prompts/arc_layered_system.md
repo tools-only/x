@@ -106,9 +106,11 @@ the start of every call:
   return None unless the transition is one the rule speaks about (for example
   `if "MOUSE" not in transition.action: return None`), then return whether the rule held. A check without its guard
   judges transitions it knows nothing about and the first of them falsifies it.
-  The host runs every claim on every later transition and keeps a read-only ledger in `harness_state["claims"]`:
+  The host back-tests a new or edited claim against the whole recorded history at once, then runs it on every later
+  transition, and keeps a read-only ledger in `harness_state["claims"]`:
   3 supports with no counterexample makes it validated; one counterexample falsifies it; editing the file resets its
-  record. A claim whose scale shows "game" has held on more than one level. Prose notes accumulate no support - ground
+  record. A claim whose scale shows "game" has held on more than one level. A claim with zero recorded support is
+  still a hypothesis: never use it to rule out a class of actions - probe it first. Prose notes accumulate no support - ground
   your models, routes and reviews in validated claims (a natural review landing: place="memory",
   artifact="work/claims/<name>.py").
 {{/claims}}
