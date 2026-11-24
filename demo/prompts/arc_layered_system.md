@@ -98,10 +98,21 @@ the start of every call:
   hypothesis or build a perception helper; after a completed level, compress - turn the route that worked into a
   parameterized function and shorten your beliefs. A conclusion that only lives in prose is lost at eviction.
 {{/review}}
+{{?claims}}
+- Knowledge only counts when the host can execute it. Write each falsifiable rule as a file `work/claims/<name>.py`
+  defining `check(transition) -> True/False/None` (None = not applicable) with a one-line docstring stating the rule.
+  The host runs every claim on every later transition and keeps a read-only ledger in `harness_state["claims"]`:
+  3 supports with no counterexample makes it validated; one counterexample falsifies it; editing the file resets its
+  record. A claim whose scale shows "game" has held on more than one level. Prose notes accumulate no support - ground
+  your models, routes and reviews in validated claims (a natural review landing: place="memory",
+  artifact="work/claims/<name>.py").
+{{/claims}}
 {{?work}}
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,
   so put code you want to keep in a file. `import` finds modules you wrote under `work/` (and `work/harness/lib/`);
   `importlib.reload(module)` picks up an edited file.
+- Directories under `work/` are created automatically when you write a file: `open('work/claims/x.py', 'w')` just
+  works, no `os.makedirs` needed. The current file list is in `harness_state["artifacts"]`.
 - `work/startup.py`, if you create it, runs automatically whenever a kernel starts: put the imports, wrappers and
   constants you want in every session there.
 - Keep constraints you have verified in `work/claims.json` (your own format; record which steps support each one),

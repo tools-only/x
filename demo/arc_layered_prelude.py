@@ -1,4 +1,4 @@
-import ast, builtins, contextlib, importlib.util, io, json, sys, traceback
+import ast, builtins, contextlib, importlib.util, io, json, os, sys, traceback
 
 CHARS = "WwgGcBMPRbSYOrNp"
 MAX_IMAGES = 2
@@ -454,6 +454,21 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             elif verdict is False:
                 check["fail"] += 1
                 lines[-1] += "  <- review test %s failed" % check["id"]
+        for claim_name, claim in sorted((_S.get("claims") or {}).items()):
+            if not claim.get("fn") or not _T:
+                continue
+            try:
+                verdict = claim["fn"](Transition(_T[-1]["action"], _frame(_T[-1]["before"]),
+                                                 _frame(_T[-1]["after"]), dict(_T[-1]["result"])))
+            except BaseException as exc:
+                claim["error"] = "%s: %s" % (type(exc).__name__, exc)
+                continue
+            if verdict is True or verdict is False:
+                box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "levels": []})
+                box["support" if verdict else "counter"] += 1
+                level = _H[-1]["raw"]["level"]
+                if verdict and level not in box["levels"]:
+                    box["levels"].append(level)
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -528,6 +543,27 @@ def _open(path, mode="r", *args, **kwargs):
     return _WorkFile(path, initial)
 
 
+def _is_work_path(path):
+    clean = str(path).replace("\\", "/").lstrip("./")
+    return clean == "work" or clean.startswith("work/")
+
+
+def _makedirs(path, *args, **kwargs):
+    if _is_work_path(path):
+        return None
+    return _os_makedirs(path, *args, **kwargs)
+
+
+def _mkdir(path, *args, **kwargs):
+    if _is_work_path(path):
+        return None
+    return _os_mkdir(path, *args, **kwargs)
+
+
+_os_makedirs, _os_mkdir = os.makedirs, os.mkdir
+os.makedirs, os.mkdir = _makedirs, _mkdir
+
+
 def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
@@ -557,6 +593,26 @@ def _cell(req):
             exec(compile(req["startup_source"], "work/startup.py", "exec"), ns)
         except BaseException as exc:
             _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
+    store = _S.setdefault("claims", {})
+    for claim in req.get("claims") or []:
+        cur = store.get(claim["name"])
+        if cur is not None and cur["source"] == claim["source"]:
+            continue
+        entry = {"source": claim["source"], "fn": None, "error": None}
+        try:
+            mod = {"__name__": "work.claims." + claim["name"]}
+            exec(compile(claim["source"], "work/claims/%s.py" % claim["name"], "exec"), mod)
+            if callable(mod.get("check")):
+                entry["fn"] = mod["check"]
+            else:
+                entry["error"] = "defines no callable check(transition)"
+        except BaseException as exc:
+            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
+        store[claim["name"]] = entry
+    supplied = {claim["name"] for claim in req.get("claims") or []}
+    for name in list(store):
+        if name not in supplied:
+            del store[name]
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
@@ -578,8 +634,10 @@ def _cell(req):
     if value is not None:
         shown = value if isinstance(value, str) else repr(value)
         text += ("" if not text or text.endswith("\n") else "\n") + shown
+    claim_errors = {name: c["error"] for name, c in (_S.get("claims") or {}).items() if c.get("error")}
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
-            "last_result": dict(_S["last_result"])}
+            "last_result": dict(_S["last_result"]),
+            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors}}
 
 
 _req = input

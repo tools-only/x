@@ -19,9 +19,10 @@ const IMAGE_TOKENS = 1000;
 
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
-  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean;
-  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean } };
-type Python = Pick<LayeredPython, "init" | "run" | "state" | "close">;
+  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean;
+  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean;
+    claims?: boolean } };
+type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -142,7 +143,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const template = Object.fromEntries(parts.flatMap((name, index) => index % 2 ? [] : [[name, parts[index + 1].trim()]])) as
     Record<"state" | "reminder" | "nudge", string>;
   const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false, review: false,
-    ...options.flags };
+    claims: false, ...options.flags };
   flags.no_model = !flags.model;
   const system = prompt("arc_layered_system.md")
     .replace(/\{\{\?(\w+)\}\}\n?([\s\S]*?)\{\{\/\1\}\}\n?/g, (_, name, body) => flags[name] ? body : "")
@@ -210,7 +211,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (batch?.review_placement) events.push(batch.review_placement === "placed"
       ? `Review placement: ${batch.review_artifact} was written as declared.`
       : `Review placement: the review declared ${batch.review_artifact} but the file is unchanged - write it or the conclusion is lost.`);
+    for (const name of batch?.claims_falsified ?? []) events.push(`Claim falsified: ${name} hit a counterexample - it is ` +
+      "archived as a dead end; restate it (editing the file resets its record) or drop what depended on it.");
+    for (const name of batch?.claims_validated ?? []) events.push(`Claim validated: ${name} (3+ supports, no counterexample).`);
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
+    if (options.gradient && python.gradient) {
+      const g = python.gradient();
+      events.push(`Gradient: ${g.actions_this_level} actions this level${g.budget_left === undefined ? "" : ` (budget left ${g.budget_left})`}` +
+        ` · surprises ${g.surprises} · unchecked batches ${g.unchecked_batches} · repeated routes ${g.repeated_sequences}` +
+        `${g.expect_hits ? ` · expect hits ${g.expect_hits}` : ""}`);
+    }
     const shown = batch?.actions.slice(0, 10).join(" ");
     const values: Record<string, string> = { events: events.join("\n"),
       batch: batch ? `Last batch: ${batch.executed} executed: ${shown}${batch.executed > 10 ? ` (+${batch.executed - 10} more)` : ""}` +
@@ -397,7 +407,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     undo: env.ARC_LAYERED_UNDO !== "0", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
     competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
     expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
-    review, reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
+    review, claims: env.ARC_LAYERED_CLAIMS === "1", reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
     contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? 131072), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? 57344),
@@ -406,6 +416,8 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
+    gradient: env.ARC_LAYERED_GRADIENT === "1",
     flags: { expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
-      work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1", review } });
+      work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1", review,
+      claims: env.ARC_LAYERED_CLAIMS === "1" } });
 }

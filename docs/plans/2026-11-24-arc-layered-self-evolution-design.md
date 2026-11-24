@@ -38,8 +38,10 @@ coding 的方式进行（§3.1）**。v1 的七对象分类归入 §1.4（可优
 
 每个留存对象有两个独立坐标，进化就是在这两根轴上受规则约束的移动：
 
-- **尺度轴**（在多大范围成立）：step → level → game → global。依据 ARC 的层级结构：同一局的关卡共享机制，
-  不同局共享交互方式（未知控制、未知目标、确定性环境、有限动作）。
+- **尺度轴**（在多大范围成立）：step → level → game。依据 ARC 的层级结构：同一局的关卡共享机制。
+  **在线自进化裁定（2026-11-25）：尺度轴封顶 game**——游戏之间、同一游戏两次独立 session 之间不继承，
+  学到的东西只活在一个游戏 session 内。跨游戏共性（未知控制、未知目标、确定性环境、有限动作）只能以
+  宿主固定 prelude 的形式存在：它对所有游戏一视同仁，是固定 harness，不是学来的。
 - **形态轴**（以多强的自动性执行）：0 模型每次重推 → 1 提示文字 → 2 可调用函数 → 3 挂钩（每动作后自动跑、
   结果进视野）→ 4 门（条件不满足不让行动）。可靠性与成本递增：文字上下文一紧就失效；函数可能忘调；
   挂钩会空跑；门会错卡。
@@ -69,9 +71,9 @@ predict 按局换）、验证（期望核对/不变量监测/守卫，几乎不�
 |---|---|---|---|
 | Prompt | 知识的形态 1 载体（编排/方法规则的文字形态，待编译为更高形态） | `work/prompt.md` | 宿主边界注入系统提示尾部 |
 | Context | 经验与证据的驻留策略：agent 决定什么常驻（memory 标签、Active revision、索引引用） | 既有回显内容 | 回显通道 |
-| Skill | 跨局尺度的知识+能力复合：框架 = 一组约束检查 + 进入路径 | `work/frameworks/*.md`（D6） | 索引 + `open()` 按需读 |
+| Skill | game 尺度的知识+能力复合：框架 = 一组约束检查 + 进入路径（在线约束下不跨游戏，§1.2） | `work/frameworks/*.md` | 索引 + `open()` 按需读 |
 | Tool | 能力（形态 2 转换器） | `work/lib/*.py` 具名基元 | startup.py import |
-| Subagent | 能力的执行方式：界内 = 内核离线计算（搜索/回测，免费）；跨上下文 = 局间整合会话 | 内核代码 / D6 会话 | 执行即激活 |
+| Subagent | 能力的执行方式：界内 = 内核离线计算（搜索/回测，免费）；局间整合会话在在线约束下取消 | 内核代码 | 执行即激活 |
 | Memory | 知识（账本）+ 经验（路径记录，保留"为什么"） | `claims.json` + 路径记录 + 标签 | 回显 + `open()` |
 | Loop | 节律能力（形态 1→4 皆可）：阶段/批大小/切换点；宿主循环（预算/安全/评审时机）不交出 | prompt.md 规则 + startup.py 包装 | 行为即激活 |
 
@@ -107,12 +109,13 @@ predict 按局换）、验证（期望核对/不变量监测/守卫，几乎不�
 - 一局 = 一个 Pi 进程 + 一个常驻 Python 内核；**换关不重启**（除非显式 `fresh_level_session` 或内核崩溃）。
 - `work/` 按运行目录创建，**不跨局**。
 - 推论：agent 定义的函数与变量局内本来就常驻，**局内"吸纳"无事可做**；startup.py 的真实作用域只有两个
-  ——内核崩溃恢复、跨局启动。
+  ——内核崩溃恢复、（历史表述中的跨局启动已随在线约束作废，见下）。
 
 裁定：**保持连续会话 + 常驻内核**（不选"每关开新会话"——那会丢掉路径，与"路径即知识"冲突）。后果：
 
-1. 吸纳的真问题在**跨局**：D4 从"startup.py 注入命名空间"改为**把 work/ 带到下一局**（跨局通道），
-   验收改为跨局复用。
+1. **在线修订（2026-11-25）**：跨局通道作废——在线自进化约束下游戏之间不继承（§1.2）。吸纳的真问题在
+   **session 内对抗遗忘**：上下文淘汰（eviction）杀死推理与结论，内核崩溃杀死命名空间，而 `work/` 文件与
+   claims 状态在两者之后都存活。吸纳 = 在死亡之前把结论编译成文件。D4 相应重定义（§4）。
 2. `prompt.md` **不注入系统提示尾部**：系统提示在每段开始重算，中途改写使整段前缀缓存失效。改为
    **开局第一条用户消息注入一次**（新局启动时读取，一次性）。
 3. startup.py 出错不得阻塞内核：prelude 捕获并以 `[startup]` 行回显，agent 可修文件后手动重载；
@@ -125,7 +128,7 @@ predict 按局换）、验证（期望核对/不变量监测/守卫，几乎不�
 
 | 自进化动作 | v1 设计 | Python 原生形式（v2 采用） |
 |---|---|---|
-| 吸纳（让能力默认在场） | 宿主按账本状态分级注入命名空间/提示 | agent 写 `work/startup.py`；宿主在内核启动时执行它（崩溃恢复与跨局启动，见 §3.0；局内名字本来常驻，吸纳的真场景是跨局） |
+| 吸纳（让能力默认在场） | 宿主按账本状态分级注入命名空间/提示 | agent 写 `work/startup.py`；宿主在内核启动时执行它（崩溃恢复，见 §3.0；局内名字本来常驻，吸纳的真场景是在淘汰与崩溃之后仍在场——文件和 claims 是 session 内唯一的存活物） |
 | 挂钩/门（形态 3/4） | `register_hook`/`register_gate` RPC | 普通包装：`submit_actions` 就是命名空间里的函数，会话内 `submit_actions = guarded(submit_actions)`，跨会话写进 startup.py。**宿主门在 RPC 层、位于一切 agent 包装之下，不可被 agent 代码绕过** |
 | 知识账本 | `claim()` 专用工具 | agent 写 `work/claims/*.py` 谓词（`check(transition)`，附 rationale）；**宿主在每个新 transition 上执行全部谓词**，support/反例/尺度/状态由执行结果算出且由宿主单独持有，agent 只读（R1）。无双写者问题 |
 | 回测/编译/搜索/实验设计 | — | 本来就是代码 |
@@ -150,7 +153,7 @@ history ───→ claims/*.py 谓词 ───→ work/lib 函数 ───�
 
 ④通过 ──→ ⑤吸纳                    ──→ ⑥升降级
           agent 写进 startup.py /        使用记录+证伪驱动(宿主计数、连坐、回显)
-          prompt.md(跨局执行/开局注入)    移动决定:agent
+          prompt.md(开局注入)    移动决定:agent
 ```
 
 - ②约束化：agent 把观察写成谓词文件（初始状态 hypothesis）；宿主在每个新 transition 上自动执行，
@@ -158,8 +161,8 @@ history ───→ claims/*.py 谓词 ───→ work/lib 函数 ───�
   不再承担 claim 状态更新——"expect 挂 id 字符串无法保证检验的是该陈述"的模糊性由谓词自动核对消解。
 - ③候选化：在七时刻（下表）触发下，agent 把重复做过的过程归纳成参数化函数——**编译**：被验证的约束变成
   predict 里的一个分支，被反复遵守的程序文字变成门，被反复选择的观察习惯变成渲染配置。
-- ⑤吸纳：形态 2 的吸纳 = startup.py 里 import（跨局生效，见 §3.0）；形态 1 的吸纳 = prompt.md 段落
-  （开局第一条用户消息一次性注入）；形态 3/4 的吸纳 = startup.py 里安装包装。
+- ⑤吸纳：形态 2 的吸纳 = startup.py 里 import（内核重启后自动恢复，见 §3.0）；形态 1 的吸纳 = prompt.md
+  段落（开局第一条用户消息一次性注入）；形态 3/4 的吸纳 = startup.py 里安装包装。
 - ⑥反向编译：回测失败的分支退回假设表；空跑的门退回函数；被更大尺度证伪的条目降回原尺度。
 
 流水线的触发时刻（七时刻是同一条流水线的触发，不是七套机制；信号全部来自已有机制）：
@@ -183,7 +186,7 @@ constraints=[claim ids])`，并按 **§1.3 七类能力**（唯一盘点维度�
 
 ### 3.3 宿主机制全清单（五项，全部机械）
 
-1. **持久化与启动**：`work/` 跨会话保留并**带到下一局**（D4）；内核启动（崩溃恢复/跨局）时执行
+1. **持久化与启动**：`work/` 在整个游戏 session 内保留（不跨游戏，§1.2）；内核启动（崩溃恢复）时执行
    `work/startup.py`；注入一行级索引（条目名+状态+尺度+引用数，细节 agent 用 `open()` 按需读）。
 2. **谓词执行**：宿主在每个新 transition 上执行全部 `work/claims/*.py` 谓词，累计 support/反例，算出
    尺度；状态由宿主单独持有（agent 只读）；依赖从 `import` 关系静态推出并连坐（R1/R5 合一机制）。
@@ -219,7 +222,7 @@ Subagent 行的"界内"就是普通内核计算（本来就有），跨上下文
 | Subagent（执行方式） | 重复出现的离线计算模式（搜索/回测/枚举） | 内核离线计算代码；跨上下文需求记入 D6 议程 | 同 Tool | startup.py / D6 会话 | 同 Tool |
 | Prompt（文字规则） | 评审结论、被反复遵守的行为模式 | `work/prompt.md` 段落，**必须引用来源**（validated claim 或 review id） | 来源健康 + 下一会话被遵守的使用记录 | 开局第一条用户消息一次性注入（§3.0） | 升级 = 编译为函数/门（形态轴上移，R3）；来源证伪→宿主标 stale |
 | Context（驻留策略） | 被反复查阅/引用的内容 | 常驻选择：memory 标签（agent 唯一可控项） | 文件读取计数（宿主可测） | 既有回显通道 | 引用不涨→agent 清除（重复时刻的减法） |
-| Skill（框架） | 局内 validated claims + 走通的路径 | D6 局间会话蒸馏成 `work/frameworks/*.md`（约束检查 + 进入路径） | held-out 他局/他游戏评测；约束检查通过才激活 | 框架索引注入 + `open()` | game→global 尺度升降（R2）；检查不过不激活 |
+| Skill（框架） | 局内 validated claims + 走通的路径 | agent 归纳成 `work/frameworks/*.md`（约束检查 + 进入路径；在线约束下不跨游戏，D6 已取消） | 同局后续关卡复现；约束检查通过才激活 | 框架索引注入 + `open()` | level→game 尺度升降（R2）；检查不过不激活 |
 | Loop（节律） | 自己的行为模式与效率曲线（R7 代理量） | 节律规则：prompt.md 文字或 startup.py 包装 | R7 代理量变化（每关动作数、SURPRISE 率、重复序列数） | prompt.md 注入 / startup.py 执行 | 文字→门的形态升级；效率劣化回退 |
 
 读法：每行都是"经验→知识→能力"的同一次旅行，区别只在候选形态和门的证据类型。Memory 是其余各行的
@@ -252,15 +255,15 @@ Subagent 行的"界内"就是普通内核计算（本来就有），跨上下文
 | D2 | 已实现 | 评审冻结门 + `review()` 四字段 + Active revision 回显（§5.2） | — | 评审产出的 `test` 至少一次被后续动作真实执行且改变行为 |
 | D2.1 | 设计（降级） | review 默认改回**关**（与基线 tag 一致，开 = `ARC_LAYERED_REVIEW=1`）；goal/representation 修订改**一次性注入**（不常驻，R4）；失败评审 representation 层允许产出感知函数（change 可为"新增 work/lib 函数"）；`test` 字段谓词化（D3 后可填谓词文件名，宿主在后续 transition 上核对） | ~30 | 开 review 的运行相对关 review 的运行，至少一条 test 被宿主核对为兑现/落空（而非散文无下文） |
 | D3 | 设计（重定义） | **谓词机制**：宿主逐 transition 执行 `work/claims/*.py`、累计 support/反例、状态机（§2）、尺度核对、import 连坐；索引注入；提示约定约 6 行 | ~150 | 至少一条谓词由**宿主执行**达到 validated（agent 无直接写状态的通道）；至少一次反例自动降级且文件保留 |
-| D4 | 设计（重定义） | **跨局 work/ 通道**：上一局 work/ 带入下一局 + startup.py 跨局执行（已有内核启动执行机制）+ import/文件读取计数 | ~60 | 上一局写的函数在下一局被 import 并使用（跨局复用至少一次） |
+| D4 | 设计（再重定义，2026-11-25） | **session 内淘汰存活验证**：在线约束下跨局通道作废（§3.0）。现有机制已完备（work/ 贯穿 session、startup.py 崩溃恢复、claims 跨关累积），D4 不加代码，是验收切片；可选小件：eviction 发生时宿主事件行报告"N 轮已淘汰；work/ X 个文件、Y 条 validated claims 仍在" | ~15（可选事件行） | 一次真实 eviction 之后，agent 引用 work/ 或 claims 里的内容做出决策（session 内吸纳闭环的净收益证据） |
 | D5 | **冻结** | 原"形态移动使用记录"无数据源（函数调用/挂钩命中/门拦截在请求层不可见，§3.3-4）。先决条件：prelude 登记约定；观测到"该升没升/该降没降"的真实失败后再解冻 | — | — |
-| D6 = E4 | 设计后置 | 局间整合会话 + 框架库（每框架带约束检查函数，检查通过才激活，防错激活锁死探索）+ 跨局索引 | 后置 | 一个 su15 框架让 ls20/ft09 首关请求数或动作数下降 |
+| D6 = E4 | **取消（2026-11-25）** | 在线自进化约束：游戏之间、两次独立 session 之间不继承，局间整合会话与跨局框架库与此矛盾。game 尺度内的框架归纳由 claims 尺度机制覆盖 | — | — |
 
 - 默认值：**与基线 tag 一致全部默认关**，每个机制用 env 显式开（MEL 组合见 §4.0）。避免"默认配置偏离
   对照基线"的问题重演。
 - 评估协议（预注册，不事后挑）：su15/ls20 是开发局，**ft09 是保留局**（只在切片定稿后各跑一次）；付费
   运行设 token 上限（gpt-6-luna low ≤ 40 万 token/局）；验收命题从"至少出现一次"升级为预注册阈值——
-  D3：validated 谓词 ≥1 且假阳性（人工复核）= 0；D4：跨局 import ≥1 且该函数被调用所在批的动作未被
+  D3：validated 谓词 ≥1 且假阳性（人工复核）= 0；D4：真实 eviction 后引用 work/ 或 claims ≥1 且该批动作未被
   浪费（不触发 SURPRISE 即弃）；证伪阈值：开启机制的运行若每关动作数或 token 劣化 >30%，判负并关回。
 - 与 da-fr 结论的差异声明：da-fr 实验里结构化账本/强制验证/回插修订为中性或有害。本方案的差异：账本是
   宿主执行的谓词而非 agent 记账散文；回插改一次性；评审默认关、按失败证据开。若真实运行复现 da-fr 的
@@ -354,6 +357,40 @@ GAME_OVER 评审走修假设/造感知函数，过关评审走压缩（解法参
 review_test 暴露。验证：单测 42/42；真实链路 `runs/arc-layered-placement-real-20261124-ls20`（本地离线、
 真实 bridge、无模型）：评审声明 `place='memory', artifact='work/claims.md'` →写文件→行动批→下一调用
 `harness_state["reviews"][-1]` 显示 `placed=True`，scorecard 关闭验证。自主采用未验证，归 MEL3 判定。
+
+D3 谓词机制 + R7 常显（2026-11-25，MEL3 轨迹触发：注释假模型/33 批无 expect/散文不积累 support 分别对应
+R1/R7/R3 缺执行器；按"围绕设计要点、不加 ad-hoc 补丁"的裁定实施）：⑧ `work/claims/*.py` 约定——每文件一条
+可证伪规则，`check(transition) -> True/False/None`，docstring 即陈述。宿主每调用扫描 claims 目录随请求下发，
+prelude 在每个执行动作的 transition 上机械执行全部谓词（与 review_checks 同点位），support/反例/出现关卡
+随调用结果上报；宿主单独持有账本（agent 只读 `harness_state["claims"]`）：≥3 support 且 0 反例 → validated，
+1 反例 → falsified（归档不删除），改写文件 → 重置 hypothesis；scale 由 support 关卡数算出（≥2 关 = game）。
+状态跃迁回显为事件行（Claim validated/falsified）。谓词报错进账本 error 字段，不中断运行。⑨ R7 梯度常显行
+（`ARC_LAYERED_GRADIENT=1`）：每条状态消息固定一行本关动作数/预算、surprises、无 expect 批数、重复路线数、
+expect 命中率——数据全部来自既有 harness 计量，只是进入视野。开关：`ARC_LAYERED_CLAIMS` 默认关（消融臂），
+提示 `{{?claims}}` 节约 7 行。未实现（按 §4.0 门控推迟）：import 依赖连坐（当前无任何依赖对象可连坐）、
+跨局尺度（归 D4）。验证：单测 45/45；真实链路 `runs/arc-layered-claims-real-20261125-ls20`（本地离线、真实
+bridge、无模型）：谓词随动作逐 transition 执行，6 support 0 反例 → validated，scorecard 关闭验证。自主采用
+未验证，归 MEL4（新配置重启）判定。
+
+### 5.4 MEL4 收割与 work/ 写入摩擦修复（2026-11-25）
+
+MEL4（su15 本地离线、az gpt-6-luna low、MODEL+CLAIMS+GRADIENT+REVIEW(game_over,level)、65k cap）：
+788 秒死于 provider idle_timeout（同因第 4 次）；33 动作、过 1 关（L1 用 20 动作 < baseline 22，首次低于
+基线）、37.9 万 tokens、0 次 eviction。
+
+**关键观测：claims 零落地的根因是 harness 摩擦，不是 agent 不采用。** 轨迹：过 L1 评审规范声明落点
+（`place=memory, artifact=work/claims/click_path.py`）→ 下一调用立刻尝试写入 → `os.makedirs('work/claims')`
+抛 `FileNotFoundError`（work/ 是 RPC 虚拟通道，`os` 模块直通 WASI 沙箱文件系统）→ agent 查
+`harness_state['artifacts']` 为空，确信 work/ 不可用，放弃；此后宿主的"artifact 未写"提醒每轮在场但无效
+（agent 已认定通道坏了）。宿主侧本无问题（写入自动建父目录）。
+
+裁定更新：① 落点协议的激励已足够触发吸纳尝试（推翻"一局内写文件激励不足"假设），激励侧不动；
+② "pending_artifacts 常驻债务"方案撤销——提醒在场且无效，不是瓶颈；③ 形态②使用计数、eviction 结算
+事件行推迟——各自的先决观测（文件存在、eviction 发生）尚未出现。
+
+修复（已实现）：prelude 包装 `os.makedirs`/`os.mkdir`，work/ 路径下为 no-op（宿主写入时自动建目录）；
+系统提示 work 节 +2 行（目录自动创建、文件清单在 artifacts）。单测 46/46。provider idle 恢复按用户裁定
+暂不处理。
 
 ## 6. 风险
 

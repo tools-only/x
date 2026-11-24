@@ -92,6 +92,21 @@ test("open() reaches work/ only", async () => {
   assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "hello world");
 });
 
+test("os.makedirs under work/ is a no-op and nested writes work", async () => {
+  const { python } = await session();
+  const dir = (python as any).workDir as string;
+  const out = await python.run([
+    "import os",
+    "os.makedirs('work/claims', exist_ok=True)",
+    "os.mkdir('work/claims')",
+    "with open('work/claims/rule.py', 'w') as f: f.write('def check(transition):\\n    return None\\n')",
+    "print(open('work/claims/rule.py').read().splitlines()[0])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^def check\(transition\):/);
+  assert.match(readFileSync(join(dir, "claims", "rule.py"), "utf8"), /return None/);
+});
+
 test("namespace persists by default and resets per call when configured", async () => {
   const kept = await session();
   await kept.python.run("x = 41");
@@ -337,6 +352,43 @@ test("a declared-but-unwritten artifact is reported as unplaced", async () => {
   python.close();
   assert.equal((out.acted as any)?.review_placement, "unplaced");
   assert.equal((out.acted as any)?.review_artifact, "work/claims.md");
+});
+
+test("claims are executed on every transition and validated by the host ledger", async () => {
+  const { python } = await session({ claims: true });
+  await python.run([
+    "f = open('work/claims/up_moves.py', 'w')",
+    "f.write('\"UP moves the piece\"\\ndef check(t):\\n    return True if t.action == \"UP\" else None\\n')",
+    "f.close()",
+  ].join("\n"));
+  await python.run("print(submit_actions(['UP'] * 2)['executed_count'])");
+  const third = await python.run("submit_actions('UP')\nprint('ok')");
+  const fourth = await python.run("c = harness_state['claims']['up_moves']\nprint(c['state'], c['support'], c['counter'], c['scale'])");
+  python.close();
+  assert.deepEqual((third.acted as any)?.claims_validated, ["up_moves"]);
+  assert.match(fourth.text, /^validated 3 0 game/);
+});
+
+test("a counterexample falsifies a claim and editing the file resets its record", async () => {
+  const { python } = await session({ claims: true });
+  await python.run([
+    "f = open('work/claims/down_changes.py', 'w')",
+    "f.write('def check(t):\\n    return t.after_frame.grid != t.before_frame.grid if t.action == \"DOWN\" else None\\n')",
+    "f.close()",
+    "f = open('work/claims/boom.py', 'w')",
+    "f.write('def check(t):\\n    raise ValueError(\"broken claim\")\\n')",
+    "f.close()",
+  ].join("\n"));
+  const second = await python.run("r = submit_actions('DOWN')\nprint(r['executed_count'])");
+  const third = await python.run(
+    "c = harness_state['claims']\nprint(c['down_changes']['state'], 'broken claim' in c['boom'].get('error', ''))");
+  await python.run("f = open('work/claims/down_changes.py', 'w')\nf.write('def check(t):\\n    return None\\n')\nf.close()");
+  const fifth = await python.run(
+    "c = harness_state['claims']['down_changes']\nprint(c['state'], c['support'], c['counter'])");
+  python.close();
+  assert.deepEqual((second.acted as any)?.claims_falsified, ["down_changes"]);
+  assert.match(third.text, /^falsified True/);
+  assert.match(fifth.text, /^hypothesis 0 0/);
 });
 
 test("stagnation freezes acting mid-batch and the freeze survives calls", async () => {

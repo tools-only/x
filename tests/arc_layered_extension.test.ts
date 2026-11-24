@@ -45,6 +45,15 @@ test("the run opens with the replaced system prompt and a state message with an 
   assert.deepEqual(handlers.session_before_compact(), { cancel: true });
 });
 
+test("the gradient line is appended to state messages when enabled", async () => {
+  const { handlers, python } = setup({ gradient: true });
+  python.gradient = () => ({ actions_this_level: 5, budget_left: 40, surprises: 1, unchecked_batches: 2,
+    repeated_sequences: 0, expect_hits: "1/2" });
+  const opened = await handlers.before_agent_start({});
+  assert.match(textOf(opened.message.content),
+    /Gradient: 5 actions this level \(budget left 40\) · surprises 1 · unchecked batches 2 · repeated routes 0 · expect hits 1\/2/);
+});
+
 test("only an acting call steers a state message, and a second call in the same reply is not run", async () => {
   const { handlers, sent, python, game, rows, call } = setup({ reminder: true, flags: { tags: true } });
   await handlers.before_agent_start({});

@@ -5,14 +5,15 @@ import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
 
 export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
   timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean;
-  skipNoops?: boolean; expect?: boolean; graph?: boolean; review?: boolean; reviewStuckSteps?: number;
+  skipNoops?: boolean; expect?: boolean; graph?: boolean; review?: boolean; claims?: boolean; reviewStuckSteps?: number;
   reviewTriggers?: string[] };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
   stale_steps: number; unchecked_batches: number; review_required: string | null };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null;
-  review_test?: string; review_placement?: string; review_artifact?: string };
+  review_test?: string; review_placement?: string; review_artifact?: string;
+  claims_falsified?: string[]; claims_validated?: string[] };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; reviews?: Array<Record<string, unknown>> };
@@ -67,6 +68,8 @@ export class LayeredPython {
   private batchHadExpect = false;
   private reviewRequired: string | null = null;
   private pendingPlacement?: { artifact: string; before: string | null };
+  private claimLedger: Record<string, { source: string; support: number; counter: number; levels: number[];
+    state: string; error?: string }> = {};
   private gameOversThisLevel = 0;
   private budgetReviewFired = false;
   private levelStartBudgetLeft: number | undefined;
@@ -125,8 +128,35 @@ export class LayeredPython {
       errors: this.errors.slice(-5),
       artifacts: files.slice(0, 20),
       reviews: this.reviewLog.slice(-5),
+      ...(this.config.claims ? { claims: Object.fromEntries(Object.entries(this.claimLedger).map(([name, entry]) =>
+        [name, { state: entry.state, support: entry.support, counter: entry.counter,
+          scale: entry.levels.length >= 2 ? "game" : "level", ...(entry.error ? { error: entry.error } : {}) }])) } : {}),
       cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null, python_calls: this.calls },
     };
+  }
+
+  /** R7 proxy quantities for the always-on gradient line. */
+  gradient() {
+    const state = this.state();
+    return { actions_this_level: this.stepsSinceLevel, budget_left: state.budget_left,
+      surprises: this.surprises, unchecked_batches: this.unchecked, repeated_sequences: this.repeatedSequences,
+      expect_hits: this.expectHits };
+  }
+
+  private scanClaims(): Array<{ name: string; source: string }> {
+    const dir = join(this.workDir, "claims");
+    const files = existsSync(dir) ? readdirSync(dir).filter(name => name.endsWith(".py")) : [];
+    const seen = new Set<string>();
+    const result = files.map(file => {
+      const name = file.slice(0, -3), source = readFileSync(join(dir, file), "utf8");
+      seen.add(name);
+      const entry = this.claimLedger[name];
+      if (!entry || entry.source !== source)
+        this.claimLedger[name] = { source, support: 0, counter: 0, levels: [], state: "hypothesis" };
+      return { name, source };
+    });
+    for (const name of Object.keys(this.claimLedger)) if (!seen.has(name)) delete this.claimLedger[name];
+    return result;
   }
 
   private startupSource(): string | undefined {
@@ -243,16 +273,18 @@ export class LayeredPython {
     this.calls += 1;
     this.batchHadExpect = false;
     this.pendingReviews = [];
+    const claimSources = this.config.claims ? this.scanClaims() : undefined;
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
       harness_state: this.harnessState(), review_enabled: !!this.config.review, review_required: this.reviewRequired,
-      startup_source: this.startupSource() };
+      startup_source: this.startupSource(), ...(claimSources ? { claims: claimSources } : {}) };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch))
       : req.t === "review" ? this.review(req) : this.file(req);
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
+    const claimsFalsified: string[] = [], claimsValidated: string[] = [];
     try {
       const run = await this.kernel.run(request, onRequest, signal);
       error = run.result.error ?? undefined;
@@ -260,6 +292,22 @@ export class LayeredPython {
       images = Array.isArray(run.result.images) ? run.result.images : [];
       if (run.result.last_result) this.lastResult = run.result.last_result;
       metrics = { ...run.metrics };
+      const report = (run.result as any).claims;
+      if (this.config.claims && report) {
+        for (const [name, counts] of Object.entries<any>(report.counts ?? {})) {
+          const entry = this.claimLedger[name];
+          if (!entry) continue;
+          entry.support += counts.support ?? 0;
+          entry.counter += counts.counter ?? 0;
+          for (const level of counts.levels ?? []) if (!entry.levels.includes(level)) entry.levels.push(level);
+          const previous = entry.state;
+          entry.state = entry.counter > 0 ? "falsified" : entry.support >= 3 ? "validated" : "hypothesis";
+          if (entry.state === "falsified" && previous !== "falsified") claimsFalsified.push(name);
+          if (entry.state === "validated" && previous !== "validated") claimsValidated.push(name);
+        }
+        for (const [name, problem] of Object.entries<any>(report.errors ?? {}))
+          if (this.claimLedger[name]) this.claimLedger[name].error = String(problem);
+      }
     } catch (problem) {
       error = String((problem as Error).message ?? problem);
       kernelRestarted = true;
@@ -281,6 +329,8 @@ export class LayeredPython {
         ` | step ${state.step}${state.budget_left === undefined ? "" : `, budget left ${state.budget_left}`} | valid: ${state.valid_actions.join(" ")}`;
     }
     const { halt: _halt, ...acted } = batch;
+    if (claimsFalsified.length) acted.claims_falsified = claimsFalsified;
+    if (claimsValidated.length) acted.claims_validated = claimsValidated;
     const lastSummary: any = this.lastResult;
     if (batch.executed && lastSummary && typeof lastSummary === "object") {
       if (lastSummary.surprise) acted.surprise = true;
