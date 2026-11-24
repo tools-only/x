@@ -21,21 +21,23 @@ const ready = await new Promise<any>(done => createInterface({ input: bridge.std
 if (ready.status !== "ready") throw new Error(JSON.stringify(ready));
 const base = `http://127.0.0.1:${ready.port}`;
 const python = new LayeredPython(new BridgeClient(base, token), { numericGrid: true, namespaceResetPerCall: false, undo: false,
-  timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(out, "work"), competition: false });
+  timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(out, "work"), competition: false,
+  expect: true, graph: true });
 const log: unknown[] = [{ init: await python.init() }];
 const cells = [
-  "seg = current_frame.segmentation\nprint(current_frame, valid_actions, valid_actions_raw)\nprint(len(seg['nodes']), 'objects;', sorted({n['color'] for n in seg['nodes']}))",
+  "seg = current_frame.segmentation\nprint(current_frame, valid_actions)\nprint(len(seg['nodes']), 'objects;', sorted({n['color'] for n in seg['nodes']}))",
   "before = current_frame\nr = submit_actions(['UP', 'UP', 'LEFT'])\nprint(r['executed_count'], r['stop_reason'], r['lines'])\nprint('refreshed:', before is not current_frame, len(history), last_action, diff(before, current_frame)['count'])",
   "r = submit_actions(['RIGHT'] * 8, stop_on='change')\nprint(r['executed_count'], r['stop_reason'])\nprint(last_action_result)",
   "print(submit_actions('RESET')['executed_count'], submit_actions('RESET')['stop_reason'])",
   "with open('work/notes.md', 'w') as f: f.write('step %d' % current_frame.step)\nprint(open('notes.md').read(), len(transitions))",
   "copy = current_frame.grid\ncopy[0][0] = 15\nprint('edit visible?', current_frame.grid[0][0] == 15)",
   "result = {'changed': history[-1].changed, 'hash': history[-1].hash, 'step': current_frame.step}\nprint('noise')",
-  "print(show(region=(0, 0, 4, 4)))",
+  "print(current_frame.ascii(region=(0, 0, 4, 4)))",
   "with open('work/world_model.py', 'w') as f: f.write('TAG = \"wm-%d\"\\n' % current_frame.step)\nimport world_model\nprint(world_model.TAG)",
   "print('restored?', current_frame.grid[0][0] != 15, isinstance(history[-1].hash, str))",
   "r = submit_actions('UP', expect=(0, 0))\nprint('expect:', r['surprise'], r['stop_reason'], r['expect_hits'])",
-  "g = graph_summary()\nprint('graph:', g['states'] > 1, g['edges'] > 0, g['frontier_count'] >= 0, replay_to(current_frame.hash))",
+  "g = graph_summary()\nprint('graph:', g['states'] > 1, g['edges'] > 0, g['frontier_count'] >= 0, replay_to(history[-1].hash))",
+  "h = harness_state\nprint('harness:', h['progress'], h['predictions'])\nprint(len(h['attempts']['recent']), [e[-60:] for e in h['errors']], h['artifacts'], h['cost'])",
 ];
 for (const code of cells) {
   const outcome = await python.run(code);

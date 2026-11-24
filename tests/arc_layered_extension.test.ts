@@ -180,11 +180,12 @@ test("frames are scaled PNGs", () => {
 test("stuck steps raise an escalating STUCK event", async () => {
   const { handlers, game } = setup();
   game.stale_steps = 8;
-  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 8 steps without a new state\. Change strategy\./);
+  assert.match(textOf((await handlers.before_agent_start({})).message.content),
+    /STUCK: 8 steps without a new state\. Before acting: which layer is failing[\s\S]*harness_state/);
   game.stale_steps = 17;
-  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 17 steps[\s\S]*Enumerate what you have not tried/);
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 17 steps[\s\S]*Enumerate 2-3 alternative framings/);
   game.stale_steps = 40;
-  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 40 steps[\s\S]*change the approach/);
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /STUCK: 40 steps[\s\S]*Stop and review in full/);
 });
 
 test("a surprise batch is announced with the running hit rate", async () => {

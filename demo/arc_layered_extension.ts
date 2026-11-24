@@ -176,10 +176,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`BUDGET: ${state.budget_left} actions left.`);
     if (options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter) {
       const rounds = Math.floor(state.stale_steps / options.stuckAfter);
-      events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and change the approach: ` +
-        "re-read the goal, try a different action type, or reset with a new plan."
-        : rounds >= 2 ? `STUCK: ${state.stale_steps} steps without a new state. Enumerate what you have not tried, then test one new hypothesis.`
-        : `STUCK: ${state.stale_steps} steps without a new state. Change strategy.`);
+      events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and review in full: name the ` +
+        "failing layer (action choice, rule hypothesis, goal reading or object representation), the evidence for it, the change " +
+        "that follows, and a test that tells the new reading from the old. Move up (re-read the goal and overall structure) or " +
+        "down (inspect transitions and intermediate frames) before acting again."
+        : rounds >= 2 ? `STUCK: ${state.stale_steps} steps without a new state. Enumerate 2-3 alternative framings of the game, ` +
+          "rule out the ones your recorded transitions already contradict, then act within the survivor."
+        : `STUCK: ${state.stale_steps} steps without a new state. Before acting: which layer is failing — action choice, ` +
+          "rule hypothesis, goal reading, or object representation? `harness_state` has the evidence.");
+    }
+    if (flags.expect && (state.unchecked_batches ?? 0) >= 3) {
+      events.push(`Unchecked: your last ${state.unchecked_batches} action batches carried no expect; without a prediction a ` +
+        "wrong belief costs actions instead of becoming a signal.");
     }
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
@@ -360,7 +368,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     diffImage: env.ARC_LAYERED_DIFF_IMAGE !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
-    stuckAfter: Number(env.ARC_LAYERED_STUCK_AFTER ?? 0), foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
+    stuckAfter: Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     flags: { expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
       work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1" } });

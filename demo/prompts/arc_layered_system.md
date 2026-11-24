@@ -39,6 +39,12 @@ the start of every call:
   (`.before_frame`, `.after_frame`, `.result`). `transitions` holds all of them. `history[i].changed` says whether that
   step moved the board and `history[i].hash` identifies the frame contents.
 - `last_action`, `last_action_result`, `valid_actions`.
+- `harness_state`: a read-only dict about your own run, computed fresh at the start of each call: `progress`
+  (stale_steps, steps_since_level, resets, game_overs), `attempts` (recent action lines, repeated_sequences),
+  `predictions` (expect_hits, surprises, unchecked_batches), `errors` (your last Python exceptions), `artifacts`
+  (files under work/) and `cost` (actions_used, budget_left, python_calls). When progress stalls, read it before
+  acting: it is the evidence for deciding which layer is failing — action choice, rule hypothesis, goal reading
+  or object representation.
 - Helpers: `diff(a, b)`, `frames_of(step)` (every frame one action produced; the last one is the result).
 - `frame_diff(a=None, b=None)` (default: previous -> current frame) reports object-level changes: moved, appeared and
   disappeared same-colour components plus the changed-cell count. The matching is a heuristic: touching objects merge

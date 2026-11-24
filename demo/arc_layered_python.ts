@@ -8,7 +8,7 @@ export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boole
   skipNoops?: boolean; expect?: boolean; graph?: boolean };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
-  stale_steps: number };
+  stale_steps: number; unchecked_batches: number };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null };
 export type ShownImage = { grid: number[][]; scale?: number | null };
@@ -51,6 +51,18 @@ export class LayeredPython {
   private workDir: string;
   private seenHashes = new Set<string>();
   private stale = 0;
+  private stepsSinceLevel = 0;
+  private resets = 0;
+  private gameOvers = 0;
+  private recentLines: string[] = [];
+  private seenSequences = new Set<string>();
+  private repeatedSequences = 0;
+  private surprises = 0;
+  private unchecked = 0;
+  private expectHits: string | null = null;
+  private errors: string[] = [];
+  private calls = 0;
+  private batchHadExpect = false;
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -82,12 +94,34 @@ export class LayeredPython {
     return { level: Math.min(raw.levels_completed + 1, raw.win_levels), levels_completed: raw.levels_completed, win_levels: raw.win_levels,
       state: raw.state, step: budget.total_used ?? 0, actions_used: budget.total_used ?? 0,
       budget_left: budget.total_maximum == null ? undefined : budget.total_maximum - budget.total_used,
-      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale };
+      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale,
+      unchecked_batches: this.unchecked };
+  }
+
+  /** Evidence about the run itself, bound as the read-only `harness_state` variable at the start of every call. */
+  private harnessState() {
+    const state = this.state();
+    let files: Array<{ path: string; bytes: number }> = [];
+    try {
+      files = (readdirSync(this.workDir, { recursive: true }) as string[]).map(name => join(this.workDir, name))
+        .filter(path => statSync(path).isFile())
+        .map(path => ({ path: "work/" + path.slice(this.workDir.length + 1).replace(/\\/g, "/"), bytes: statSync(path).size }));
+    } catch {}
+    return {
+      progress: { stale_steps: this.stale, steps_since_level: this.stepsSinceLevel, level: state.level,
+        levels_completed: state.levels_completed, resets: this.resets, game_overs: this.gameOvers },
+      attempts: { recent: this.recentLines.slice(-12), repeated_sequences: this.repeatedSequences },
+      predictions: { expect_hits: this.expectHits, surprises: this.surprises, unchecked_batches: this.unchecked },
+      errors: this.errors.slice(-5),
+      artifacts: files.slice(0, 20),
+      cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null, python_calls: this.calls },
+    };
   }
 
   private async act(request: KernelRequest, batch: ActionBatch & { halt?: string }) {
     const call = request.call as { action: string; x?: number; y?: number; reasoning?: string };
     const name = call.action, raw = RAW[name] ?? name;
+    if (request.expect != null) this.batchHadExpect = true;
     const refuse = (stopped: string) => { batch.stop_reason ??= stopped; return { stopped }; };
     if (batch.halt) return refuse(`previous_${batch.halt}`);
     if (batch.executed >= this.config.maxActionsPerCall) return refuse(`the limit of ${this.config.maxActionsPerCall} actions per call was reached`);
@@ -106,16 +140,21 @@ export class LayeredPython {
     const seen = hashGrid(after.frames.at(-1));
     if (this.seenHashes.has(seen)) this.stale += 1;
     else { this.seenHashes.add(seen); this.stale = 0; }
+    if (raw === "RESET") this.resets += 1;
+    if (after.state === "GAME_OVER" && before.state !== "GAME_OVER") this.gameOvers += 1;
     const label = raw === "ACTION6" ? `MOUSE(x=${call.x},y=${call.y})` : name;
     const entry = { ...this.entry(label, after), expect: request.expect ?? null };
     this.history.push(entry);
     this.sent = this.history.length;
     const levelChanged = after.levels_completed !== before.levels_completed;
+    this.stepsSinceLevel = levelChanged ? 0 : this.stepsSinceLevel + 1;
     const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
       levels_completed: after.levels_completed, state: after.state, level_changed: levelChanged,
       game_over: after.state === "GAME_OVER", win: after.state === "WIN", step: entry.step };
     this.lastResult = result;
     const line = `${label}: ${result.changed_cells} cells changed, level ${entry.level}, ${after.state}`;
+    this.recentLines.push(line);
+    this.recentLines = this.recentLines.slice(-12);
     batch.executed += 1; batch.actions.push(label); batch.lines.push(line);
     batch.level_changed ||= levelChanged; batch.game_over ||= result.game_over; batch.win ||= result.win;
     batch.halt = result.win ? "win" : result.game_over ? "game_over" : levelChanged ? "level_change" : undefined;
@@ -142,10 +181,13 @@ export class LayeredPython {
     if (!this.kernel.alive) this.sent = 0;
     const batch: ActionBatch & { halt?: string } = { executed: 0, actions: [], lines: [], level_changed: false, game_over: false, win: false };
     let attempted = false;
+    this.calls += 1;
+    this.batchHadExpect = false;
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
-      skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph };
+      skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
+      harness_state: this.harnessState() };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
@@ -166,6 +208,10 @@ export class LayeredPython {
       const head = Math.floor(this.config.outputChars * 0.6), tail = this.config.outputChars - head;
       text = `${text.slice(0, head)}\n... [${text.length - this.config.outputChars} chars omitted from the middle] ...\n${text.slice(-tail)}`;
     }
+    if (error) {
+      this.errors.push(error.slice(0, 200));
+      this.errors = this.errors.slice(-5);
+    }
     if (attempted) {
       const state = this.state();
       text += `\n[env] executed ${batch.executed}${batch.actions.length ? ` (${batch.actions.join(" ")})` : ""}` +
@@ -177,6 +223,14 @@ export class LayeredPython {
     if (batch.executed && lastSummary && typeof lastSummary === "object") {
       if (lastSummary.surprise) acted.surprise = true;
       if (lastSummary.expect_hits) acted.expect_hits = lastSummary.expect_hits;
+    }
+    if (batch.executed) {
+      const key = batch.actions.join(">");
+      if (batch.actions.length >= 2 && this.seenSequences.has(key)) this.repeatedSequences += 1;
+      this.seenSequences.add(key);
+      if (acted.surprise) this.surprises += 1;
+      this.unchecked = this.batchHadExpect ? 0 : this.unchecked + 1;
+      if (acted.expect_hits) this.expectHits = acted.expect_hits;
     }
     return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
       ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed } };

@@ -345,7 +345,7 @@ def _bind():
     ns.update(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
               history=history, transitions=transitions, last_transition=last,
               last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
-              valid_actions=list(_S["valid"]))
+              valid_actions=list(_S["valid"]), harness_state=dict(_S.get("harness") or {}))
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
@@ -462,7 +462,7 @@ def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
               skip_noops=bool(req.get("skip_noops")), expect_on=bool(req.get("expect_enabled")),
-              graph_on=bool(req.get("graph_enabled")))
+              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {})
     if req["reset_history"]:
         _H.clear()
         _T.clear()

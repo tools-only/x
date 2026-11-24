@@ -231,3 +231,27 @@ test("expect and graph helpers are disabled by default for ablations", async () 
   python.close();
   assert.match(out.text, /^False False\nexpect off\n1/);
 });
+
+test("harness_state is bound with run evidence and refreshes between calls", async () => {
+  const { python } = await session();
+  const first = await python.run([
+    "with open('work/notes.md', 'w') as f: f.write('x')",
+    "submit_actions('UP')",
+    "h = harness_state",
+    "print(h['progress']['steps_since_level'], h['cost']['python_calls'], h['predictions']['unchecked_batches'])",
+  ].join("\n"));
+  assert.match(first.text, /^0 1 0/);
+  await python.run("1 / 0");
+  await python.run("submit_actions(['DOWN', 'DOWN'], stop_on_noop=False)");
+  await python.run("submit_actions(['DOWN', 'DOWN'], stop_on_noop=False)");
+  const second = await python.run([
+    "h = harness_state",
+    "print(h['progress']['steps_since_level'], h['progress']['stale_steps'], h['attempts']['repeated_sequences'], h['predictions']['unchecked_batches'])",
+    "print(len(h['attempts']['recent']), h['errors'][-1].split(':')[-1].strip(), h['artifacts'][0]['path'], h['progress']['resets'])",
+  ].join("\n"));
+  await python.run("submit_actions('UP', expect=(1, 3))");
+  const third = await python.run("h = harness_state\nprint(h['predictions']['unchecked_batches'], h['predictions']['expect_hits'])");
+  python.close();
+  assert.match(second.text, /^5 4 1 3\n5 division by zero work\/notes\.md 0/);
+  assert.match(third.text, /^0 1\/1/);
+});
