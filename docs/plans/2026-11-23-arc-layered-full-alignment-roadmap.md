@@ -152,6 +152,55 @@
 scorecard 关闭校验；计分/诊断脚本在真实 scorecard（su15 两次运行）上执行，重算得分与官方 0.000 一致（有完成关卡的对账
 还需未来样本）。跳过消融是用户决定，收益判断推迟到下一轮 provider 运行。
 
+## 2.2 首轮无上限运行后的调优（2026-11-23，含向 Duck 的再对齐）
+
+依据 `runs/arc-layered-su15-az-gpt6-luna-unbounded-20261123`（az gpt-6-luna low，无 token 上限，110 动作耗尽
+第 1 关 benchmark 预算、0 过关）暴露的四个问题，做四点小改：
+
+1. 建模顺序未被遵循（23/27 次调用在盲试动作、RESET 后重走失败路线）→ 系统提示"Working method"末尾加两条硬规则：
+   回测通过前只许 1-3 动作的小探针批；失败路线不得原样重发。
+2. expect 区间给得过宽（(1,100) 等），整局 0 次 SURPRISE → prelude 拒绝宽度 >16 的 (lo, hi) 区间（提示改用窄区间、
+   int 或谓词），系统提示同步说明。
+3. `segment_tokens` 默认 200k 使整局只有 1 个段，O3 压缩与 O11 段边界扫描形同虚设 → 运行器与扩展默认降到 70k。
+4. notebook 需显式开关导致 API 档运行没带 → 改为 `ARC_LAYERED_NOTEBOOK!="0"` 即默认开（kaggle-local 仍关）。
+
+在此之上按用户指示进一步向 Duck 对齐（Duck：64k 上限 / 32k 目标驱逐 + 每条 user 消息重复提醒）：
+
+5. 驱逐目标 `ARC_LAYERED_CONTEXT_TARGET` 默认从"仅 kaggle-local 32k、API 档不驱逐"改为所有档 32k——API 档此前
+   回落到 window−32k（luna 为 240k），整局 0 次驱逐，请求一路涨到 208k。
+6. 每轮 reminder（工具用法 + 行动前先看证据）从仅 local 改为默认开（`ARC_LAYERED_REMINDER!="0"`），对应 Duck
+   每条 user 消息重复工具与世界模型指引。
+
+曾实现过"回测闸门 + 死路拒绝"的硬机制（>3 动作批需 backtest 通过，失败批禁止原样重发），按用户方向回退：
+Duck 的结论是手工约束工具反而伤害表现，建模顺序保留为提示层软规则，由运行证据决定是否再升级。
+
+随后按用户指示把 Duck 之外的新增机制全部默认关闭（代码保留，env 逐项打开做消融）。默认在跑的即 Duck 基线：
+单 python 工具 + 变量观测 + 持久内核 + 每轮图像/状态/提醒 + 便签块（memory 标签）+ 32k 驱逐。开关一览：
+
+| 机制 | 开关（=1 打开） | 作用点 |
+|---|---|---|
+| expect/SURPRISE（含宽区间拒绝） | `ARC_LAYERED_EXPECT` | prelude 参数 + 提示段 |
+| 图 helper + skip_known_noops | `ARC_LAYERED_GRAPH` | ns 绑定 + 提示段 |
+| 可执行世界模型工作法（O1 步骤 3-6 + 两条顺序规则） | `ARC_LAYERED_MODEL` | 提示段（关闭时换 Duck 式便签建模步骤） |
+| work/ 文件提示（open/import 能力本身保留） | `ARC_LAYERED_WORK` | 提示段 |
+| STUCK 提示 | `ARC_LAYERED_STUCK_AFTER`（>0） | 扩展事件 |
+| 折叠 | `ARC_LAYERED_FOLD_AFTER`（>0） | 扩展 context |
+| 摘要压缩 | `ARC_LAYERED_COMPACT_MARGIN`（>0） | 扩展 context |
+| notebook 工具 | `ARC_LAYERED_NOTEBOOK` | 工具注册 + 状态注入 |
+
+提示文本用 `{{?flag}}...{{/flag}}` 条件段渲染（`no_model` 为 model 的反向段）。
+
+验证：31/31 Node 单测通过（含"默认关闭"断言）；自主采用与净收益待下一轮 provider 运行。
+
+## 2.3 su15 逐开关消融（2026-11-24，本地离线游戏）
+
+以 Duck 基线为对照，su15 上逐一打开各机制各跑 1 次（az gpt-6-luna low，`ARC_OPERATION_MODE=offline` + 本地官方游戏文件）。完整表与四层证据见 `runs/arc-layered-ablate-su15-20261124/report.md`。要点：
+
+- 除 work 臂（0 关）外全部过 1 关，与 Duck 官方 su15 均值（1.0/9）持平；所有臂止步第 2 关。
+- expect 是唯一高采用的新增机制（28 次 `expect=`），且动作/tokens/请求全面低于基线。
+- graph 工具、work/ 文件、world_model.py、notebook 均接近零采用；evo 组合臂成本最高，仅 memory 标签被采用。
+- work 提示段疑似有害（唯一 0 关臂），与 Duck"手工工具有害"发现一致，默认保持关闭。
+
 ## 3. 证据层级（本文变更）
 
 | 层级 | 状态 | 说明 |

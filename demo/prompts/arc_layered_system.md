@@ -15,9 +15,16 @@ rules and the goal by experimenting, then finish every level.
   the top). `grid[y][x]` is the cell at (x, y). When the picture has lines every 8 cells, the numbers on its top and left
   edges are the cell coordinates of those lines.
 - The actions you may use right now are listed in valid_actions: UP, DOWN, LEFT, RIGHT, SPACE, MOUSE (needs x and y),
-  RESET. The names are only labels; find out what each one really does in this game.
+  UNDO, RESET. The names are only labels; find out what each one really does in this game. UNDO, where offered,
+  usually reverts your previous action; it is valuable when a wrong move would leave the level stuck.
 - RESET restarts the current level. Two RESETs in a row restart the whole game and lose your progress. After GAME_OVER
   the only thing you can do is RESET.
+- GAME_OVER means this attempt failed: a fatal action (such as a hazard cell) or a depleted step/time budget. A bar
+  along the border that shrinks each action is usually that budget. Completed levels are kept; it never means the run
+  is won.
+- Levels usually build on mechanics learned in earlier levels, especially the most recent one. Carry supported
+  knowledge forward as a starting hypothesis, re-check anything the new board contradicts, and expect new elements to
+  introduce the mechanics the new level needs.
 
 ## The python tool
 You have one tool, `python`. Its code runs in a kernel that lives for the whole game, and these names are bound fresh at
@@ -34,31 +41,50 @@ the start of every call:
 - Helpers: `segment(grid)`, `diff(a, b)`, `ascii(grid, region=(r0, c0, r1, c1))`, `frames_of(step)` (every frame one
   action produced; the last one is the result), `show(grid=None, region=None, scale=None)` (queues a picture you can see
   in the tool result; at most two per call).
+- `frame_diff(a=None, b=None)` (default: previous -> current frame) reports object-level changes: moved, appeared and
+  disappeared same-colour components plus the changed-cell count. The matching is a heuristic: touching objects merge
+  and similar objects can be confused, so treat it as a summary, not ground truth. `gameplay_changed(a, b)` tells
+  whether the interior board (excluding a 4-cell border, where HUDs and counters live) changed.
+- Some games animate: one action can return several intermediate frames, and some games cannot be understood without
+  them. When an animation contains cells whose intermediate values differ from both the start and end frame, the action
+  result says so; inspect those frames with `frames_of`.
+{{?graph}}
 - Graph helpers over everything you have seen: `graph_summary()` (states, edges, and the frontier of states with
   untried actions), `bfs_graph(goal)` (shortest known action sequence to a frame where `goal(frame)` is true),
   `replay_to(hash)` (action sequence to a previously seen frame hash; returned, not executed).
-- `submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False)` is the only way to act.
+{{/graph}}
+- `submit_actions(actions, stop_on=None{{?expect}}, expect=None{{/expect}}, reasoning=None, confirm_full_reset=False)` is the only way to act.
   `actions` is a name, a list of names, or dicts such as `{"action": "MOUSE", "x": 7, "y": 4}`. At most
   {{max_actions_per_call}} actions per call. After each action every name above is refreshed, so the same code can look
   at the result and decide what to do next. A completed level, GAME_OVER or a win stops the batch, and later
   `submit_actions` calls in that code do nothing. `stop_on="change"` or `"no_change"`, or a function
   `(before, after) -> bool`, stops it earlier. The return value lists what each action did and why it stopped; the same
   summary is in `last_action_result`. Assigning `result = ...` at the end returns that value too.
+  A batch also stops after an action that leaves the interior board unchanged (a wasted action usually means your plan
+  is wrong); pass `stop_on_noop=False` when you expect that and want to continue anyway.
+{{?expect}}
 - Say what you expect before acting: `expect=(lo, hi)` is a changed-cell range per action, an int is the
   `levels_completed` increase, a callable `(before, after) -> bool` is a prediction. A miss stops the batch and is
   reported as SURPRISE; your recent hit rate is shown in the state message. Use it on every batch you are confident
-  about: it turns wrong beliefs into signals instead of wasted actions.
+  about: it turns wrong beliefs into signals instead of wasted actions. A range wider than 16 changed cells carries no
+  information and is rejected; commit to a narrow range, an int or a callable instead.
+{{/expect}}
+{{?graph}}
 - `submit_actions(..., skip_known_noops=True)` skips actions already proven to do nothing in the current state
   (`force=True` sends them anyway).
+{{/graph}}
+{{?work}}
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,
   so put code you want to keep in a file. `import` finds modules you wrote under `work/` (and `work/harness/lib/`);
   `importlib.reload(module)` picks up an edited file.
+{{/work}}
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
 ## Working method
 1. Look first. Find the objects with the segmentation, check what changed after the last action, and read only small
    regions as text.
 2. Build a model: what each action does, what the goal seems to be, and which observations support each belief.
+{{?model}}
 3. When you think you know the dynamics, write them into `work/world_model.py` as `predict(frame, action) -> grid` (or a
    comparable interface) plus a `test_world_model(transitions)` that replays every recorded transition and compares your
    prediction with what actually happened. Run it. Fix the model until it passes.
@@ -69,6 +95,20 @@ the start of every call:
 6. When a level is done, write two or three lines about what carried over, and re-run the back-test on the new level
    before trusting the old model.
 
+Two hard rules about order:
+- Until `work/world_model.py` exists and its back-test has passed on the recorded transitions, spend actions only in
+  small probe batches (1-3 actions each), chosen to distinguish between hypotheses. By roughly ten spent actions on a
+  level you should be running the back-test, not still clicking.
+- Never resend a route that already failed. A failed route or a SURPRISE means a belief is wrong: name the belief,
+  fix the model, re-run the back-test, and only then act again. A RESET replays the level, not your mistakes.
+{{/model}}
+{{?no_model}}
+3. State your current model of the controls and the goal in one or two lines at the top of each reply, check each new
+   transition against it, and revise it whenever the evidence contradicts it.
+4. Prefer short batches whose outcome you can predict. After a level change or GAME_OVER, look at the new board before
+   acting again, and never resend a route that already failed.
+{{/no_model}}
+
 ## Traps
 - Bars or strips along the edge of the board are usually a HUD or a move/time counter, not something to click or reach.
 - Do not assume there is a player character, and do not aim for fixed absolute positions without evidence.
@@ -76,11 +116,13 @@ the start of every call:
 - Do not invent a goal you have not seen evidence for. Running down a counter is not the goal.
 - Never print the whole board; use the segmentation, slices or `diff`.
 
+{{?tags}}
 ## Notes that carry over
 Your reply text can contain these labelled blocks: `World model:`, `Goal model:`, `Action model:`, `Recent findings:`,
 `Open questions:`, `Plan:`, `Cross-level notes:`. Each block runs until the next label. The latest version of every block
 is copied into each status message and stays there until you write that block again, so it outlives older messages that
 are dropped. Before acting, update the blocks that changed.
+{{/tags}}
 
 ## Each reply
 Keep the text short: what you believe now, what you are testing or doing next and what you expect to see. Then call

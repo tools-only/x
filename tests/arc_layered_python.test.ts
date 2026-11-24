@@ -26,7 +26,7 @@ class FakeBridge {
 
 const config = (extra: Partial<LayeredConfig> = {}): LayeredConfig => ({ numericGrid: true, namespaceResetPerCall: false, undo: false,
   timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(mkdtempSync(join(tmpdir(), "layered-")), "work"),
-  competition: false, ...extra });
+  competition: false, expect: true, graph: true, ...extra });
 
 async function session(extra: Partial<LayeredConfig> = {}) {
   const bridge = new FakeBridge();
@@ -71,7 +71,7 @@ test("output is truncated with a marker; errors keep only user frames", async ()
   const failed = await python.run("def f():\n    return 1 / 0\nf()");
   python.close();
   assert.equal(out.truncated, true);
-  assert.match(out.text, /\[truncated 905 chars\]$/);
+  assert.match(out.text, /\[905 chars omitted from the middle\]/);
   assert.match(failed.text, /ZeroDivisionError/);
   assert.doesNotMatch(failed.text, /prelude|kernel/);
 });
@@ -200,8 +200,10 @@ test("an expect miss stops the batch, marks surprise and tracks the hit rate", a
   assert.equal(miss.acted?.surprise, true);
   assert.equal(miss.acted?.expect_hits, "1/2");
   const invalid = await python.run("try:\n    submit_actions('UP', expect='big change')\nexcept ValueError:\n    print('rejected')");
+  const wide = await python.run("try:\n    submit_actions('UP', expect=(1, 100))\nexcept ValueError:\n    print('too wide')");
   python.close();
   assert.match(invalid.text, /rejected/);
+  assert.match(wide.text, /too wide/);
 });
 
 test("graph helpers summarise seen states; known no-ops are skipped unless forced", async () => {
@@ -219,4 +221,15 @@ test("graph helpers summarise seen states; known no-ops are skipped unless force
   const route = await python.run("print(bfs_graph(lambda f: f.grid[5][3] == 2))\nprint(submit_actions('DOWN', force=True, skip_known_noops=True)['executed_count'])");
   python.close();
   assert.match(route.text, /^\['UP'\]\n1/);
+});
+
+test("expect and graph helpers are disabled by default for ablations", async () => {
+  const { python } = await session({ expect: false, graph: false });
+  const out = await python.run([
+    "print('bfs_graph' in globals(), 'graph_summary' in globals())",
+    "try:\n    submit_actions('UP', expect=(1, 3))\nexcept ValueError as e:\n    print('expect off')",
+    "print(submit_actions('UP')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^False False\nexpect off\n1/);
 });

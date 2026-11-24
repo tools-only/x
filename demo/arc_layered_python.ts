@@ -5,7 +5,7 @@ import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
 
 export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
   timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean;
-  skipNoops?: boolean };
+  skipNoops?: boolean; expect?: boolean; graph?: boolean };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
   stale_steps: number };
@@ -145,7 +145,7 @@ export class LayeredPython {
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
-      skip_noops: !!this.config.skipNoops };
+      skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
@@ -162,7 +162,10 @@ export class LayeredPython {
       text = `${error}\nThe Python kernel ended and the next call starts a new one: names you defined are gone; files in work/ remain.`;
     }
     const truncated = text.length > this.config.outputChars;
-    if (truncated) text = `${text.slice(0, this.config.outputChars)}\n... [truncated ${text.length - this.config.outputChars} chars]`;
+    if (truncated) {
+      const head = Math.floor(this.config.outputChars * 0.6), tail = this.config.outputChars - head;
+      text = `${text.slice(0, head)}\n... [${text.length - this.config.outputChars} chars omitted from the middle] ...\n${text.slice(-tail)}`;
+    }
     if (attempted) {
       const state = this.state();
       text += `\n[env] executed ${batch.executed}${batch.actions.length ? ` (${batch.actions.join(" ")})` : ""}` +

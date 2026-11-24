@@ -45,7 +45,7 @@ test("the run opens with the replaced system prompt and a state message with an 
 });
 
 test("only an acting call steers a state message, and a second call in the same reply is not run", async () => {
-  const { handlers, sent, python, game, rows, call } = setup({ reminder: true });
+  const { handlers, sent, python, game, rows, call } = setup({ reminder: true, flags: { tags: true } });
   await handlers.before_agent_start({});
   handlers.turn_start();
   await call();
@@ -91,7 +91,7 @@ test("game over stays in the segment and is announced", async () => {
   python.next = batch({ game_over: true, stop_reason: "game_over" });
   game.state = "GAME_OVER";
   assert.equal((await call()).terminate, undefined);
-  assert.match(textOf(sent[0].message.content), /GAME_OVER: only RESET/);
+  assert.match(textOf(sent[0].message.content), /GAME_OVER: this attempt FAILED/);
 });
 
 test("note blocks are overwritten one by one, carried and persisted", async () => {
@@ -114,15 +114,15 @@ test("eviction drops whole user blocks, keeps call/result pairs and the latest s
     { role: "assistant", content: [{ type: "text", text: "a".repeat(4000) }, { type: "toolCall", id, name: "python", arguments: { code: "x" } }] },
     { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "r".repeat(4000) }] }];
   const messages = [{ role: "user", content: "Begin." }, ...block("1"), ...block("2"), ...block("3")];
-  const all = evict(messages, 1e9, 0);
+  const all = evict(messages, 1e9, 1e9, 0);
   assert.equal(all.messages.length, messages.length);
   assert.deepEqual(all.messages.map((message: any) => Array.isArray(message.content) && message.content.includes(image)).filter(Boolean).length, 1);
-  const some = evict(messages, 5500, 0);
+  const some = evict(messages, 5500, 5500, 0);
   assert.equal(some.messages[0].content[0].text, "2");
-  const tight = evict(messages, 10, 0);
+  const tight = evict(messages, 10, 10, 0);
   assert.equal(tight.messages[0].content[0].text, "3");
   assert.deepEqual(tight.messages.at(-1).toolCallId, "3");
-  assert.equal(evict(messages, 1e9, 2).messages[0].content[0].text, "2");
+  assert.equal(evict(messages, 1e9, 1e9, 2).messages[0].content[0].text, "2");
   for (const result of [all, some, tight]) {
     const calls = result.messages.filter((m: any) => m.role === "assistant").flatMap((m: any) => m.content.filter((p: any) => p.type === "toolCall").map((p: any) => p.id));
     assert.deepEqual(calls, result.messages.filter((m: any) => m.role === "toolResult").map((m: any) => m.toolCallId));
@@ -214,13 +214,13 @@ test("folding collapses old tool results to their env line and strips their imag
 });
 
 test("near the window the history is compacted into one summary message plus the last block", async () => {
-  const { handlers, rows, root } = setup({ contextTarget: 1e9 });
+  const { handlers, rows, root } = setup({ contextCap: 1e9, contextTarget: 1e9 });
   await handlers.before_agent_start({});
   handlers.message_end(say("World model: gray walls block movement"));
   const block = (text: string) => [{ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text }] },
     { role: "assistant", content: [{ type: "text", text: "t".repeat(400) }] }];
   const messages = [...block("one"), ...block("two"), ...block("three")];
-  const out = handlers.context({ messages }, { model: { contextWindow: 200 } }).messages;
+  const out = handlers.context({ messages }, { model: { contextWindow: 16500 } }).messages;
   assert.equal(out.length, 3);
   assert.match(out[0].content[0].text, /^Earlier history was compacted away[\s\S]*World model: gray walls[\s\S]*Progress: level 1 of 3/);
   assert.equal(out[1].content[0].text, "three");

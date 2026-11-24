@@ -93,6 +93,64 @@ def diff(a, b):
     return {"count": len(cells), "bbox": (min(rows), min(cols), max(rows), max(cols)), "cells": cells[:64]}
 
 
+def _interior(grid, border=4):
+    h, w = len(grid), len(grid[0]) if grid else 0
+    if h <= 2 * border or w <= 2 * border:
+        return grid
+    return [row[border:w - border] for row in grid[border:h - border]]
+
+
+def gameplay_changed(a, b, border=4):
+    """True when the interior board (excluding a `border`-cell frame, where HUDs and counters live) changed."""
+    return diff(_interior(_cells(a), border), _interior(_cells(b), border))["count"] > 0
+
+
+def _transient(grids):
+    count = 0
+    first, last = grids[0], grids[-1]
+    for r in range(len(last)):
+        for c in range(len(last[r])):
+            if any(g[r][c] != first[r][c] and g[r][c] != last[r][c] for g in grids[1:-1]):
+                count += 1
+    return count
+
+
+def frame_diff(a=None, b=None):
+    """Object-level changes between two frames (default: previous_frame -> current_frame). Heuristic: touching
+    objects merge into one component and similar objects can be matched ambiguously."""
+    if b is None:
+        b = _frame(_H[-1])
+    if a is None:
+        if len(_H) < 2:
+            return {"changed_cells": 0, "note": "no previous frame"}
+        a = _frame(_H[-2])
+    ga, gb = _cells(a), _cells(b)
+
+    def index(grid):
+        table = {}
+        for node in segment(grid)["nodes"]:
+            anchor = tuple(node["boundary"][0]) if node["boundary"] else (0, 0)
+            table.setdefault((node["color"], node["hash"]), []).append((anchor, node["pixels"]))
+        return table
+
+    ta, tb = index(ga), index(gb)
+    moved, appeared, disappeared = [], [], []
+    for key in set(ta) | set(tb):
+        pa = sorted(ta.get(key, []))
+        pb = sorted(tb.get(key, []))
+        if pa == pb:
+            continue
+        gone = [item for item in pa if item not in pb]
+        fresh = [item for item in pb if item not in pa]
+        if len(gone) == 1 and len(fresh) == 1:
+            moved.append({"color": key[0], "pixels": gone[0][1], "from": gone[0][0], "to": fresh[0][0]})
+        else:
+            disappeared.extend({"color": key[0], "pixels": item[1], "at": item[0]} for item in gone)
+            appeared.extend({"color": key[0], "pixels": item[1], "at": item[0]} for item in fresh)
+    return {"changed_cells": diff(ga, gb)["count"], "moved": moved[:16],
+            "appeared": appeared[:16], "disappeared": disappeared[:16]}
+
+
 def segment(grid):
     grid = _cells(grid)
     h, w = len(grid), len(grid[0]) if grid else 0
@@ -287,11 +345,16 @@ def _bind():
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
-                   skip_known_noops=False, force=False):
+                   skip_known_noops=False, force=False, stop_on_noop=True):
+    if expect is not None and not _S.get("expect_on"):
+        raise ValueError("expect is disabled in this run; drop the expect argument")
     if expect is not None and not (callable(expect) or (isinstance(expect, int) and not isinstance(expect, bool))
                                    or (isinstance(expect, (tuple, list)) and len(expect) == 2)):
         raise ValueError("expect must be a (lo, hi) changed-cell range, an int levels_completed increase, "
                          "or a callable (before, after) -> bool")
+    if isinstance(expect, (tuple, list)) and len(expect) == 2 and expect[1] - expect[0] > 16:
+        raise ValueError("expect range (%s, %s) is too wide to mean anything; commit to a range no wider than 16 "
+                         "changed cells, an int levels_completed increase, or a callable" % (expect[0], expect[1]))
     items = [actions] if isinstance(actions, (str, dict)) else list(actions)
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
@@ -322,6 +385,11 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         reset = reset or call["action"] == "RESET"
         level_changed = level_changed or _H[-1]["raw"]["levels_completed"] != before["raw"]["levels_completed"]
         lines.append(reply["line"])
+        grids = _H[-1]["grids"]
+        if len(grids) > 2:
+            transient = _transient(grids)
+            if transient:
+                lines[-1] += "  [animation: %d transient cells; inspect frames_of(%d)]" % (transient, len(_H) - 1)
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -336,6 +404,11 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             reason = reply["halt"]
             break
         after = _H[-1]
+        if stop_on_noop and not force and call["action"] != "RESET" \
+                and not gameplay_changed(before["grids"][-1], after["grids"][-1]):
+            lines[-1] += "  <- no interior change; batch stopped (stop_on_noop=False to continue)"
+            reason = "noop"
+            break
         if stop_on == "change" and diff(before["grids"][-1], after["grids"][-1])["count"] or \
                 stop_on == "no_change" and not diff(before["grids"][-1], after["grids"][-1])["count"] or \
                 callable(stop_on) and stop_on(_frame(before), _frame(after)):
@@ -388,7 +461,8 @@ def _open(path, mode="r", *args, **kwargs):
 def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
-              skip_noops=bool(req.get("skip_noops")))
+              skip_noops=bool(req.get("skip_noops")), expect_on=bool(req.get("expect_enabled")),
+              graph_on=bool(req.get("graph_enabled")))
     if req["reset_history"]:
         _H.clear()
         _T.clear()
@@ -398,7 +472,9 @@ def _cell(req):
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions, "segment": segment,
                     "diff": diff, "ascii": ascii, "show": show, "frames_of": frames_of,
-                    "graph_summary": graph_summary, "bfs_graph": bfs_graph, "replay_to": replay_to}
+                    "frame_diff": frame_diff, "gameplay_changed": gameplay_changed}
+        if _S["graph_on"]:
+            _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
             sys.meta_path.append(_WorkFinder())
     _bind()

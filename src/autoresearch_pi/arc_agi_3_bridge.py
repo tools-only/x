@@ -331,7 +331,8 @@ class ArcBridge:
         self.max_actions = max_actions
         self.game_action = GameAction
         startup_stage("creating_arcade")
-        self.arcade = Arcade(operation_mode=OperationMode.ONLINE)
+        self.arcade = Arcade(operation_mode=OperationMode(
+            os.environ.get("ARC_OPERATION_MODE", "online").strip().lower()))
         startup_stage("opening_scorecard")
         self.card_id = self.arcade.open_scorecard(tags=["agent", "pi-autoresearch-meta"])
         startup_stage("creating_game")

@@ -17,9 +17,10 @@ export const TAGS = ["World model", "Goal model", "Action model", "Recent findin
 export const NOTEBOOK_SECTIONS = ["controls", "entities", "rules", "goal_hypotheses", "levels", "open_questions", "dead_ends"];
 const IMAGE_TOKENS = 1000;
 
-export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextTarget: number;
+export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
-  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean };
+  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean;
+  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close">;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
@@ -82,20 +83,23 @@ export function estimateTokens(message: any): number {
     : Math.ceil((part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : JSON.stringify(part.arguments ?? "")).length / 4)), 4);
 }
 
-/** A block is a user-role message plus the assistant and tool turns after it, so a call never loses its result. */
-export function evict(input: any[], target: number, extraBlocks: number) {
+/** A block is a user-role message plus the assistant and tool turns after it, so a call never loses its result.
+ * Hysteresis: nothing is removed until the estimate passes `cap`; then whole blocks go until `target`, so the
+ * remaining prefix stays byte-identical across many requests and provider prefix caching keeps working. */
+export function evict(input: any[], cap: number, target: number, extraBlocks: number) {
   const lastState = input.findLastIndex(message => message.role === "custom" && message.customType === STATE_TYPE);
   const messages = input.map((message, index) => index === lastState || message.role !== "custom" || message.customType !== STATE_TYPE ? message
     : { ...message, content: message.content.filter((part: any) => part.type !== "image") });
   const starts = messages.flatMap((message, index) => message.role === "user" || message.role === "custom" ? [index] : []);
   const sizes = messages.map(estimateTokens), before = sizes.reduce((sum, size) => sum + size, 0);
   let cut = 0, removed = 0, blocks = 0;
-  for (const next of starts.filter(start => start > 0 && start <= lastState)) {
-    if (before - removed <= target && blocks >= extraBlocks) break;
-    removed = sizes.slice(0, next).reduce((sum, size) => sum + size, 0);
-    cut = next;
-    blocks += 1;
-  }
+  if (before > cap || extraBlocks > 0)
+    for (const next of starts.filter(start => start > 0 && start <= lastState)) {
+      if (before - removed <= target && blocks >= extraBlocks) break;
+      removed = sizes.slice(0, next).reduce((sum, size) => sum + size, 0);
+      cut = next;
+      blocks += 1;
+    }
   return { messages: messages.slice(cut), blocks, removed, before };
 }
 
@@ -137,7 +141,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const [, ...parts] = prompt("arc_layered_state.md").split(/^## (\w+)\s*$/m);
   const template = Object.fromEntries(parts.flatMap((name, index) => index % 2 ? [] : [[name, parts[index + 1].trim()]])) as
     Record<"state" | "reminder" | "nudge", string>;
-  const system = prompt("arc_layered_system.md").replaceAll("{{color_legend}}", COLOR_LEGEND)
+  const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false, ...options.flags };
+  flags.no_model = !flags.model;
+  const system = prompt("arc_layered_system.md")
+    .replace(/\{\{\?(\w+)\}\}\n?([\s\S]*?)\{\{\/\1\}\}\n?/g, (_, name, body) => flags[name] ? body : "")
+    .replaceAll("{{color_legend}}", COLOR_LEGEND)
     .replaceAll("{{max_actions_per_call}}", String(options.maxActionsPerCall));
   let memory: Record<string, string> = {};
   let notebook: Record<string, string> = {};
@@ -146,6 +154,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
+  let shownFrame: number[][] | null = null, shownLevel = 0;
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
   let request: string | undefined;
 
@@ -155,8 +164,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   function content(batch: ActionBatch | null, nudge = false): Content {
     const state = python.state(), events: string[] = [];
     if (batch?.level_changed) events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done. ` +
-      "Write 2-3 lines of notes about what carries over.");
-    if (state.state === "GAME_OVER") events.push("GAME_OVER: only RESET is possible now.");
+      "Write 2-3 lines of notes about what carries over. The latest frame is the starting board of the next level: carry the " +
+      "mechanics you established forward as hypotheses, inspect unfamiliar elements (new elements often introduce the mechanic " +
+      "this level needs), and reassess whether the goal is still the same.");
+    if (state.state === "GAME_OVER") events.push("GAME_OVER: this attempt FAILED (a fatal action or a depleted budget); completed " +
+      "levels are kept and only RESET is possible now. Before resetting, diagnose the cause: the latest frame is the death frame, " +
+      "`history[-1].action` was the fatal action and `history[-2].frame` was the board just before it. The game is deterministic: " +
+      "replaying the sequence that just failed will fail again, so change the plan before the fatal point and record the cause.");
     if (state.state === "WIN") events.push("WIN: the game is finished.");
     if (state.budget_left !== undefined && state.budget_left <= Math.max(5, 0.1 * (state.actions_used + state.budget_left)))
       events.push(`BUDGET: ${state.budget_left} actions left.`);
@@ -176,11 +190,23 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       level: String(state.level), win_levels: String(state.win_levels), state: state.state, step: String(state.step),
       actions_used: String(state.actions_used), budget: state.budget_left === undefined ? "" : ` | budget left ${state.budget_left}`,
       valid: state.valid_actions.join(" "), memory: TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
-      notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "" };
-    const text = [nudge ? template.nudge : "", template.state.replace(/\{\{(\w+)\}\}/g, (_, key) => values[key]),
+      notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
+      tags_hint: flags.tags ? " Start your reply with updated `World model:`, `Goal model:`, `Action model:` and `Plan:` blocks." : "" };
+    const parts: Content = [];
+    let diffNote = "";
+    if (options.diffImage && shownFrame && shownLevel === state.level && state.frame !== shownFrame) {
+      const mask = state.frame.map((row, r) => row.map((cell, c) => shownFrame![r]?.[c] === cell ? 0 : cell));
+      if (mask.some(row => row.some(cell => cell !== 0))) {
+        diffNote = "\nThe second image shows only the cells that changed since the previous state message (unchanged cells are white).";
+        parts.push({ type: "image", mimeType: "image/png", data: framePng(mask, options.scale, options.gridLines).toString("base64") });
+      }
+    }
+    shownFrame = state.frame;
+    shownLevel = state.level;
+    const text = [nudge ? template.nudge : "", template.state.replace(/\{\{(\w+)\}\}/g, (_, key) => values[key]) + diffNote,
       options.reminder ? template.reminder : ""].join("\n").replace(/\n{2,}/g, "\n").trim();
-    return [{ type: "text", text }, { type: "image", mimeType: "image/png",
-      data: framePng(state.frame, options.scale, options.gridLines).toString("base64") }];
+    return [{ type: "text", text: text.replace(/\{\{(\w+)\}\}/g, (_, key) => values[key] ?? "") }, { type: "image", mimeType: "image/png",
+      data: framePng(state.frame, options.scale, options.gridLines).toString("base64") }, ...parts];
   }
 
   pi.registerTool({ name: "python", label: "python", executionMode: "sequential",
@@ -237,16 +263,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   pi.on("session_before_compact", () => ({ cancel: true }));
 
   pi.on("context", (event, ctx) => {
-    const target = options.contextTarget || (ctx.model?.contextWindow ?? 128000) - 32000;
-    const result = evict(event.messages, target, extraBlocks);
+    const window = (ctx.model?.contextWindow ?? 128000);
+    const cap = Math.min(options.contextCap || window - 32000, window - options.outputTokens - 8192);
+    const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
+    const result = evict(event.messages, cap, target, extraBlocks);
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
-      tokens_removed: result.removed, estimate_before: result.before, target });
+      tokens_removed: result.removed, estimate_before: result.before, cap, target });
     const folding = fold(result.messages, options.foldAfter);
     if (folding.folded) log("fold", { parts: folding.folded, keep_blocks: options.foldAfter });
     let messages = folding.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;
-    if (estimate > hardTarget) {
+    if (options.compactMargin > 0 && estimate > hardTarget) {
       const state = python.state();
       const summary = ["Earlier history was compacted away. What you know so far:",
         TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
@@ -323,13 +351,17 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
   }
   const python = new LayeredPython(new BridgeClient(env.PI_ARC_BRIDGE_URL!, env.PI_ARC_ACTION_TOKEN!), {
     numericGrid: env.ARC_LAYERED_NUMERIC_GRID !== "0", namespaceResetPerCall: env.ARC_LAYERED_NAMESPACE_RESET === "1",
-    undo: env.ARC_LAYERED_UNDO === "1", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
-    competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1" });
-  installLayered(pi, python, { scale: local ? 4 : 8, gridLines: !local, reminder: local, root, maxActionsPerCall,
+    undo: env.ARC_LAYERED_UNDO !== "0", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
+    competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
+    expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1" });
+  installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
-    contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? (local ? 32000 : 0)),
+    contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? 131072), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? 57344),
+    diffImage: env.ARC_LAYERED_DIFF_IMAGE !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
-    segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1200), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 200000),
-    stuckAfter: Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 3),
-    compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 16384), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local });
+    segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
+    stuckAfter: Number(env.ARC_LAYERED_STUCK_AFTER ?? 0), foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
+    compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
+    flags: { expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
+      work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1" } });
 }

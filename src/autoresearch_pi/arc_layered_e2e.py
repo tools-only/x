@@ -72,7 +72,7 @@ def _git_snapshot(root: Path) -> str | None:
 def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: str, pi_model: str, config: str = "api-research",
                         provider_extension: Path | None = None, agent_dir: Path | None = None, thinking: str | None = None,
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
-                        segment_seconds: float = 1200.0, segment_tokens: int = 200_000, idle_continuations: int = 3,
+                        segment_seconds: float = 1_000_000.0, segment_tokens: int = 100_000_000, idle_continuations: int = 3,
                         idle_timeout: float = 300.0, max_output_tokens: int = 12000, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
                         fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel) -> Path:
     if config not in CONFIGS:
