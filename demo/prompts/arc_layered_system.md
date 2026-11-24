@@ -29,7 +29,8 @@ rules and the goal by experimenting, then finish every level.
 ## The python tool
 You have one tool, `python`. Its code runs in a kernel that lives for the whole game, and these names are bound fresh at
 the start of every call:
-- `current_frame` and `previous_frame`: frames with `.ascii` (one letter per cell: {{color_legend}}), `.grid` (numbers
+- `current_frame` and `previous_frame`: frames with `.ascii` (one letter per cell: {{color_legend}}; call
+  `.ascii(region=(r0, c0, r1, c1))` for a crop), `.grid` (numbers
   0-15, rows of columns), `.segmentation` (a dict: `seg['nodes']` lists same-colour 4-connected objects as dicts with
   `id`, `color`, `hash`, `pixels` (a count), `boundary` as [row, col] corners, `children`; `seg['adjacency_list']`), `.level`,
   `.step`, `.state`, `.shape`.
@@ -37,14 +38,11 @@ the start of every call:
   the one before it. To compare before and after an action use `previous_frame` or `last_transition`
   (`.before_frame`, `.after_frame`, `.result`). `transitions` holds all of them. `history[i].changed` says whether that
   step moved the board and `history[i].hash` identifies the frame contents.
-- `last_action`, `last_action_result`, `valid_actions` (natural names), `valid_actions_raw`.
-- Helpers: `segment(grid)`, `diff(a, b)`, `ascii(grid, region=(r0, c0, r1, c1))`, `frames_of(step)` (every frame one
-  action produced; the last one is the result), `show(grid=None, region=None, scale=None)` (queues a picture you can see
-  in the tool result; at most two per call).
+- `last_action`, `last_action_result`, `valid_actions`.
+- Helpers: `diff(a, b)`, `frames_of(step)` (every frame one action produced; the last one is the result).
 - `frame_diff(a=None, b=None)` (default: previous -> current frame) reports object-level changes: moved, appeared and
   disappeared same-colour components plus the changed-cell count. The matching is a heuristic: touching objects merge
-  and similar objects can be confused, so treat it as a summary, not ground truth. `gameplay_changed(a, b)` tells
-  whether the interior board (excluding a 4-cell border, where HUDs and counters live) changed.
+  and similar objects can be confused, so treat it as a summary, not ground truth.
 - Some games animate: one action can return several intermediate frames, and some games cannot be understood without
   them. When an animation contains cells whose intermediate values differ from both the start and end frame, the action
   result says so; inspect those frames with `frames_of`.
@@ -53,15 +51,16 @@ the start of every call:
   untried actions), `bfs_graph(goal)` (shortest known action sequence to a frame where `goal(frame)` is true),
   `replay_to(hash)` (action sequence to a previously seen frame hash; returned, not executed).
 {{/graph}}
-- `submit_actions(actions, stop_on=None{{?expect}}, expect=None{{/expect}}, reasoning=None, confirm_full_reset=False)` is the only way to act.
+- `submit_actions(actions, stop_on=None{{?expect}}, expect=None{{/expect}}, confirm_full_reset=False)` is the only way to act.
   `actions` is a name, a list of names, or dicts such as `{"action": "MOUSE", "x": 7, "y": 4}`. At most
   {{max_actions_per_call}} actions per call. After each action every name above is refreshed, so the same code can look
   at the result and decide what to do next. A completed level, GAME_OVER or a win stops the batch, and later
   `submit_actions` calls in that code do nothing. `stop_on="change"` or `"no_change"`, or a function
   `(before, after) -> bool`, stops it earlier. The return value lists what each action did and why it stopped; the same
   summary is in `last_action_result`. Assigning `result = ...` at the end returns that value too.
-  A batch also stops after an action that leaves the interior board unchanged (a wasted action usually means your plan
-  is wrong); pass `stop_on_noop=False` when you expect that and want to continue anyway.
+  A batch also stops after an action that leaves the interior board (excluding a 4-cell border, where HUDs and
+  counters live) unchanged, because a wasted action usually means your plan is wrong; pass `stop_on_noop=False` when
+  you expect that and want to continue anyway.
 {{?expect}}
 - Say what you expect before acting: `expect=(lo, hi)` is a changed-cell range per action, an int is the
   `levels_completed` increase, a callable `(before, after) -> bool` is a prediction. A miss stops the batch and is

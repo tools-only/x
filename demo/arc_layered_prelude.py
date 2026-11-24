@@ -30,27 +30,19 @@ class Frame:
         return [list(row) for row in self._grids[-1]]
 
     @property
-    def frames(self):
-        return [[list(row) for row in grid] for grid in self._grids]
-
-    @property
     def shape(self):
         grid = self._grids[-1]
         return (len(grid), len(grid[0]) if grid else 0)
 
     @property
     def ascii(self):
-        return ascii(self._grids[-1])
+        return _Ascii(self._grids[-1])
 
     @property
     def segmentation(self):
         if self._seg is None:
             self._seg = segment(self._grids[-1])
         return self._seg
-
-    @property
-    def hash(self):
-        return _grid_hash(self._grids[-1])
 
     def __repr__(self):
         return "Frame(level=%s, step=%s, state=%s, shape=%dx%d)" % ((self.level, self.step, self.state) + self.shape)
@@ -82,6 +74,18 @@ def ascii(grid, region=None):
         r0, c0, r1, c1 = region
         rows = [row[c0:c1] for row in rows[r0:r1]]
     return "\n".join("".join(CHARS[v] for v in row) for row in rows)
+
+
+class _Ascii(str):
+    """The `.ascii` attribute is the full board string, and calling it crops: `.ascii(region=(r0, c0, r1, c1))`."""
+
+    def __new__(cls, grid):
+        value = str.__new__(cls, ascii(grid))
+        value._grid = grid
+        return value
+
+    def __call__(self, region=None):
+        return ascii(self._grid, region)
 
 
 def diff(a, b):
@@ -341,7 +345,7 @@ def _bind():
     ns.update(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
               history=history, transitions=transitions, last_transition=last,
               last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
-              valid_actions=list(_S["valid"]), valid_actions_raw=list(_S["valid_raw"]))
+              valid_actions=list(_S["valid"]))
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
@@ -362,10 +366,6 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
     for item in items:
         call = {"action": item} if isinstance(item, str) else dict(item)
         call["action"] = str(call["action"]).upper()
-        if "row" in call:
-            call["y"] = call.pop("row")
-        if "col" in call:
-            call["x"] = call.pop("col")
         if reasoning:
             call["reasoning"] = str(reasoning)
         before = _H[-1]
@@ -470,9 +470,8 @@ def _cell(req):
         _append(raw, req["numeric_grid"])
     if _S["ns"] is None or req["reset_namespace"]:
         names = dict(vars(builtins), open=_open)
-        _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions, "segment": segment,
-                    "diff": diff, "ascii": ascii, "show": show, "frames_of": frames_of,
-                    "frame_diff": frame_diff, "gameplay_changed": gameplay_changed}
+        _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
+                    "diff": diff, "ascii": ascii, "frames_of": frames_of, "frame_diff": frame_diff}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):

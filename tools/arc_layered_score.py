@@ -1,7 +1,8 @@
 """Recompute official ARC-AGI-3 scores from saved scorecard JSON files.
 
-Per level: min((baseline_actions / agent_actions)^2, 1.15) when the level was completed, else 0.
-Levels are weighted by their 1-based index; the game score is the weighted mean. The script also prints the
+Per level: min((baseline_actions / agent_actions)^2 * 100, 115) when the level was completed, else 0.
+Levels are weighted by their 1-based index; the game score is the weighted mean, capped at the share of weight
+carried by completed levels (the SDK's own rule). The script also prints the
 scorecard's own score so a formula drift is visible instead of silent.
 
 Usage: python tools/arc_layered_score.py RUN_DIR_OR_SCORECARD [...]
@@ -16,14 +17,16 @@ from pathlib import Path
 def level_score(baseline: int, actions: int, completed: bool) -> float:
     if not completed or actions <= 0:
         return 0.0
-    return min((baseline / actions) ** 2, 1.15)
+    return min((baseline / actions) ** 2 * 100, 115.0)
 
 
 def game_score(baselines: list[int], actions: list[int], levels_completed: int) -> float:
     weights = range(1, len(baselines) + 1)
     scores = [level_score(baseline, act, index < levels_completed)
               for index, (baseline, act) in enumerate(zip(baselines, actions))]
-    return sum(weight * score for weight, score in zip(weights, scores)) / sum(weights)
+    total = sum(weights)
+    capped = sum(weight for weight, score in zip(weights, scores) if score > 0) / total * 100 if total else 0.0
+    return min(sum(weight * score for weight, score in zip(weights, scores)) / total, capped)
 
 
 def scorecards(argument: Path):

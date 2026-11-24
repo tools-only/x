@@ -113,7 +113,7 @@ test("segmentation, diff and frames_of", async () => {
     "print(len(seg['nodes']), dot['pixels'], dot['boundary'], seg['nodes'][0]['children'], len(seg['adjacency_list']))",
     "submit_actions('UP')",
     "d = diff(previous_frame, current_frame)",
-    "print(d['count'], d['bbox'], len(frames_of(1)), ascii(current_frame, (5, 2, 6, 5)))",
+    "print(d['count'], d['bbox'], len(frames_of(1)), current_frame.ascii((5, 2, 6, 5)))",
   ].join("\n"));
   python.close();
   assert.match(out.text, /^2 1 \[\[6, 3\], \[6, 4\], \[7, 4\], \[7, 3\]\] \[1\] 1\n2 \(5, 3, 6, 3\) 1 WgW/);
@@ -146,15 +146,13 @@ test("a value assigned to result is returned like Duck's return slot", async () 
   assert.match(out.text, /^noise\n\{'answer': 2\}$/);
 });
 
-test("show() queues at most two raw grids for the tool result", async () => {
+test("trimmed names are not bound by default and .ascii still compares as a string", async () => {
   const { python } = await session();
-  const out = await python.run("show(region=(0, 0, 2, 2))\nshow(current_frame, scale=2)\nprint('ok')");
-  const third = await python.run("show()\nshow()\nshow()");
+  const out = await python.run(
+    "print([name for name in ('show', 'segment', 'gameplay_changed', 'valid_actions_raw') if name in globals()])\n" +
+    "print(current_frame.ascii == str(current_frame.ascii), hasattr(current_frame, 'hash'), hasattr(current_frame, 'frames'))");
   python.close();
-  assert.equal(out.images.length, 2);
-  assert.deepEqual(out.images[0], { grid: [[0, 0], [0, 0]], scale: null });
-  assert.equal(out.images[1].scale, 2);
-  assert.match(third.text, /show\(\) queues at most 2 images per call/);
+  assert.match(out.text, /^\[\]\nTrue False False/);
 });
 
 test("modules written under work/ and work/harness/lib can be imported", async () => {
@@ -211,7 +209,7 @@ test("graph helpers summarise seen states; known no-ops are skipped unless force
   const out = await python.run([
     "submit_actions(['UP', 'DOWN'])",
     "g = graph_summary()",
-    "print(g['states'], g['edges'], g['frontier_count'], replay_to(current_frame.hash), replay_to('ffffffff'))",
+    "print(g['states'], g['edges'], g['frontier_count'], replay_to(history[-1].hash), replay_to('ffffffff'))",
   ].join("\n"));
   assert.match(out.text, /^2 2 2 \[\] None/);
   const skip = await python.run("result = submit_actions(['DOWN', 'UP'], skip_known_noops=True)");
