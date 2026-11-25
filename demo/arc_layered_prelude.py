@@ -320,11 +320,15 @@ def review(layer, diagnosis, evidence, change, test, place=None, artifact=None):
         test_repr = "<callable %s, run after every later action>" % getattr(test, "__name__", "test")
     else:
         test_repr = test
-    _rpc({"t": "review", "review": {"layer": layer, "diagnosis": diagnosis, "evidence": steps,
-                                    "change": change, "test": test_repr, "place": place, "artifact": artifact}})
-    _S["review_required"] = None
+    reply = _rpc({"t": "review", "review": {"layer": layer, "diagnosis": diagnosis, "evidence": steps,
+                                            "change": change, "test": test_repr, "place": place, "artifact": artifact}})
+    _S["review_required"] = reply.get("review_required")
     _S["review_test_pending"] = True
-    return {"ok": True, "layer": layer, "unfrozen": True}
+    unfrozen = not _S["review_required"]
+    out = {"ok": True, "layer": layer, "unfrozen": unfrozen}
+    if not unfrozen:
+        out["next"] = "write %s to complete the review and unfreeze actions" % artifact
+    return out
 
 
 class _WorkLoader:
@@ -397,9 +401,11 @@ def _bind():
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
                    skip_known_noops=False, force=False, stop_on_noop=True):
     if _S.get("review_required"):
-        raise RuntimeError("ReviewRequired: call review(layer=..., diagnosis=..., evidence=[history steps], "
-                           "change=..., test=...) first — see harness_state for evidence. Trigger: %s"
-                           % _S["review_required"])
+        required = _S["review_required"]
+        hint = ("write the declared artifact file to complete the review" if "write that file" in required
+                else "call review(layer=..., diagnosis=..., evidence=[history steps], change=..., test=...) "
+                     "first — see harness_state for evidence")
+        raise RuntimeError("ReviewRequired: %s. Trigger: %s" % (hint, required))
     if expect is not None and not _S.get("expect_on"):
         raise ValueError("expect is disabled in this run; drop the expect argument")
     if expect is not None and not (callable(expect) or (isinstance(expect, int) and not isinstance(expect, bool))
@@ -503,6 +509,8 @@ def _file(op, path, data=None):
     reply = _rpc({"t": "file", "op": op, "path": str(path), "data": data})
     if "error" in reply:
         raise (FileNotFoundError if reply.get("missing") else PermissionError)(reply["error"])
+    if reply.get("review_cleared"):
+        _S["review_required"] = None
     return reply.get("data")
 
 

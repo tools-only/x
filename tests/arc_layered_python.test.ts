@@ -296,10 +296,11 @@ test("a completed level freezes submit_actions until a review unfreezes it", asy
     "try:\n    review(layer='goal', diagnosis='d', evidence=[], change='c', test='t')\nexcept ValueError:\n    print('no evidence')",
     "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='none', test=' ')\nexcept ValueError:\n    print('no test')",
     "r = review(layer='goal', diagnosis='reach row 4', evidence=[1, 2], change='go up fast', test='two UPs complete a level', place='prompt', artifact='work/prompt.md')",
+    "f = open('work/prompt.md', 'w')\nf.write('go up fast')\nf.close()",
     "print(r['unfrozen'], submit_actions('UP')['executed_count'])",
   ].join("\n"));
   python.close();
-  assert.match(frozen.text, /^ReviewRequired\nbad layer\nno evidence\nno test\nTrue 1/);
+  assert.match(frozen.text, /^ReviewRequired\nbad layer\nno evidence\nno test\nFalse 1/);
   assert.equal(frozen.reviews?.length, 1);
   assert.equal((frozen.reviews?.[0] as any).layer, "goal");
   assert.match(String((frozen.reviews?.[0] as any).trigger), /complete/);
@@ -311,6 +312,7 @@ test("the first acting batch after a review reports whether its expect held", as
   const out = await python.run([
     "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='goal', test='t')\nexcept ValueError:\n    print('layer name rejected')",
     "review(layer='goal', diagnosis='d', evidence=[1], change='rows fill upward', test='UP keeps changing cells', place='memory', artifact='work/claims.md')",
+    "f = open('work/claims.md', 'w')\nf.write('rows fill upward')\nf.close()",
     "print(submit_actions('RESET')['review_test'])",
     "r = submit_actions('UP', expect=lambda before, after: True)",
     "print(r['review_test'], harness_state['predictions'].get('last_review_test'))",
@@ -326,6 +328,7 @@ test("a callable review test runs after every later action and is mounted in har
   await python.run("submit_actions(['UP'] * 3)");
   const out = await python.run([
     "review(layer='rule', diagnosis='UP always changes the frame', evidence=[1], change='keep going up', test=lambda t: t.action == 'UP', place='memory', artifact='work/claims.md')",
+    "f = open('work/claims.md', 'w')\nf.write('keep going up')\nf.close()",
     "r = submit_actions(['UP', 'UP'])",
     "print(harness_state['predictions']['review_checks'])",
   ].join("\n"));
@@ -343,29 +346,34 @@ test("a review must declare a landing place and the host verifies the artifact",
     "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='c', test='t')\nexcept ValueError:\n    print('no place')",
     "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='c', test='t', place='vibes', artifact='work/x.py')\nexcept ValueError:\n    print('bad place')",
     "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='c', test='t', place='tool', artifact='lib/x.py')\nexcept ValueError:\n    print('bad artifact')",
-    "review(layer='goal', diagnosis='push up', evidence=[1], change='push the block up', test='UP changes cells', place='tool', artifact='work/lib/up.py')",
+    "r = review(layer='goal', diagnosis='push up', evidence=[1], change='push the block up', test='UP changes cells', place='tool', artifact='work/lib/up.py')",
+    "print(r['unfrozen'])",
+    "try:\n    submit_actions('UP')\nexcept RuntimeError:\n    print('still frozen until the file exists')",
     "f = open('work/lib/up.py', 'w')\nf.write('def up():\\n    return 1\\n')\nf.close()",
     "r = submit_actions('UP')",
     "print(r['review_test'])",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^no place\nbad place\nbad artifact\nuntested/);
+  assert.match(out.text, /^no place\nbad place\nbad artifact\nFalse\nstill frozen until the file exists\nuntested/);
   assert.equal((out.acted as any)?.review_placement, "placed");
   assert.equal((out.acted as any)?.review_artifact, "work/lib/up.py");
   assert.equal((out.reviews?.[0] as any).place, "tool");
   assert.equal((out.reviews?.[0] as any).placed, true);
 });
 
-test("a declared-but-unwritten artifact is reported as unplaced", async () => {
+test("a declared-but-unwritten artifact keeps actions frozen until it is written", async () => {
   const { python } = await session({ review: true, reviewStuckSteps: 2 });
   await python.run("submit_actions(['DOWN'] * 4, stop_on_noop=False)");
   const out = await python.run([
     "review(layer='rule', diagnosis='DOWN is a noop', evidence=[1, 2], change='move with UP only', test='UP changes cells', place='memory', artifact='work/claims.md')",
+    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'write the declared artifact' in str(e))",
+    "f = open('work/claims.md', 'w')\nf.write('# DOWN is a noop\\n')\nf.close()",
     "r = submit_actions('UP')",
-    "print(r['review_test'])",
+    "print(r['executed_count'], r['review_test'])",
   ].join("\n"));
   python.close();
-  assert.equal((out.acted as any)?.review_placement, "unplaced");
+  assert.match(out.text, /^frozen: True\n1 untested/);
+  assert.equal((out.acted as any)?.review_placement, "placed");
   assert.equal((out.acted as any)?.review_artifact, "work/claims.md");
 });
 

@@ -69,6 +69,8 @@ export class LayeredPython {
   private batchHadExpect = false;
   private reviewRequired: string | null = null;
   private pendingPlacement?: { artifact: string; before: string | null };
+  private pendingArtifact: string | null = null;
+  private writesThisCall = new Set<string>();
   private claimLedger: Record<string, { source: string; support: number; counter: number; checked: number;
     levels: number[]; state: string; error?: string; flaggedInapplicable?: boolean }> = {};
   private gameOversThisLevel = 0;
@@ -248,10 +250,21 @@ export class LayeredPython {
     const record = { t: new Date().toISOString(), trigger: this.reviewRequired, ...review };
     this.pendingReviews.push(record);
     this.reviewLog.push(record);
-    this.reviewRequired = null;
-    if (typeof review.artifact === "string")
+    if (typeof review.artifact === "string") {
       this.pendingPlacement = { artifact: review.artifact, before: this.workContent(review.artifact) };
-    return { ok: true };
+      const relative = review.artifact.replace(/\\/g, "/").replace(/^(\.\/|\/)?work\//, "");
+      if (this.writesThisCall.has(relative)) {
+        this.reviewRequired = null;
+        this.pendingArtifact = null;
+      } else {
+        this.pendingArtifact = relative;
+        this.reviewRequired = `the review declared ${review.artifact} - write that file to complete the review`;
+      }
+    } else {
+      this.reviewRequired = null;
+      this.pendingArtifact = null;
+    }
+    return { ok: true, review_required: this.reviewRequired };
   }
 
   private workContent(path: string): string | null {
@@ -272,6 +285,12 @@ export class LayeredPython {
     if (used + bytes > WORK_BYTES) return { error: `work/ is limited to ${WORK_BYTES} bytes in total` };
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, data, "utf8");
+    this.writesThisCall.add(relative);
+    if (this.pendingArtifact !== null && relative === this.pendingArtifact) {
+      this.pendingArtifact = null;
+      this.reviewRequired = null;
+      return { data: null, review_cleared: true };
+    }
     return { data: null };
   }
 
@@ -282,6 +301,7 @@ export class LayeredPython {
     this.calls += 1;
     this.batchHadExpect = false;
     this.pendingReviews = [];
+    this.writesThisCall.clear();
     const claimSources = this.config.claims ? this.scanClaims() : undefined;
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,

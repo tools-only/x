@@ -93,10 +93,11 @@ the start of every call:
   `work/review_log.md`. The revised reading is echoed once into the next state message as `Active revision:`.
 - A review whose `change` is not "none" must also say where the conclusion lands: `place=` one of "memory", "tool",
   "prompt", "loop", "context", "skill", "subagent", and `artifact=` the `work/` file that will hold it (for example
-  `work/world_model.py` or `work/lib/push.py`). Write that file after the review; at your first acting batch the host
-  reports whether the declared artifact was actually written. Direction: after a GAME_OVER review, repair the
+  `work/world_model.py` or `work/lib/push.py`). Actions stay frozen until you actually write the declared file -
+  a review only completes when its conclusion exists as a file, because a conclusion that only lives in prose is
+  lost at eviction. Direction: after a GAME_OVER review, repair the
   hypothesis or build a perception helper; after a completed level, compress - turn the route that worked into a
-  parameterized function and shorten your beliefs. A conclusion that only lives in prose is lost at eviction.
+  parameterized function and shorten your beliefs.
 {{/review}}
 {{?claims}}
 - Knowledge only counts when the host can execute it. Write each falsifiable rule as a file `work/claims/<name>.py`
