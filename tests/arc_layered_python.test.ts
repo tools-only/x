@@ -462,7 +462,7 @@ test("stagnation freezes acting mid-batch and the freeze survives calls", async 
 });
 
 test("a half-spent level budget freezes acting once", async () => {
-  const { python } = await session({ review: true });
+  const { python } = await session({ review: true, reviewTriggers: ["budget"] });
   const out = await python.run("r = submit_actions(['DOWN'] * 16, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
   python.close();
   assert.match(out.text, /^10 review required: half the level budget/);
@@ -473,6 +473,21 @@ test("review triggers can be restricted to a subset", async () => {
   const out = await python.run("r = submit_actions(['DOWN'] * 8, stop_on_noop=False)\nprint(r['executed_count'], r.get('stop_reason'))");
   python.close();
   assert.match(out.text, /^8 None/);
+});
+
+test("three identical actions on the same board freeze acting for a hypothesis-elimination review", async () => {
+  const { python } = await session({ review: true });
+  const out = await python.run("r = submit_actions(['DOWN'] * 4, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  python.close();
+  assert.match(out.text, /^3 review required: 3 times the same action DOWN was sent against the same board/);
+});
+
+test("consecutive non-acting python calls without a work/ write eventually freeze for a landing review", async () => {
+  const { python } = await session({ review: true });
+  for (let call = 0; call < 8; call += 1) await python.run("pass");
+  const frozen = await python.run("try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'no action and no work' in str(e))");
+  python.close();
+  assert.match(frozen.text, /^frozen: True/);
 });
 
 test("the first GAME_OVER on a level freezes acting until a review", async () => {
@@ -540,7 +555,7 @@ test("work/startup.py runs once at kernel start and surfaces errors", async () =
 });
 
 test("a stub world_model.py keeps the review frozen until predict beats copying the frame", async () => {
-  const { python } = await session({ review: true });
+  const { python } = await session({ review: true, reviewTriggers: ["game_over"] });
   await python.run("submit_actions('UP')\nsubmit_actions(['DOWN'] * 4, stop_on_noop=False)");
   const out = await python.run([
     "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/world_model.py')",
@@ -564,6 +579,20 @@ test("a broken claims artifact keeps the review frozen until it loads", async ()
     "f = open('work/claims/down_noop.py', 'w')\nf.write('def check(t)\\n    return None\\n')\nf.close()",
     "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'failed to load' in str(e))",
     "f = open('work/claims/down_noop.py', 'w')\nf.write('def check(t):\\n    return None if t.action != \"DOWN\" else t.after_frame.grid == t.before_frame.grid\\n')\nf.close()",
+    "print(submit_actions('UP')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^frozen: True\n1/);
+});
+
+test("a review landing in a never-applying claim stays frozen until its guard narrows", async () => {
+  const { python } = await session({ review: true });
+  await python.run("submit_actions(['DOWN'] * 3, stop_on_noop=False)");
+  const out = await python.run([
+    "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/claims/never.py')",
+    "f = open('work/claims/never.py', 'w')\nf.write('def check(t):\\n    return None\\n')\nf.close()",
+    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'never applies' in str(e))",
+    "f = open('work/claims/never.py', 'w')\nf.write('def check(t):\\n    return None if t.action != \"DOWN\" else t.after_frame.grid == t.before_frame.grid\\n')\nf.close()",
     "print(submit_actions('UP')['executed_count'])",
   ].join("\n"));
   python.close();

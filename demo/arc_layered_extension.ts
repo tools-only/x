@@ -22,7 +22,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean;
     claims?: boolean } };
-type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient">>;
+type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient" | "evolutionDigest">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -347,6 +347,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const summary = ["Earlier history was compacted away. What you know so far:",
         TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
         options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
+        (python.evolutionDigest ? python.evolutionDigest() : null),
         `Progress: level ${state.level} of ${state.win_levels}, ${state.state}, ${state.actions_used} actions used` +
           `${state.budget_left === undefined ? "" : `, ${state.budget_left} budget left`}.`,
         trail.length ? `Recent action results:\n${trail.join("\n")}` : ""].filter(Boolean).join("\n\n");

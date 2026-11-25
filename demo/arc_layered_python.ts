@@ -73,11 +73,16 @@ export class LayeredPython {
   private pendingPlacement?: { artifact: string; before: string | null };
   private pendingArtifact: string | null = null;
   private artifactProbes: Record<string, Record<string, unknown>> = {};
+  private repeatsSinceReview = 0;
+  private idleCalls = 0;
+  private pointRepeats = new Map<string, number>();
   private writesThisCall = new Set<string>();
   private claimLedger: Record<string, { source: string; support: number; counter: number; checked: number;
     levels: number[]; state: string; error?: string; flaggedInapplicable?: boolean }> = {};
   private gameOversThisLevel = 0;
   private budgetReviewFired = false;
+  private claimReviewsThisLevel = 0;
+  private actionsSinceClaimReview = 0;
   private levelStartBudgetLeft: number | undefined;
   private pendingReviews: Array<Record<string, unknown>> = [];
   private reviewLog: Array<Record<string, unknown>> = [];
@@ -214,12 +219,18 @@ export class LayeredPython {
     const entry = { ...this.entry(label, after), expect: request.expect ?? null };
     this.history.push(entry);
     this.sent = this.history.length;
+    const beforeHash = hashGrid(before.frames.at(-1));
+    const pointKey = `${beforeHash}:${label}`;
+    const pointRepeats = (this.pointRepeats.get(pointKey) ?? 0) + 1;
+    this.pointRepeats.set(pointKey, pointRepeats);
     const levelChanged = after.levels_completed !== before.levels_completed;
     this.stepsSinceLevel = levelChanged ? 0 : this.stepsSinceLevel + 1;
+    if (!levelChanged) this.actionsSinceClaimReview += 1;
     if (this.config.review) {
-      const trig = (name: string) => !this.config.reviewTriggers || this.config.reviewTriggers.includes(name);
+      const trig = (name: string) => this.trigEnabled(name);
       if (trig("level") && levelChanged && after.state !== "WIN")
-        this.reviewRequired ??= `level ${before.levels_completed + 1} is complete: consolidate what carries over before the next level`;
+        this.reviewRequired ??= `level ${before.levels_completed + 1} is complete: consolidate what carries over before the next level` +
+          this.ledgerDigest();
       if (after.state === "GAME_OVER" && before.state !== "GAME_OVER") {
         this.gameOversThisLevel += 1;
         if (trig("game_over"))
@@ -236,11 +247,18 @@ export class LayeredPython {
         this.budgetReviewFired = true;
         this.reviewRequired ??= "half the level budget is spent and the level is not done";
       }
+      if (trig("repeats") && pointRepeats >= 3)
+        this.reviewRequired ??= `${pointRepeats} times the same action ${label} was sent against the same board ` +
+          "since the last review - a belief survived the evidence against it; name the eliminated hypothesis and " +
+          "land it as a falsifiable work/claims/ file";
     }
     if (levelChanged) {
       this.gameOversThisLevel = 0;
       this.budgetReviewFired = false;
+      this.claimReviewsThisLevel = 0;
+      this.actionsSinceClaimReview = 0;
       this.levelStartBudgetLeft = this.state().budget_left;
+      this.pointRepeats.clear();
     }
     const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
       levels_completed: after.levels_completed, state: after.state, level_changed: levelChanged,
@@ -257,11 +275,45 @@ export class LayeredPython {
       review_required: this.reviewRequired };
   }
 
+  private trigEnabled(name: string) { return !this.config.reviewTriggers || this.config.reviewTriggers.includes(name); }
+
+  /** What the claims ledger and model back-test say right now, for level-boundary consolidation. */
+  private ledgerDigest(): string {
+    const states = Object.values(this.claimLedger).map(entry => entry.state);
+    const count = (name: string) => states.filter(state => state === name).length;
+    const model = this.modelReport ? `${this.modelReport.correct}/${this.modelReport.tested}` : "none";
+    return ` (claims: ${count("validated")} validated, ${count("falsified")} falsified, ` +
+      `${count("hypothesis")} hypotheses; model backtest: ${model})`;
+  }
+
+  /** Claims ledger, open experiments and review pointer for compaction summaries, so a compacted
+   * context resumes from work/ instead of re-deriving the board from scratch. */
+  evolutionDigest(): string | null {
+    const names = Object.keys(this.claimLedger);
+    const lines: string[] = [];
+    if (names.length) {
+      lines.push(names.map(name => {
+        const entry = this.claimLedger[name];
+        return `${name}: ${entry.state} (${entry.support} support / ${entry.counter} counter / ${entry.checked} checked)` +
+          (entry.levels.length >= 2 ? " [game scale]" : "");
+      }).join("; "));
+    }
+    const open = names.filter(name => this.claimLedger[name].state === "hypothesis");
+    if (open.length) lines.push(`unresolved hypotheses to probe next: ${open.join(", ")}`);
+    if (this.modelReport) lines.push(`work/world_model.py backtest: ${this.modelReport.correct}/${this.modelReport.tested}`);
+    if (this.reviewLog.length) lines.push("past reviews: work/review_log.md");
+    return lines.length ? `Durable knowledge in work/: ${lines.join(" | ")}` : null;
+  }
+
   private review(request: KernelRequest) {
     const review = request.review as Record<string, unknown>;
     const record = { t: new Date().toISOString(), trigger: this.reviewRequired, ...review };
     this.pendingReviews.push(record);
     this.reviewLog.push(record);
+    this.repeatsSinceReview = 0;
+    this.idleCalls = 0;
+    this.actionsSinceClaimReview = 0;
+    this.pointRepeats.clear();
     if (typeof review.artifact === "string") {
       this.pendingPlacement = { artifact: review.artifact, before: this.workContent(review.artifact) };
       const relative = review.artifact.replace(/\\/g, "/").replace(/^(\.\/|\/)?work\//, "");
@@ -297,6 +349,12 @@ export class LayeredPython {
       if (tested >= 5 && correct <= identity)
         return `work/world_model.py predicts no better than copying the frame (${correct}/${tested} vs identity ${identity}/${tested}) - ` +
           "make predict say what changes, or land the conclusion as a falsifiable work/claims/<name>.py instead";
+    }
+    if (probe.kind === "claim") {
+      const checked = Number(probe.checked ?? 0), support = Number(probe.support ?? 0), counter = Number(probe.counter ?? 0);
+      if (checked >= 3 && support === 0 && counter === 0)
+        return `work/${relative} returned None on every transition it was checked against (${checked} checked, 0 support) - ` +
+          "a rule that never applies cannot be a review conclusion; narrow its guard so it judges a real transition, or land elsewhere";
     }
     return null;
   }
@@ -429,11 +487,29 @@ export class LayeredPython {
     }
     if (batch.executed) {
       const key = batch.actions.join(">");
-      if (batch.actions.length >= 2 && this.seenSequences.has(key)) this.repeatedSequences += 1;
+      if (batch.actions.length >= 2 && this.seenSequences.has(key)) { this.repeatedSequences += 1; this.repeatsSinceReview += 1; }
       this.seenSequences.add(key);
       if (acted.surprise) this.surprises += 1;
       this.unchecked = this.batchHadExpect ? 0 : this.unchecked + 1;
       if (acted.expect_hits) this.expectHits = acted.expect_hits;
+    }
+    if (this.config.review) {
+      if (batch.executed || this.writesThisCall.size) this.idleCalls = 0;
+      else if (!this.reviewRequired) this.idleCalls += 1;
+      if (this.trigEnabled("repeats") && this.repeatsSinceReview >= 3)
+        this.reviewRequired ??= `${this.repeatsSinceReview} already-tried action routes were re-sent since the last review - ` +
+          "a belief survived the evidence against it; name it and land it as a falsifiable work/claims/ file";
+      if (this.trigEnabled("idle_calls") && this.idleCalls >= 8)
+        this.reviewRequired ??= `${this.idleCalls} python calls in a row produced no action and no work/ write - ` +
+          "analysis is repeating without landing anywhere; write what you now believe into work/ or act on it";
+      const claimChallenge = claimsFalsified.length + claimsInapplicable.length > 0;
+      if (this.trigEnabled("claims") && claimChallenge && this.claimReviewsThisLevel < 3
+          && this.actionsSinceClaimReview >= 4) {
+        const reasons = [...claimsFalsified, ...claimsInapplicable].join(", ");
+        this.reviewRequired ??= `work/claims/ evidence changed: ${reasons} - revise or discard the failed rule`;
+        this.claimReviewsThisLevel += 1;
+        this.actionsSinceClaimReview = 0;
+      }
     }
     const claimEvents = claimsFalsified.length + claimsValidated.length + claimsInapplicable.length > 0;
     return { text, truncated, acted: batch.executed || claimEvents ? acted : null, images, ...(error ? { error } : {}),

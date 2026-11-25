@@ -288,6 +288,16 @@ test("near the window the history is compacted into one summary message plus the
   assert.equal(compactHistory([{ role: "user", content: [] }], "s"), null);
 });
 
+test("compaction carries the claims ledger, open hypotheses and review pointer", async () => {
+  const { handlers, python } = setup({ contextCap: 1e9, contextTarget: 1e9 });
+  python.evolutionDigest = () => "Durable knowledge in work/: up_moves: validated (3 support / 0 counter / 3 checked) [game scale] | unresolved hypotheses to probe next: down_noop | past reviews: work/review_log.md";
+  await handlers.before_agent_start({});
+  const block = (text: string) => [{ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text }] },
+    { role: "assistant", content: [{ type: "text", text: "t".repeat(400) }] }];
+  const out = handlers.context({ messages: [...block("one"), ...block("two")] }, { model: { contextWindow: 16500 } }).messages;
+  assert.match(out[0].content[0].text, /up_moves: validated[\s\S]*down_noop[\s\S]*work\/review_log\.md/);
+});
+
 test("the notebook tool patches sections, persists them and the state message carries them", async () => {
   const { handlers, tools, entries } = setup({ notebook: true });
   await tools.notebook.execute("id", { op: "replace", section: "controls", text: "UP moves the cursor" });

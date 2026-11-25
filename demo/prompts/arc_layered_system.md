@@ -83,28 +83,35 @@ These names are bound fresh at the start of every call:
   (`force=True` sends them anyway).
 {{/graph}}
 {{?review}}
-- At structural failure points (a second GAME_OVER on a level, long stagnation, half the level budget gone with the
-  level not done, or a completed level) the host freezes `submit_actions` and the state message says REVIEW REQUIRED;
-  querying, computing and reading history still work. Unfreeze with `review(layer=..., diagnosis=..., evidence=[history
-  step numbers], change=..., test=...)`. `layer` names where the failure is: "action" (wrong move), "rule" (wrong
-  dynamics), "goal" (wrong objective) or "representation" (wrong reading of what the objects are). `change` may be
-  "none" or the revised reading in your own words - never just a layer name; `test` must be a check that would tell
-  the new reading from the old. The strongest form of `test` is a callable `(transition) -> True/False/None`
-  (None = not applicable): it then runs automatically after every later action, failures are flagged on the action
-  line, and running counts appear in `harness_state["predictions"]["review_checks"]`. With a prose `test`, your
-  first non-RESET batch after the review should carry an `expect` that implements it: the host reports whether it
-  held, failed, or was never checked. Past reviews stay readable in `harness_state["reviews"]` and
-  `work/review_log.md`. The revised reading is echoed once into the next state message as `Active revision:`.
+- At structural failure points the host freezes `submit_actions` and the state message says REVIEW REQUIRED; querying,
+  computing and reading history still work. Freeze triggers: a second GAME_OVER on a level, long stagnation, half the
+  level budget gone with the level not done, a completed level (with the claims ledger and model back-test printed in
+  the freeze reason), the same action re-sent three times against the same board since the last review, or several
+  python calls in a row that produce no action and no `work/` write. The host also freezes actions when a
+  `work/claims/` rule was falsified or never applied; the message names the rule and `review` must revise or discard
+  it. Unfreeze with `review(layer=..., diagnosis=..., evidence=[history step numbers], change=..., test=...)`. `layer`
+  names where the failure is: "action" (wrong move), "rule" (wrong dynamics), "goal" (wrong objective) or
+  "representation" (wrong reading of what the objects are). `change` may be "none" or the revised reading in your own
+  words - never just a layer name; `test` must be a check that would tell the new reading from the old. The strongest
+  form of `test` is a callable `(transition) -> True/False/None` (None = not applicable): it then runs automatically
+  after every later action, failures are flagged on the action line, and running counts appear in
+  `harness_state["predictions"]["review_checks"]`. With a prose `test`, your first non-RESET batch after the review
+  should carry an `expect` that implements it: the host reports whether it held, failed, or was never checked. Past
+  reviews stay readable in `harness_state["reviews"]` and `work/review_log.md`. The revised reading is echoed once
+  into the next state message as `Active revision:`.
 - A review whose `change` is not "none" must also say where the conclusion lands: `place=` one of "memory", "tool",
   "prompt", "loop", "context", "skill", "subagent", and `artifact=` the `work/` file that will hold it (for example
   `work/world_model.py` or `work/lib/push.py`). Actions stay frozen until you actually write the declared file -
   a review only completes when its conclusion exists as a file, because a conclusion that only lives in prose is
   lost at eviction. The host also checks what you wrote: a `work/claims/` file must load and define `check`, and
   `work/world_model.py` is only accepted when its back-test beats copying the frame - a stub that returns the frame
-  unchanged keeps actions frozen. Rule- and action-layer conclusions normally land best as a falsifiable
-  `work/claims/<name>.py`. Direction: after a GAME_OVER review, repair the
-  hypothesis or build a perception helper; after a completed level, compress - turn the route that worked into a
-  parameterized function and shorten your beliefs.
+  unchanged keeps actions frozen. A `work/claims/` landing is also rejected when it returns None on every transition
+  it was checked against - a rule that never applies is not a conclusion, narrow its guard first. Rule- and
+  action-layer conclusions normally land best as a falsifiable `work/claims/<name>.py`. Direction: after a GAME_OVER
+  review, repair the hypothesis or build a perception helper; after a completed level, compress - turn the route that
+  worked into a parameterized function and shorten your beliefs. When the freeze reason is "the same action re-sent
+  three times", the review must name which belief kept recommending that move and which alternative it ruled out, and
+  land that as a falsifiable `work/claims/<name>.py`.
 {{/review}}
 {{?claims}}
 - Knowledge only counts when the host can execute it. Write each falsifiable rule as a file `work/claims/<name>.py`

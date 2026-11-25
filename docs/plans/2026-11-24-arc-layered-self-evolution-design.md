@@ -527,6 +527,36 @@ claims 谓词真实对局 validated（support 7/checked 8）、预算拒绝、�
 遗留（记录不实施）：收敛搜索/假设淘汰的更强机制、notebook 默认开对 compaction 重建认知的缓解、
 kernel 偶发 `unknown kernel frame`/`StopIteration` 崩溃（外部机器报告，本地无 repro）。
 
+### 5.11 收敛、认知续接与闭环沉淀的三触发（2026-11-25）
+
+真实失败（用户外部机器 77e7568 运行 + 本地 su15 真跑分析）：六条问题里最核心的三条都指向同一断点——
+宿主只有"整批序列"级别的去重，漏掉**同一局面重复同一单点动作**；上下文压缩摘要只回放 memory 标签和
+notebook，不携带 claims 账本、待验证假设和 review 指针，压缩后 agent 从棋盘重新推演而不是从 `work/`
+续接；过关评审不把账本/回测结果做成必须面对的对象，沉淀停留在口头。
+
+窄命题：宿主把"同局面同动作重复"变成评审触发、"非动作空转"变成评审触发、压缩摘要携带知识采集状态、
+评审落 claims 强制有 support 后，(1) 同关连续 3 次同局面同动作会冻结并逼 agent 说出被淘汰的假设；
+(2) 压缩后重新开始的不再是"重新分析棋盘"而是"从已验证/待验证知识续接"；(3) 过关评审文案带上账本账目。
+
+改动（三个小因子，每个都有独立可测断点）：
+1. **单点重复触发（问题 1）**：`LayeredPython.act()` 按 `(当前帧 hash, action label)` 计数 `pointRepeats`，
+   第 3 次且启用 `repeats` 触发即冻结，文案要求"说出被淘汰假设并落 `work/claims/` file"；换关/review
+   清空计数；反例仍只绑到实际反驳的 claim 版本，不把坐标永久禁用。
+2. **认知续接（问题 2）**：新增 `evolutionDigest()`，输出 claims 账本逐条状态（validated/falsified/hypothesis
+   + support/counter/checked + game scale）、未决 hypothesis 清单、`work/world_model.py` 回测、`work/review_log.md`
+   指针；注入 `compactHistory` 摘要（extension 的 `pi.on("context")`）。
+3. **闭环沉淀（问题 3）**：过关冻结文案经 `ledgerDigest()` 附带 claims/model 账目；评审落
+   `work/claims/*.py` 时若探针显示 checked≥3 且 support=0、counter=0（永不适用）则冻结不解除，
+   逼 agent 收窄 guard 或换落点（对应 §5.10 遗留的"可执行但空洞"绕过路径）。
+
+验证（2026-11-25）：功能正确——Node 单测 57/57（基线 54 + 新增同局面同动作冻结、空转冻结、never-applying
+claim 冻结、压缩摘要含账本 4 用例；两个基线用例因新触发默认开启而显式收窄 `reviewTriggers` 以保持原义）。
+全链路——`runs/arc-layered-layered-evo-smoke-20261125`（真实 bridge + SDK，ls20）：claims 谓词 validated
+(support 7/checked 8)、预算拒绝、评审 placement/claims/model 探针全链无副作用。自主采用/净收益——未验证，
+待真实 provider 运行观察三命题与三条核心问题的实际缓解（尤其是"预测→验证→排除"是否在评审下收敛）。
+推翻条件：单点重复触发在正常探索中误伤（同关随机扰动即触发）→ 阈值升到 5 并只统计连续、无 expect 的
+批次；never-applying 冻结导致评审解冻平均多耗 >2 个 python 轮 → 降为警告不冻结。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是
