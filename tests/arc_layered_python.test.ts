@@ -378,7 +378,7 @@ test("a declared-but-unwritten artifact keeps actions frozen until it is written
 });
 
 test("claims are executed on every transition and validated by the host ledger", async () => {
-  const { python } = await session({ claims: true });
+  const { python } = await session();
   await python.run([
     "f = open('work/claims/up_moves.py', 'w')",
     "f.write('\"UP moves the piece\"\\ndef check(t):\\n    return True if t.action == \"UP\" else None\\n')",
@@ -393,7 +393,7 @@ test("claims are executed on every transition and validated by the host ledger",
 });
 
 test("a counterexample falsifies a claim and editing the file resets its record", async () => {
-  const { python } = await session({ claims: true });
+  const { python } = await session();
   await python.run([
     "f = open('work/claims/down_changes.py', 'w')",
     "f.write('def check(t):\\n    return t.after_frame.grid != t.before_frame.grid if t.action == \"DOWN\" else None\\n')",
@@ -415,7 +415,7 @@ test("a counterexample falsifies a claim and editing the file resets its record"
 });
 
 test("a new claim is back-tested against the recorded history at load", async () => {
-  const { python } = await session({ claims: true });
+  const { python } = await session();
   await python.run("print(submit_actions(['UP'] * 2)['executed_count'])");
   await python.run("print(submit_actions('UP')['executed_count'])");
   await python.run([
@@ -432,7 +432,7 @@ test("a new claim is back-tested against the recorded history at load", async ()
 });
 
 test("a claim that never applies is flagged after 20 checks", async () => {
-  const { python } = await session({ claims: true });
+  const { python } = await session();
   await python.run([
     "f = open('work/claims/never.py', 'w')",
     "f.write('def check(t):\\n    return None\\n')",
@@ -473,6 +473,29 @@ test("review triggers can be restricted to a subset", async () => {
   const out = await python.run("r = submit_actions(['DOWN'] * 8, stop_on_noop=False)\nprint(r['executed_count'], r.get('stop_reason'))");
   python.close();
   assert.match(out.text, /^8 None/);
+});
+
+test("the first GAME_OVER on a level freezes acting until a review", async () => {
+  const bridge = new FakeBridge();
+  (bridge as any).act = async function (payload: { action: string }) {
+    this.used += 1;
+    if (payload.action === "RESET") this.row = 6;
+    const frame = this.frame();
+    if (payload.action !== "RESET") frame.state = "GAME_OVER";
+    return frame;
+  };
+  const python = new LayeredPython(bridge as any, config({ review: true }));
+  await python.init();
+  const out = await python.run("r = submit_actions('UP')\nprint(r['stop_reason'])");
+  const frozen = await python.run([
+    "try:\n    submit_actions('RESET')\nexcept RuntimeError:\n    print('frozen')",
+    "review(layer='rule', diagnosis='UP is fatal from the start row', evidence=[1], change='none', test='RESET restores the frame')",
+    "print(submit_actions('RESET')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^game_over/);
+  assert.match(frozen.text, /^frozen\n1/);
+  assert.match(String((frozen.reviews?.[0] as any)?.trigger), /GAME_OVER number 1 on this level/);
 });
 
 test("after GAME_OVER a non-RESET batch raises instead of spinning, and bridge actions leave a heartbeat", async () => {

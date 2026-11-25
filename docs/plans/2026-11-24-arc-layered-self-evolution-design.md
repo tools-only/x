@@ -467,6 +467,32 @@ payload，翻页语义无损（session.jsonl 磁盘原文仍完整）。Pi 扩�
 证据：功能层 51/51 Node 单测（含新的自旋断路 + 心跳落盘测试，真实内核）；1、2 全链路已由单测内真实
 内核覆盖；3 的真实空转不可按需复现，标记未验证，由下一次 provider 运行收割。
 
+### 5.9 触发与装载路径默认化（2026-11-25，用户裁定）
+
+真实失败（用户报告，外部机器真实运行，非本地日志）：评审触发条件几乎不触发——game_over 要同关第 2 次
+才触发；MEL 环境 `REVIEW_TRIGGERS` 收窄后过关也不触发；`ARC_LAYERED_CLAIMS` 未开导致核心进化产物
+`work/claims/*.py` 从未被宿主执行；`ARC_LAYERED_MODEL` 未开导致 world_model 路径整体死路。根因是 §4
+"全部默认关、env 显式开"的裁定把自进化闭环的存活压在每次启动记对 env 上，装载路径依赖配置而非产物。
+
+窄命题：装载改为**产物在场即生效**、评审改为**关卡边界即触发**后，一次不带任何 `ARC_LAYERED_*` env 的
+真实运行中，宿主会执行已写入的 claims/world_model 并在首次 GAME_OVER 或过关时触发评审。
+
+裁定与改动（卸下的负担：launcher 记 env 的义务和"产物写了但不活"的整类失败）：
+1. **装载路径无条件**：宿主每调用扫描并执行 `work/claims/*.py`（LayeredConfig 去掉 claims 字段），
+   `work/world_model.py` 回测本就无条件；harness_state 恒含 claims 账本。写文件 = 上线，env 不再参与装载。
+2. **边界触发**：game_over 评审从"同关第 2 次"改为**每次** GAME_OVER（成功失败都是关卡边界）；
+   level/stuck/budget 触发不变；`ARC_LAYERED_REVIEW_TRIGGERS` 仍可收窄（消融用）。
+3. **默认值反转**（覆盖 §4"全部默认关"条目，仅限自进化组）：`EXPECT/WORK/MODEL/CLAIMS/REVIEW` 默认开，
+   `=0` 显式关；基线/消融对照从"开臂记 env"改为"关臂记 env"。graph/tags/notebook/gradient 等保持默认关。
+
+验证（2026-11-25）：功能正确——Node 单测 52/52（真实 WASI 内核；新增"首次 GAME_OVER 冻结至评审"）。
+全链路——`runs/arc-layered-boundary-real-20261125-ls20`（真实 bridge + SDK、脚本 cell、无模型）：不传
+claims 配置时谓词仍被宿主逐 transition 执行并 validated（support 6 / checked 7）、预算冻结→评审→placement
+→review_test 全链在场；该局预算耗尽表现为 bridge 拒绝而非 GAME_OVER 状态，真实链路的 GAME_OVER 评审
+分支仍未验证（单测已覆盖），归下一次 provider 运行。自主采用/净收益——未验证，待外部机器真实运行收割。
+推翻条件：默认开配置相对关闭臂每关动作数或 token 劣化 >30%（沿用 §4 证伪阈值），或评审频率高到吞掉
+行动预算（每关评审轮 > 动作批次的 1/3），则回退第 2、3 条。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是

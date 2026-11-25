@@ -402,7 +402,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 export default function arcLayeredExtension(pi: ExtensionAPI) {
   const env = process.env, root = env.ARC_RUN_ROOT ?? process.cwd(), local = env.ARC_LAYERED_CONFIG === "kaggle-local";
   const maxActionsPerCall = 16;
-  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW === "1";
+  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW !== "0";
   const reviewTriggers = env.ARC_LAYERED_REVIEW_TRIGGERS
     ? env.ARC_LAYERED_REVIEW_TRIGGERS.split(",").map(part => part.trim()).filter(Boolean) : undefined;
   if (env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
@@ -415,8 +415,8 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     numericGrid: env.ARC_LAYERED_NUMERIC_GRID !== "0", namespaceResetPerCall: env.ARC_LAYERED_NAMESPACE_RESET === "1",
     undo: env.ARC_LAYERED_UNDO !== "0", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
     competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
-    expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
-    review, claims: env.ARC_LAYERED_CLAIMS === "1", reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
+    expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
+    review, reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
     contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? 131072), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? 57344),
@@ -426,7 +426,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
-    flags: { expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
-      work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1", review,
-      claims: env.ARC_LAYERED_CLAIMS === "1" } });
+    flags: { expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
+      work: env.ARC_LAYERED_WORK !== "0", model: env.ARC_LAYERED_MODEL !== "0", tags: env.ARC_LAYERED_TAGS === "1", review,
+      claims: env.ARC_LAYERED_CLAIMS !== "0" } });
 }

@@ -5,7 +5,7 @@ import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
 
 export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
   timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean;
-  skipNoops?: boolean; expect?: boolean; graph?: boolean; review?: boolean; claims?: boolean; reviewStuckSteps?: number;
+  skipNoops?: boolean; expect?: boolean; graph?: boolean; review?: boolean; reviewStuckSteps?: number;
   reviewTriggers?: string[] };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
   step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
@@ -135,9 +135,9 @@ export class LayeredPython {
       errors: this.errors.slice(-5),
       artifacts: files.slice(0, 20),
       reviews: this.reviewLog.slice(-5),
-      ...(this.config.claims ? { claims: Object.fromEntries(Object.entries(this.claimLedger).map(([name, entry]) =>
+      claims: Object.fromEntries(Object.entries(this.claimLedger).map(([name, entry]) =>
         [name, { state: entry.state, support: entry.support, counter: entry.counter, checked: entry.checked,
-          scale: entry.levels.length >= 2 ? "game" : "level", ...(entry.error ? { error: entry.error } : {}) }])) } : {}),
+          scale: entry.levels.length >= 2 ? "game" : "level", ...(entry.error ? { error: entry.error } : {}) }])),
       cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null, python_calls: this.calls },
     };
   }
@@ -216,7 +216,7 @@ export class LayeredPython {
         this.reviewRequired ??= `level ${before.levels_completed + 1} is complete: consolidate what carries over before the next level`;
       if (after.state === "GAME_OVER" && before.state !== "GAME_OVER") {
         this.gameOversThisLevel += 1;
-        if (trig("game_over") && this.gameOversThisLevel >= 2)
+        if (trig("game_over"))
           this.reviewRequired ??= `GAME_OVER number ${this.gameOversThisLevel} on this level`;
       }
       const steps = this.config.reviewStuckSteps ?? 0;
@@ -306,14 +306,13 @@ export class LayeredPython {
     this.batchHadExpect = false;
     this.pendingReviews = [];
     this.writesThisCall.clear();
-    const claimSources = this.config.claims ? this.scanClaims() : undefined;
+    const claimSources = this.scanClaims();
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
       harness_state: this.harnessState(), review_enabled: !!this.config.review, review_required: this.reviewRequired,
-      startup_source: this.startupSource(), model_source: this.scanModelSource(),
-      ...(claimSources ? { claims: claimSources } : {}) };
+      startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch))
       : req.t === "review" ? this.review(req) : this.file(req);
@@ -329,7 +328,7 @@ export class LayeredPython {
       const modelReport = (run.result as any).model;
       if (modelReport) this.modelReport = modelReport;
       const report = (run.result as any).claims;
-      if (this.config.claims && report) {
+      if (report) {
         for (const [name, counts] of Object.entries<any>(report.counts ?? {})) {
           const entry = this.claimLedger[name];
           if (!entry) continue;

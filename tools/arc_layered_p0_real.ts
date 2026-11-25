@@ -24,7 +24,7 @@ if (ready.status !== "ready") throw new Error(JSON.stringify(ready));
 const base = `http://127.0.0.1:${ready.port}`;
 const python = new LayeredPython(new BridgeClient(base, token), { numericGrid: true, namespaceResetPerCall: false, undo: false,
   timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(out, "work"), competition: false,
-  expect: true, graph: true, review: true, claims: true, reviewStuckSteps: 32 });
+  expect: true, graph: true, review: true, reviewStuckSteps: 32 });
 const log: unknown[] = [{ init: await python.init() }];
 const cells = [
   "print('startup:', STARTUP_TAG)",
@@ -46,6 +46,9 @@ const cells = [
   "r = review(layer='rule', diagnosis='half the budget is gone with no level done', evidence=[len(history) - 1], change='UP only redraws the cursor', test=lambda t: t.result.get('changed_cells', 0) >= 0, place='memory', artifact='work/claims.md')\nwith open('work/claims.md', 'w') as f: f.write('- UP only redraws the cursor (steps %d)\\n' % len(history))\nr2 = submit_actions('UP', expect=(0, 16))\nprint('review:', r['unfrozen'], r2['executed_count'], r2['review_test'], harness_state['predictions'].get('last_review_test'), harness_state['predictions'].get('review_checks'))",
   "print('placement:', harness_state['reviews'][-1].get('place'), harness_state['reviews'][-1].get('placed'))",
   "print('claims:', harness_state.get('claims'))",
+  "r = submit_actions(['DOWN'] * 12, stop_on_noop=False)\nprint('spend:', r['executed_count'], r['state'], r.get('stop_reason'))",
+  "try:\n    submit_actions('RESET')\n    print('not frozen')\nexcept RuntimeError as e:\n    print('frozen on first GAME_OVER:', str(e)[-40:])",
+  "r = review(layer='goal', diagnosis='the budget ran out before the first level', evidence=[len(history) - 1], change='none', test='a fresh attempt must bank the level earlier')\nprint('unfrozen:', r.get('unfrozen'), '|', harness_state['reviews'][-1]['trigger'])",
 ];
 for (const code of cells) {
   const outcome = await python.run(code);
