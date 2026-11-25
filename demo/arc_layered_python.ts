@@ -52,6 +52,7 @@ export class LayeredPython {
   private lastResult: Record<string, unknown> = {};
   private lastAction?: string;
   private workDir: string;
+  private heartbeat: string;
   private seenHashes = new Set<string>();
   private stale = 0;
   private stepsSinceLevel = 0;
@@ -85,6 +86,8 @@ export class LayeredPython {
       runtime: taskPythonRuntimeIdentity(), source: readFileSync(new URL("./arc_layered_prelude.py", import.meta.url), "utf8") });
     this.workDir = resolve(config.workDir);
     mkdirSync(this.workDir, { recursive: true });
+    this.heartbeat = resolve(this.workDir, "..", "harness", "heartbeat");
+    mkdirSync(dirname(this.heartbeat), { recursive: true });
   }
 
   private entry(action: string, raw: any) {
@@ -176,6 +179,7 @@ export class LayeredPython {
   }
 
   private async act(request: KernelRequest, batch: ActionBatch & { halt?: string }) {
+    writeFileSync(this.heartbeat, String(Date.now()));
     const call = request.call as { action: string; x?: number; y?: number; reasoning?: string };
     const name = call.action, raw = RAW[name] ?? name;
     if (request.expect != null) this.batchHadExpect = true;

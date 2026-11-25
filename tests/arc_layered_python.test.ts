@@ -475,6 +475,27 @@ test("review triggers can be restricted to a subset", async () => {
   assert.match(out.text, /^8 None/);
 });
 
+test("after GAME_OVER a non-RESET batch raises instead of spinning, and bridge actions leave a heartbeat", async () => {
+  const bridge = new FakeBridge();
+  (bridge as any).act = async function (payload: { action: string }) {
+    this.used += 1;
+    if (payload.action === "RESET") this.row = 6;
+    const frame = this.frame();
+    if (payload.action !== "RESET") frame.state = "GAME_OVER";
+    return frame;
+  };
+  const python = new LayeredPython(bridge as any, config());
+  await python.init();
+  const out = await python.run(
+    "submit_actions('UP')\ntry:\n    while True:\n        submit_actions('UP')\nexcept RuntimeError as problem:\n    print('raised:', problem)");
+  assert.match(out.text, /raised: the game is over: only RESET works now/);
+  const after = await python.run("print(submit_actions('RESET')['executed_count'])");
+  assert.match(after.text, /^1/);
+  const beat = readFileSync(join((python as any).workDir, "..", "harness", "heartbeat"), "utf8");
+  assert.ok(Number(beat) > 0);
+  python.close();
+});
+
 test("work/startup.py runs once at kernel start and surfaces errors", async () => {
   const { python } = await session();
   const dir = (python as any).workDir as string;

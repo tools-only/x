@@ -452,6 +452,21 @@ payload，翻页语义无损（session.jsonl 磁盘原文仍完整）。Pi 扩�
 换模型时随 window 自动缩放；乘数本身是宿主资源参数（允许保留多少倍"永不再发送"的死历史），与模型无
 关，建议默认 4。单测 50/50。
 
+### 5.8 GAME_OVER 自旋与活性误判修复（2026-11-25）
+
+外部机器复现 + MEL4e/4f 早夭共同暴露三个运行终止缺陷，按因果链修复：
+1. **GAME_OVER 自旋**（prelude）：死亡后宿主对非 RESET 动作只返回 `{"stopped": ...}`，agent 的
+   `while` 重试循环每圈被秒拒但不中断，纯计算烧满 cell compute 预算 → 内核 trap。改为批次首动作非
+   RESET 且状态为 GAME_OVER 时直接抛 RuntimeError，循环第一圈即断；RESET 职责仍完全在 agent。
+2. **活性误判**（host + runner）：长 python cell 执行期间 Pi 不发事件，runner `idle_timeout=300s`
+   把"工具在干活"误判为卡死。宿主每次动作 RPC 写 `harness/heartbeat` 时间戳；runner 超时先查心跳，
+   新鲜则继续等待。
+3. **provider 空转致死**（runner）：真实空转（请求发出后 300s 无流式事件，已杀 MEL4e/4f）从"终止
+   整个运行"改为"中止该 turn、重新 prompt"，`MAX_PROVIDER_STALLS=3` 次后才终止，summary 记
+   `provider_stalls`。
+证据：功能层 51/51 Node 单测（含新的自旋断路 + 心跳落盘测试，真实内核）；1、2 全链路已由单测内真实
+内核覆盖；3 的真实空转不可按需复现，标记未验证，由下一次 provider 运行收割。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是

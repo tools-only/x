@@ -28,6 +28,7 @@ EXTENSION = PROJECT_ROOT / "demo" / "arc_layered_extension.ts"
 CONFIGS = ("kaggle-local", "api-research")
 MAX_PROVIDER_ERRORS = 3
 MAX_IDLE_SEGMENTS = 2
+MAX_PROVIDER_STALLS = 3
 
 
 def _scan_work(root: Path, harness: Path, segment: int, seen: dict[str, str]) -> tuple[int, list[str]]:
@@ -157,7 +158,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         summary["pi"] = {"auto_compaction_setting": pi_state.get("autoCompactionEnabled"), "thinking": pi_state.get("thinkingLevel"),
                          "context_window": (pi_state.get("model") or {}).get("contextWindow")}
 
-        prompt, overflow_retried, idle_segments = "Play the game.", False, 0
+        prompt, overflow_retried, idle_segments, stalls = "Play the game.", False, 0, 0
         while True:
             if time.monotonic() >= deadline:
                 summary["stop_reason"] = "deadline"
@@ -167,14 +168,32 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                 break
             kernel.prompt(prompt)
             try:
-                kernel.wait_for_agent_events(timeout=max(1.0, deadline - time.monotonic()), idle_timeout=idle_timeout)
+                while True:
+                    try:
+                        kernel.wait_for_agent_events(timeout=max(1.0, deadline - time.monotonic()), idle_timeout=idle_timeout)
+                        break
+                    except TimeoutError:
+                        # A long python cell emits no Pi events; bridge actions keep harness/heartbeat fresh.
+                        beat = harness / "heartbeat"
+                        if time.monotonic() >= deadline or not beat.exists() \
+                                or time.time() - beat.stat().st_mtime >= idle_timeout:
+                            raise
             except TimeoutError as exc:
                 kernel.deadline = None
                 kernel.abort()
                 kernel.wait_for_agent_events(timeout=120.0)
-                summary["stop_reason"] = "deadline" if time.monotonic() >= deadline else "idle_timeout"
-                summary["timeout"] = str(exc)
-                break
+                if time.monotonic() >= deadline:
+                    summary["stop_reason"] = "deadline"
+                    summary["timeout"] = str(exc)
+                    break
+                stalls += 1
+                summary["provider_stalls"] = stalls
+                if stalls >= MAX_PROVIDER_STALLS:
+                    summary["stop_reason"] = "idle_timeout"
+                    summary["timeout"] = str(exc)
+                    break
+                prompt = "Continue playing."
+                continue
             summary["segments"] += 1
             end = ([row for row in _read_jsonl(harness / "layered.jsonl") if row.get("kind") == "segment_end"] or [{}])[-1]
             reason = end.get("reason")

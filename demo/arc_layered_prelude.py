@@ -416,6 +416,12 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         raise ValueError("expect range (%s, %s) is too wide to mean anything; commit to a range no wider than 16 "
                          "changed cells, an int levels_completed increase, or a callable" % (expect[0], expect[1]))
     items = [actions] if isinstance(actions, (str, dict)) else list(actions)
+    if items and _H and _H[-1]["raw"].get("state") == "GAME_OVER":
+        first = items[0]
+        first_name = str(first if isinstance(first, str) else dict(first).get("action", "")).upper()
+        if first_name != "RESET":
+            raise RuntimeError("the game is over: only RESET works now. Retrying other actions in a loop can never "
+                               "succeed; submit_actions('RESET') first")
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
     acted_real = False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
