@@ -442,6 +442,16 @@ MEL4d（历史回测+适用性计数在场）：L1 16 动作过关（低于基�
 图片，保留 assistant 推理（路径即知识），降低每回合常驻增长，从源头减少驱逐次数与驱逐时的知识损失。
 单测 49/49。自主采用/净收益待 MEL4e。
 
+**体量触发的会话翻页（2026-11-25 补）**：上下文过滤是每请求重算的无损视图，Pi 内存 session 原文只增
+不减（堆、每请求 O(n) 重扫）。由于 evict 最旧整块优先且确定性，落在驱逐视界外的块永远不会再进任何
+payload，翻页语义无损（session.jsonl 磁盘原文仍完整）。Pi 扩展 API 为 append-only，无删条目接口，故落
+点在 runner：复用 O9 fresh-session 通道，extension 在每次请求记录原始体量估算，segment_end 行打
+`session_oversized` 标（`ARC_LAYERED_ROLL_AFTER` × cap，默认 0=关），runner 在段边界见标即关会话开新会
+话（memory/notebook/work/ 宿主侧存续）。**阈值不按模型各定绝对值**：cap 已按模型自动派生
+（min(env cap, window − outputTokens − 8192)，window 来自 models.json），翻页阈值 = 无量纲乘数 × cap，
+换模型时随 window 自动缩放；乘数本身是宿主资源参数（允许保留多少倍"永不再发送"的死历史），与模型无
+关，建议默认 4。单测 50/50。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是

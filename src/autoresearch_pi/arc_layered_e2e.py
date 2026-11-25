@@ -209,7 +209,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             prompt = "Continue playing."
             if parse_errors:
                 prompt += "\nThese files under work/ do not parse:\n" + "\n".join(parse_errors)
-            if fresh_level_session and reason == "level_change":
+            if (fresh_level_session and reason == "level_change") or end.get("session_oversized"):
                 kernel.close()
                 kernel = start_kernel()
         state = _bridge_state(bridge_url, attempts=1) or state

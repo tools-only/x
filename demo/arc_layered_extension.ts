@@ -19,7 +19,7 @@ const IMAGE_TOKENS = 1000;
 
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
-  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean;
+  stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean;
     claims?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient">>;
@@ -162,6 +162,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
   } catch {}
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
+  let rawEstimate = 0, rollThreshold = 0;
   let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
@@ -322,6 +323,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const cap = Math.min(options.contextCap || window - 32000, window - options.outputTokens - 8192);
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
     const result = evict(event.messages, cap, target, extraBlocks);
+    rawEstimate = result.before;
+    rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
       tokens_removed: result.removed, estimate_before: result.before, cap, target });
     const folding = fold(result.messages, options.foldAfter);
@@ -391,7 +394,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     return { continue: true, entries: [...event.entries, { type: "custom_message", customType: STATE_TYPE,
       content: content(null, true), display: false }] };
   });
-  pi.on("agent_settled", () => log("segment_end", { reason: endReason ?? lastStop ?? "aborted", actions: segmentActions, tokens: segmentTokens }));
+  pi.on("agent_settled", () => log("segment_end", { reason: endReason ?? lastStop ?? "aborted", actions: segmentActions, tokens: segmentTokens,
+    raw_estimate: rawEstimate, ...(rollThreshold > 0 ? { roll_threshold: rollThreshold, session_oversized: rawEstimate > rollThreshold } : {}) }));
   pi.on("session_shutdown", () => python.close());
 }
 
@@ -421,7 +425,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
-    gradient: env.ARC_LAYERED_GRADIENT === "1",
+    gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
     flags: { expect: env.ARC_LAYERED_EXPECT === "1", graph: env.ARC_LAYERED_GRAPH === "1",
       work: env.ARC_LAYERED_WORK === "1", model: env.ARC_LAYERED_MODEL === "1", tags: env.ARC_LAYERED_TAGS === "1", review,
       claims: env.ARC_LAYERED_CLAIMS === "1" } });

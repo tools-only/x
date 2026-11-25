@@ -151,6 +151,24 @@ test("a context overflow error makes the next request drop one more block", asyn
   assert.equal(rows("segment_end")[0].reason, "context_overflow");
 });
 
+test("segment_end flags an oversized raw session relative to the model cap", async () => {
+  const { handlers, rows } = setup({ contextCap: 100, contextTarget: 50, rollAfter: 2 });
+  await handlers.before_agent_start({});
+  const messages = Array.from({ length: 30 }, (_, i) => (
+    { role: "custom", customType: STATE_TYPE, content: [{ type: "text", text: `state ${i} ${"x".repeat(40)}` }] }));
+  handlers.context({ messages }, {});
+  handlers.agent_settled();
+  const end = rows("segment_end")[0];
+  assert.equal(end.roll_threshold, 200);
+  assert.equal(end.session_oversized, true);
+  assert.ok(end.raw_estimate > 200);
+  const small = setup({ contextCap: 100, contextTarget: 50, rollAfter: 2 });
+  await small.handlers.before_agent_start({});
+  small.handlers.context({ messages: messages.slice(0, 2) }, {});
+  small.handlers.agent_settled();
+  assert.equal(small.rows("segment_end")[0].session_oversized, false);
+});
+
 test("continuation is bounded by idle count, action budget, soft limits, length stops and outcome", async () => {
   const idle = setup();
   await idle.handlers.before_agent_start({});
