@@ -46,6 +46,32 @@ test('execution view is compact and keeps the full SelfRoot view readable on dem
   assert.ok(s.mirror().architecture);
 });
 
+test('read_self self section is a bounded paginated index with exact expand paths', () => {
+  const s = new SelfRoot(contract());
+  const first = s.detail('self');
+  assert.equal(first.entries.offset, 0);
+  assert.ok(first.entries.rows.length <= 8);
+  assert.ok(first.entries.total > first.entries.rows.length);
+  assert.equal(first.entries.next, first.entries.rows.length);
+  assert.match(first.expand, /read_self_component/);
+  assert.ok(JSON.stringify(first).length < 8000, 'the first page remains a usable tool result instead of one oversized JSON line');
+  const next = s.detail('self', first.entries.next, 8);
+  assert.equal(next.entries.offset, first.entries.next);
+  assert.notDeepEqual(next.entries.rows.map((row: any) => row.name), first.entries.rows.map((row: any) => row.name));
+  assert.equal(s.detail('self', 0, 100).entries.rows.length, 8, 'page size is capped at the host boundary');
+});
+
+test('SelfRoot evolution execution view carries concise runtime issue evidence', () => {
+  const s: any = new SelfRoot(contract(), undefined, undefined, undefined, undefined, {
+    mechanisms: { meta: true }, metaActionCheckpoints: true,
+  } as any);
+  s.review = { id: 'review:meta', event: 'event:1', ledger_offset: 0, suspended: { step: 'play' }, triggers: [{ id: 'evolution_review' }] };
+  s.metaPassTrigger = { reason: 'runtime symptom', facts: { trigger: 'task_feedback_checkpoint' }, window: [0, 0], entry: 'Carry the active task state.' };
+  const view = s.executionView({ taskObservation: '## RUNTIME EVIDENCE\nActive issue runtime:observer:tools/view.py@2' });
+  assert.match(view.task_observation, /PASS ENTRY/);
+  assert.match(view.task_observation, /runtime:observer:tools\/view\.py@2/);
+});
+
 test('execution view selects task memory by SelfRoot policy and carries pass refs forward', () => {
   const s = new SelfRoot(contract());
   const inputItems = [

@@ -1,5 +1,6 @@
 """Bounded native smoke: mock SDK, production bridge, actual Pi and WASI."""
 import json
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
@@ -14,6 +15,7 @@ disabled = len(sys.argv) > 3 and sys.argv[3] == 'disabled'
 uncapped = len(sys.argv) > 3 and sys.argv[3] == 'uncapped'
 automatic = len(sys.argv) > 3 and sys.argv[3] == 'automatic'
 split = len(sys.argv) > 3 and sys.argv[3] == 'split'
+session_compat = script not in ('python-stateless', 'observer', 'observer-semantic', 'observer-lifecycle', 'observer-restart', 'runtime-evidence-review', 'tool-isolation', 'arc-history-delivery')
 if defaults or disabled:
     class AuditKernel(PiKernel):
         def start(self):
@@ -85,13 +87,30 @@ if script == "receipts":
                 self.probed = True
             return events
     arc_thin_e2e.PiKernel = ProbeKernel
+if script == 'observer-restart':
+    class ObserverRestartKernel(PiKernel):
+        def wait_for_agent_events(self, *args, **kwargs):
+            events = super().wait_for_agent_events(*args, **kwargs)
+            if not getattr(self, 'observer_restarted', False) and any(
+                event.get('type') == 'tool_execution_end' and event.get('toolName') == 'python' for event in events
+            ):
+                options = dict(command=self.command, cwd=self.cwd, env=dict(self.env or {}), timeout=self.timeout,
+                    deadline=self.deadline, event_sink=self.event_sink, event_projector=self.event_projector)
+                options['env']['ARC_THIN_NATIVE_RESTART'] = '1'
+                (root / 'observer-pi-restart.json').write_text(json.dumps({'after_tool': 'python'}), encoding='utf-8')
+                self.close()
+                replacement = PiKernel(**options).start()
+                self.__dict__.update(replacement.__dict__)
+                self.observer_restarted = True
+            return events
+    arc_thin_e2e.PiKernel = ObserverRestartKernel
 path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="native",
     # promotion: 11 decisions since r04, whose refinements run the ledger's expectation checks in the sandbox before the
     # model call, so the dispute refinement's rule lands one decision later than before.
-    max_decisions=30 if script == "history" else 11 if script == "promotion" else 9 if script in ("activation", "hypotheses") else 7 if script == "components" else 6 if script == "reuse" else 5 if script == 'meta' else 4 if script in ('nativeclaims', 'guard') else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
+    max_decisions=30 if script == "history" else 11 if script in ("promotion", "hypotheses") else 9 if script == "activation" else 7 if script in ("components", "components-feedback") else 6 if script in ("reuse", "observer-lifecycle") else 5 if script in ('meta', 'observer-semantic') else 4 if script in ('nativeclaims', 'guard', 'checkpoint', 'arc-history-delivery') else 5 if script == 'observer-restart' else 2 if script == "receipts" else 3, consolidate_after_actions=100, experiment_timeout_seconds=0 if uncapped else 240,
     decision_timeout_seconds=0 if uncapped else 900,
     pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
-    input_modalities="text,image" if script == "query" else None,
+    input_modalities="text,image" if script in ("query", "observer-semantic") else None,
     bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools/mock_arc_sdk",),
     # The promotion path and the hypothesis loop's refinement event run through refinements, which need the ledger and
     # its trigger service.
@@ -99,9 +118,12 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     # guard, meta: a stall review after two actions is the harness turn that saves the components.
     **({'stall_review_after': 2} if script in ('guard', 'meta') else {}),
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
+        **({'ARC_THIN_CORE': '1'} if script in ('observer', 'observer-semantic', 'observer-lifecycle', 'observer-restart', 'runtime-evidence-review', 'tool-isolation', 'arc-history-delivery', 'python-stateless', 'checkpoint') else {}),
+        **({'ARC_THIN_OBSERVATION': 'ch'} if script in ('observer-semantic', 'observer-lifecycle', 'runtime-evidence', 'runtime-evidence-review', 'components-feedback', 'arc-history-delivery') else {}),
+        'ARC_THIN_PYTHON_SESSION': '1' if session_compat else '0',
         **({'ARC_THIN_HARNESS_TURN': '1', 'ARC_THIN_GUARDS': '1', 'ARC_THIN_REVIEW_CONSULT': '0'} if script in ('guard', 'meta') else {}),
         **({'ARC_THIN_HOOKS': '1'} if script == 'meta' else {}),
-        **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
+        **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script in ('components', 'components-feedback') else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
         # The activation script checks the other refinement events; the promotion script checks this one.
         **({'ARC_REFINE_UNCHECKED_AFTER': '1000'} if script in ('activation', 'hypotheses') else {}),
@@ -115,7 +137,9 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
 summary = json.loads(path.read_text(encoding="utf-8"))
 requests = [json.loads(s) for s in (root / "smoke-requests.jsonl").read_text(encoding="utf-8").splitlines()]
 results = [r for request in requests for r in request.get("last_tool_results", [])]
-text = json.dumps(results)
+# Full tool output is kept in workspace result artifacts; parent requests carry short receipts by design.
+result_artifacts = [p.read_text(encoding="utf-8") for p in (root / "workspace/results").glob("*.txt")]
+text = json.dumps(results, ensure_ascii=False) + "\n" + "\n".join(result_artifacts)
 assert summary["passed"], summary
 parent_requests = [r for r in requests if not r.get("analyst") and not r.get("critic")]
 # Earlier decisions reach the model as a transcript before the current head (native default) or, with a summary
@@ -124,7 +148,7 @@ shown_history = json.dumps([[r.get("current", ""), r.get("transcript", [])] for 
 config = json.loads((root / 'run-config.json').read_text(encoding='utf-8'))
 summary_chars = 1200 if tight else 12000
 assert config['native_history'] == {'summary_chars': summary_chars, 'result_chars': 5000, 'decision_tool_calls': 16}, config['native_history']
-assert config['decision_reasoning'] is True and config['python_session'] is True, config
+assert config['decision_reasoning'] is True and config['python_session'] is session_compat, config
 if defaults or disabled:
     assert config['auto_compaction'] is True, 'native default compaction must reach installed Pi'
     policy=json.loads((root/'runtime-audit/compaction-policy.json').read_text())
@@ -157,14 +181,19 @@ elif script == 'migration':
     records = [json.loads(s) for s in (root / 'harness/artifacts.jsonl').read_text().splitlines()]
     assert records[-1]['skill'] == 'producer' and records[-1]['value'] == 50 and records[-1]['n'] == 0
 elif script == "receipts":
-    assert "COUNTEREXAMPLE_MIDDLE_EXACT" in text
+    assert "COUNTEREXAMPLE_MIDDLE_EXACT" in shown_history, "the archived read's exact semantic result must remain visible in the provider transcript"
     # The python session survives the Pi restart: a function and an in-place changed list come back from the checkpoint.
-    assert any(r["tool"] == "python" and r["text"].endswith("→ [[41,1],42]") for r in results), [r["text"][-200:] for r in results if r["tool"] == "python"]
+    assert "[[41,1],42]" in shown_history, "the restored Python result must remain visible in the provider transcript"
     session_rows = [json.loads(s) for s in (root / "harness/python_session.jsonl").read_text(encoding="utf-8").splitlines()]
     assert any(r["event"] == "restored" and "twice()" in r["names"] for r in session_rows), session_rows
     assert (root / ".harness/python_session/HEAD.json").is_file()
     refs = list((root / "workspace/results").glob("*.txt"))
     assert any("COUNTEREXAMPLE_MIDDLE_EXACT" in ref.read_text(encoding="utf-8") for ref in refs)
+    session = [json.loads(s) for s in (root / "session.jsonl").read_text(encoding="utf-8").splitlines()]
+    archived_reads = [row["message"] for row in session if row.get("type") == "message"
+        and row.get("message", {}).get("role") == "toolResult" and row["message"].get("toolName") == "read"
+        and "ref: results/" in json.dumps(row["message"].get("content", []))]
+    assert archived_reads and all(len(json.dumps(message["content"])) < 1400 for message in archived_reads), archived_reads
     inputs = (root / "native-summary-input.jsonl").read_text(encoding="utf-8")
     assert "ref: results/" in inputs and '"thinking"' not in inputs
     assert all("refuted claims and their test conditions" in json.dumps(row) for row in map(json.loads, inputs.splitlines())), "ARC summary requirements must reach every actual Pi summarizer input"
@@ -391,14 +420,48 @@ elif script == "reuse":
     [cell] = [c for c in report["components"] if c["path"] == "tools/cell.py"]
     assert (cell["covered_calls_before"], cell["covered_calls_after"], cell["invocations"], cell["replaced"]) == (4, 2, 0, False), cell
     assert report["task"]["actions"] >= 5 and "agent" in report["cost"]["by_kind"], report["task"]
+elif script == "runtime-evidence":
+    assert summary["actions"] >= 2, summary
+    assert any("RUNTIME EVIDENCE" in row.get("current", "") for row in parent_requests), [row.get("current", "") for row in parent_requests]
+    assert any("3 recent calls share code structure" in row.get("current", "") for row in parent_requests)
+    repeat_evidence = [row.get("current", "") for row in parent_requests if "Exact python input repeated 2 times" in row.get("current", "")]
+    assert repeat_evidence and all(row.count("Exact python input repeated 2 times") == 1 for row in repeat_evidence), parent_requests
+    assert any("Exact read input repeated 2 times from the same visible state" in row.get("current", "") for row in parent_requests), parent_requests
+elif script == "runtime-evidence-review":
+    reviews = [row.get("current", "") for row in parent_requests if "ROUND 1 - REVIEW AND GAPS" in row.get("current", "")]
+    assert reviews, [row.get("current", "")[-1200:] for row in parent_requests]
+    task_requests = [row for row in parent_requests if "ROUND 1 - REVIEW AND GAPS" not in row.get("current", "")]
+    assert task_requests and all('full_self' not in row.get('current', '') for row in task_requests), task_requests
+    assert any('read_self(section=' in prompt and '"evolution"' in prompt for prompt in reviews), reviews
+    assert all(any(tool.get('name') == 'read_self' and tool.get('description', '').startswith('On-demand lookup')
+                   for tool in row.get('tools', [])) for row in parent_requests), parent_requests
+    assert any("RUNTIME EVIDENCE" in prompt and "recent calls share code structure" in prompt for prompt in reviews), reviews
+    assert any("diagnose and verify a response or record why no change is useful" in prompt for prompt in reviews), reviews
+    assert any("exact python input repeated 2 times" in prompt and "runtime:repeat:" in prompt for prompt in reviews), reviews
+    assert any("exact read input repeated 2 times from the same visible state" in prompt for prompt in reviews), reviews
+    assert all(prompt.count("## RUNTIME EVIDENCE") == 1 for prompt in reviews), reviews
+    pi_events = [json.loads(line) for line in (root / "pi-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    self_receipts = [event.get("result", {}).get("content", [{}])[0].get("text", "") for event in pi_events
+                     if event.get("type") == "tool_execution_end" and event.get("toolName") == "read_self"]
+    assert any("SelfRoot r1; entries 1-8/" in receipt and "semantic use is not inferred" in receipt
+               and "read_self_component" in receipt and "long line not shown" not in receipt
+               and len(receipt) < 1000 and "omitted lines" not in receipt for receipt in self_receipts), self_receipts
+    deliveries = [json.loads(line) for line in (root / 'harness/task_runtime_fact_delivery.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert any(str(row.get('key', '')).startswith('task:python:') for row in deliveries), deliveries
+    assert any(str(row.get('key', '')).startswith('review:python:') for row in deliveries), deliveries
+    assert summary["actions"] >= 1, summary
 elif script == "components":
     assert (root/'consult-length.jsonl').is_file(), 'consult length continuation must reach semantic result'
-    for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 (v2 failed)", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:
+    for expected in ["compare v1", "42", "v2: saved", "NOT loaded", "v1 still runs", "compare v3", "43", "53", "CONSULT_SEMANTIC", "NATIVE_SKILL_BODY_READ_ON_DEMAND"]:
         assert expected in text, expected
     parent = [r for r in requests if not r.get("analyst") and not r.get("critic")]
     assert any("NATIVE_STANDING_RULE" in r["system_prompt"] for r in parent)
     assert "NATIVE_STANDING_RULE" not in parent[-1]["system_prompt"]
     assert any("NATIVE_SKILL_DESCRIPTION" in r["head"] for r in parent)
+    task_facts = [json.loads(line) for line in (root / "harness/self_harness_task_facts.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(row.get("kind") == "component_delivery" and any(c.get("path") == "tools/compare.py" for c in row.get("components", [])) for row in task_facts), task_facts
+    assert any(row.get("kind") == "component_execution" and row.get("path") == "tools/compare.py" and row.get("outcome") == "success" for row in task_facts), task_facts
+    assert any("appeared in the active tool set" in r.get("current", "") and "no execution record" in r.get("current", "") for r in parent), parent
     observations = [json.loads(s) for s in (root / "harness/observer_runs.jsonl").read_text(encoding="utf-8").splitlines()]
     # A view runs on the state it became active at (#1, #4), then after each action; the switched-off version never runs.
     assert [(r["n"], r.get("value")) for r in observations] == [(1, 3), (2, 4), (4, 777), (5, 777)], observations
@@ -412,6 +475,12 @@ elif script == "components":
     children = [r for r in requests if r.get("analyst") and "CONSULT_ROLE" in r["system_prompt"]]
     assert all("arc_action" not in [t["name"] for t in r["tools"]] for r in children)
     assert any("not granted" in json.dumps(r) for r in children)
+elif script == "components-feedback":
+    feedback = [row.get("current", "") for row in parent_requests if "Component-use feedback runtime:component:tools/compare.py@1" in row.get("current", "")]
+    assert feedback, parent_requests
+    assert any("execution recorded success" in text and "environment action(s) have followed" in text
+               and "temporal evidence, not causal attribution" in text for text in feedback), feedback
+    assert summary["provider_errors"] == 0 and summary["actions"] >= 3, summary
 elif script == "query":
     assert config['observation_delivery'] == 'query', config
     assert all(not any(b['role'] == 'user' for b in r['image_blocks']) for r in parent_requests)
@@ -495,6 +564,122 @@ elif script == 'auto-component':
     assert any(result.get('tool') == 'double' and not result.get('is_error') and '8' in result.get('text', '')
                for request in parent_requests for result in request.get('last_tool_results', [])), 'the mounted tool must execute successfully'
     assert summary['actions'] >= 2 and summary['provider_errors'] == 0, summary
+elif script == 'observer':
+    views = [json.loads(line) for line in (root / 'harness/observer_runs.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [(row['n'], row['ok']) for row in views] == [(0, True), (1, True)], views
+    assert all('OBS_MARKER 8' in row['current'] for row in parent_requests[1:3]), parent_requests[1:3]
+    assert summary['actions'] >= 1 and summary['provider_errors'] == 0, summary
+elif script == 'checkpoint':
+    checkpoints = [row.get('current', '') for row in parent_requests if 'task-memory:checkpoint:active' in row.get('current', '')]
+    assert len(checkpoints) >= 2, parent_requests
+    latest = checkpoints[-1]
+    assert 'Active experiment strat.probe: test horizontal movement' in latest, latest
+    assert 'hyp.motion [contested]' in latest and 'predicts the marker advances one cell' in latest, latest
+    assert 'first result refuted the horizontal prediction' in latest and 'test ACTION4 from the new position' in latest, latest
+    assert 'memory:hyp.motion' in latest and '[arc_action] step 1' in latest and '[arc_action] step 2' in latest, latest
+    assert 2 <= summary['actions'] <= 3 and summary['provider_errors'] == 0, summary
+elif script == 'observer-lifecycle':
+    views = [json.loads(line) for line in (root / 'harness/observer_runs.jsonl').read_text(encoding='utf-8').splitlines()]
+    versions = [(row['version'], row['n'], row['ok']) for row in views]
+    assert versions[:4] == [(1, 0, True), (1, 1, True), (2, 1, True), (2, 2, True)], views
+    assert len(versions) >= 6 and all(row['version'] == 3 and not row['ok'] for row in views[4:]), views
+    state_counts = [(row['version'], row['n'], row.get('observer_state', {}).get('count')) for row in views if row['ok']]
+    assert state_counts == [(1, 0, 1), (1, 1, 2), (2, 1, 1), (2, 2, 2)], views
+    assert any('OBSERVER_V1 1' in row.get('current', '') for row in parent_requests)
+    assert any('OBSERVER_V2 1' in row.get('current', '') for row in parent_requests)
+    assert all('observer_state' not in row.get('current', '') for row in parent_requests)
+    failed_view = [row for row in parent_requests if 'OBSERVER_V3_FAILURE' in row.get('current', '')]
+    assert failed_view and 'CURRENT STATE' in failed_view[0]['current'], failed_view
+    active_issue_requests = [row for row in parent_requests if 'runtime:observer:tools/cell_marker.py@3' in row.get('current', '')
+                             and 'latest error:' in row.get('current', '')]
+    assert len(active_issue_requests) >= 2, active_issue_requests
+    assert 3 <= summary['actions'] <= 6 and summary['provider_errors'] == 0, summary
+elif script == 'observer-semantic':
+    views = [json.loads(line) for line in (root / 'harness/observer_runs.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [(row['version'], row['n'], row['ok'], row.get('semantic_view')) for row in views[:4]] == [
+        (1, 0, True, True), (1, 1, True, True), (2, 1, False, True), (2, 2, False, True)], views
+    compact = [row for row in parent_requests if 'SEMANTIC_BOARD marker=' in row.get('current', '')]
+    assert compact and all('current grid (latest_frame.frame[-1])' not in row['current'] for row in compact), compact
+    assert all(re.search(r'SEMANTIC_BOARD marker=(\d+).*Raw current frame: data/frames/\1\.json', row['current'], re.S)
+               for row in compact), compact
+    assert all(not row.get('image_blocks') for row in compact), compact
+    fallback = [row for row in parent_requests if 'SEMANTIC_OBSERVER_FAILURE' in row.get('current', '')]
+    assert fallback and all('current grid (latest_frame.frame[-1])' in row['current'] for row in fallback), fallback
+    assert all('Raw current frame: data/frames/' not in row['current'] for row in fallback), fallback
+    assert all(row.get('image_blocks') for row in fallback), fallback
+    assert 2 <= summary['actions'] <= 4 and summary['provider_errors'] == 0, summary
+elif script == 'observer-restart':
+    assert (root / 'observer-pi-restart.json').is_file(), 'Pi must restart between the same-state Python call and next action'
+    views = [json.loads(line) for line in (root / 'harness/observer_runs.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [(row['n'], row['ok']) for row in views] == [(0, True), (1, True), (2, True), (3, False), (4, False)], views
+    assert all(row['version'] == 1 for row in views), views
+    state_counts = {n: sum(row['n'] == n for row in views) for n in {row['n'] for row in views}}
+    assert state_counts.get(1) == 1 and state_counts == {n: 1 for n in state_counts}, views
+    assert all(row.get('observer_state', {}).get('count') == row['n'] + 1 for row in views if row['ok']), views
+    assert all('observer_state' not in row and 'state up to 8192 bytes' in row.get('error', '') for row in views[-2:]), views
+    resumed = [row for row in parent_requests if row.get('step', 0) >= 4]
+    view_lines = [line for row in resumed for line in row.get('current', '').splitlines()
+                  if line.startswith('restart_view v1 state #2:')]
+    assert any('RESTART_VIEW' in line and 'count' not in line for line in view_lines), (view_lines, resumed)
+    assert all('observer_state' not in row.get('current', '') for row in resumed)
+    assert summary['actions'] >= 3 and summary['provider_errors'] == 0, summary
+elif script == 'arc-history-delivery':
+    after_first = next(row for row in parent_requests if row.get('step') == 5)
+    after_repeat = next(row for row in parent_requests if row.get('step') == 6)
+    first_text = '\n'.join(item.get('text', '') for item in after_first.get('transcript', []))
+    repeated_text = '\n'.join(item.get('text', '') for item in after_repeat.get('transcript', []))
+    assert all(token in first_text for token in ('ARC history:', '#3 ACTION1', '#2 ACTION1', '#1 ACTION1', 'next_offset=none')), first_text
+    assert 'Result ok;' not in first_text and 'chars omitted' not in first_text, first_text
+    assert 'Same answer as results/' in repeated_text and repeated_text.count('ARC history:') == 1, repeated_text
+    assert not any(item.get('role') == 'toolResult' for item in after_repeat.get('transcript', [])), after_repeat
+    evidence = [row for row in (json.loads(line) for line in (root / 'harness/self_harness_task_facts.jsonl').read_text(encoding='utf-8').splitlines())
+                if row.get('kind') == 'tool' and row.get('tool') == 'read_self' and 'transition:1' in str(row.get('input'))]
+    assert evidence and 'history move 1' in evidence[0].get('output', '') and 'data/frames/1.json' in evidence[0].get('output', '')
+    assert not evidence[0].get('result_ref'), evidence
+    assert summary['actions'] == 4 and summary['provider_errors'] == 0, summary
+elif script == 'tool-isolation':
+    assert config['tool_history_isolation'] == {'enabled': True, 'recent_batches': 0}, config['tool_history_isolation']
+    isolated = next((row for row in parent_requests if row.get('step') == 5), None)
+    assert isolated, parent_requests
+    transcript = json.dumps(isolated.get('transcript', []), ensure_ascii=False)
+    assert all(f'TOOL_ISOLATION_SECRET_{n}' not in transcript for n in (1, 2)), transcript
+    assert all(f'TOOL_ISOLATION_SECRET_{n}' not in transcript for n in (3, 4)), transcript
+    archive = [json.loads(line) for line in (root / 'harness/tool_history_archive.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert all(row['ref'] in transcript for row in archive if row['tool'] == 'python'), (archive, transcript)
+    archived_records = [json.loads((root / 'workspace' / row['ref']).read_text(encoding='utf-8')) for row in archive]
+    archived_source = json.dumps(archived_records, ensure_ascii=False)
+    assert all(f'TOOL_ISOLATION_SECRET_{n}' in archived_source for n in (1, 2)), archived_records
+    calls = [call for message in isolated.get('transcript', []) for call in message.get('calls', [])]
+    assert all(call.get('id') not in {row['tool_call_id'] for row in archive} for call in calls), calls
+    assert not any(row.get('role') == 'toolResult' for row in isolated.get('transcript', [])), isolated.get('transcript')
+    assert len([row for row in archive if row['tool'] == 'python']) == 4
+    assert summary['actions'] >= 1 and summary['provider_errors'] == 0, (archive, summary)
+    context_rows = [json.loads(line) for line in (root / 'harness/context_budget.jsonl').read_text(encoding='utf-8').splitlines()]
+    request_contexts = [row for row in context_rows if 'system_chars' in row]
+    assert request_contexts and all(row.get('tool_history_isolation') is True and row.get('recent_tool_batches_kept') == 0
+                                    for row in request_contexts), request_contexts
+elif script == 'python-stateless':
+    assert config['python_kernel'] is False and config['session_view'] is False, config
+    python_tool = next(tool for tool in parent_requests[0]['tools'] if tool['name'] == 'python')
+    assert 'save' not in python_tool['parameters']['properties'] and 'fresh sandbox' in python_tool['description'], python_tool
+    assert 'do not persist' in python_tool['description'] and 'cannot act' in python_tool['description'], python_tool
+    system = parent_requests[0].get('system_prompt', '')
+    assert 'Python is a fresh, one-off sandbox' in system and 'cannot act' in system, system
+    assert 'Python is a persistent sandbox' not in system and 'env.act' not in system and 'still publishes as a tool' not in system, system
+    assert any('scratch_value' in result.get('text', '') and ('not defined' in result.get('text', '') or 'NameError' in result.get('text', ''))
+               for result in results if result['tool'] == 'python'), results
+    assert any('no action capability' in result.get('text', '') or 'read-only' in result.get('text', '')
+               for result in results if result['tool'] == 'python'), results
+    assert not (root / '.harness/python_session/HEAD.json').exists()
+    calls = [json.loads(line) for line in (root / 'harness/python_calls.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert len(calls) == 5 and all(row.get('ephemeral') is True for row in calls), calls
+    assert sum(bool(row.get('cached')) for row in calls) == 1, calls
+    assert any('same code on the same state, not run again' in result.get('text', '')
+               for result in results if result['tool'] == 'python'), results
+    components = [json.loads(line) for line in (root / 'harness/component_runs.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert not any(row.get('kind') == 'python_component' for row in components), components
+    assert any('STATELESS_OBSERVER 8' in row.get('current', '') for row in parent_requests), parent_requests
+    assert summary['actions'] >= 1 and summary['provider_errors'] == 0, summary
 else:
     assert "COUNTEREXAMPLE" in text and "EDITED_NOTE" in text
     assert "read-only" in text and "invalid workspace path" in text
@@ -502,7 +687,7 @@ else:
 assert (root / "workspace/data/frames/1.json").is_file()
 assert "CURRENT STATE" not in (root / "session.jsonl").read_text(encoding="utf-8")
 budgets = [json.loads(s) for s in (root / 'harness/context_budget.jsonl').read_text(encoding='utf-8').splitlines()]
-assert all(r['system_chars'] <= 3000 and r['capability_index_chars'] <= 1200 for r in budgets if 'decision' in r)
+assert all(r['system_chars'] <= 3000 and r['capability_index_chars'] <= 1200 for r in budgets if 'decision' in r and 'system_chars' in r)
 summary["foundation_checks"] = {"query_observation": True, "native_history": True} if script == "query" else {"workspace": True, "secrets": True, "native_history": True}
 path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(path)

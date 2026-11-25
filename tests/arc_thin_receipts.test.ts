@@ -62,5 +62,17 @@ test('python results are filed with a ref even when short; other short results s
   // The python address mark stays the first line, and the rest is still treated as a python result.
   const marked = w.receipt(`[P3]\n${body}`, 'ok', [], undefined, 'python');
   assert.match(marked, /^\[P3\]\n/);
-  assert.match(marked, /ref: results\/r000002\.txt/);
+  assert.match(marked, /ref: results\/r000001\.txt/, 'identical result text reuses its archived source');
+});
+
+test('tool session receipts externalize detailed output above 900 characters and retain exact ranged readback', () => {
+  const w = new Workspace(mkdtempSync(join(tmpdir(), 'receipt-tool-label-')));
+  const body = 'RESULT\n' + 'detail '.repeat(220) + '\nCOUNTEREXAMPLE';
+  assert.equal(w.receipt('short result', 'ok', [], undefined, 'tool'), 'short result');
+  const receipt = w.receipt(body, 'ok', [], undefined, 'tool');
+  assert.ok(receipt.length < 900, String(receipt.length));
+  assert.match(receipt, /ref: results\/r\d{6}\.txt/);
+  assert.match(receipt, /COUNTEREXAMPLE/);
+  const ref = /ref: (results\/[^\s]+)/.exec(receipt)![1];
+  assert.equal(w.read(ref), body);
 });

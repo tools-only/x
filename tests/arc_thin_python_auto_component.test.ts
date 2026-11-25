@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Workspace } from '../demo/arc_thin_workspace.ts';
@@ -60,5 +60,28 @@ test('scratch code and nonportable functions stay in the sandbox', async () => {
     assert.match(dependent.content[0].text, /not mounted.*dependencies explicit/);
     await evo.boundary(() => {}, () => {});
     assert.equal(evo.executionView().active_components.some((c: any) => c.kind === 'tool'), false);
+  } finally { runtime.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('stateless Python starts fresh and never auto-publishes session functions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'python-stateless-'));
+  const workspace = new Workspace(root);
+  const binder = new Binder(workspace, validatePythonComponent);
+  const contract = loadOrCreateArcContract(root, [...ARC_SELF_ROOT_OPTIONS.reviewTools, ...ARC_SELF_ROOT_OPTIONS.evolutionTools]);
+  const evo = new SelfRoot(contract, undefined, validatePythonComponent, workspace, undefined, ARC_SELF_ROOT_OPTIONS);
+  evo.pin('task');
+  const runtime = new NativeRuntime({ pi: { registerTool() {}, getActiveTools: () => [], setActiveTools() {} } as any,
+    workspace, binder, self: binder, reflectedSelf: evo, pythonSession: false,
+    state: () => ({}), level: () => 0, actionCount: () => 0,
+    log() {}, usage() {}, wrap: (_name, fn) => fn });
+  try {
+    await runtime.python('scratch_value = 41', undefined, true);
+    const fresh = await runtime.python('print(scratch_value)', undefined, true);
+    assert.match(fresh.content[0].text, /NameError/);
+    const definition = await runtime.python('def twice(args, env):\n    """Double a value.\n    Applies: numeric inputs.\n    """\n    return args["value"] * 2', undefined, true);
+    assert.doesNotMatch(definition.content[0].text, /automatically staged as a SelfRoot tool/);
+    await evo.boundary(() => {}, () => {});
+    assert.equal(evo.executionView().active_components.some((c: any) => c.name === 'twice'), false);
+    assert.equal(existsSync(join(root, '.harness/python_session/HEAD.json')), false);
   } finally { runtime.close(); rmSync(root, { recursive: true, force: true }); }
 });

@@ -32,9 +32,9 @@ def _first_comment(source):
 
 def _entry(tree):
     names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
-    # run/observe keep their contracts; a plain main(...) or handler(...) is accepted too (a script with no entry
+    # process is the observer state contract; run/observe keep their contracts; a plain main(...) or handler(...) is accepted (a script with no entry
     # still runs top to bottom), so the agent's own idiom needs no adapter.
-    for candidate in ('run', 'observe', 'main', 'handler'):
+    for candidate in ('process', 'run', 'observe', 'main', 'handler'):
         if candidate in names:
             return candidate
     return None
@@ -106,6 +106,7 @@ def _inspect(req):
         if fn is None or [a.arg for a in fn.args.args] != ['state', 'event'] or fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs:
             raise ValueError('a mount needs on_event(state, event)')
     off = '# view: off' in head or '# observe: off' in head
+    semantic_view = '# semantic_view: on' in head
     acts = 'env.act(' in req['source']
     predictor = _predictor(tree)
     guard = _guard(tree)
@@ -121,8 +122,10 @@ def _inspect(req):
     view = (top == 'observers' or '# view: on' in head or default) and not off
     if view and acts:
         raise ValueError('a view runs after every new state and cannot act: remove "# view: on" or the env.act call')
+    if semantic_view and not view:
+        raise ValueError('a semantic view must also run as an observer; remove "# view: off"')
     return {'name': name, 'kind': 'tool', 'description': describe, 'parameters': TOOL_PARAMETERS, 'view': view,
-            'predictor': predictor, 'guard': guard, 'hook': hook, 'enabled': not (top == 'observers' and off)}
+            'semanticView': semantic_view, 'predictor': predictor, 'guard': guard, 'hook': hook, 'enabled': not (top == 'observers' and off)}
 
 # Run as a live kernel (pi_task_python_kernel.py), the guest has _rpc: it serves cell after cell in one namespace,
 # and asks the host for actions and files where the code asks, instead of ending and being replayed.
@@ -821,6 +824,8 @@ def _call(req, env):
     env._namespace = module.__dict__
     if entry == 'observe':
         return _jsonable(module.observe(_state))
+    if entry == 'process':
+        return _jsonable(module.process(_state, inner.get('prior_state')))
     if entry in ('main', 'handler'):
         fn = getattr(module, entry)
         params = [a.arg for a in next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == entry).args.args]

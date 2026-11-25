@@ -171,6 +171,20 @@ Two hard rules about order:
 4. Prefer short batches whose outcome you can predict. After a level change or GAME_OVER, look at the new board before
    acting again, and never resend a route that already failed.
 {{/no_model}}
+{{?lite}}
+Build and use a compact, revisable model of the game and its current state. Update it as new evidence changes what is
+supported.
+- Before each `submit_actions`, briefly state what you expect to see. Afterwards, briefly state all visible changes,
+  expected or not.
+- Keep concise, durable, revisable game understanding in `work/GUIDE.md` (controls, rules, goal, what carries across
+  levels) and use `work/WORKING.md` as the scratchpad for the current level (hypotheses, what is ruled out, the plan and
+  its next prediction). Older conversation is trimmed as the context grows; after a trim both files are shown at the top
+  of what remains, so whatever you need to continue belongs there.
+- Past frames stay available: `frames_of(step)` returns every frame an earlier action produced, and
+  `show(frame_or_grid, region=(r0, c0, r1, c1), scale=None)` adds a picture of any frame or crop to the tool result
+  (at most 2 per call). Look back instead of guessing.
+- Write code under `work/` (helpers, a model, a search) whenever it saves actions or thinking; it is a tool, not a duty.
+{{/lite}}
 
 ## Traps
 - Bars or strips along the edge of the board are usually a HUD or a move/time counter, not something to click or reach.

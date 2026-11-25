@@ -1557,6 +1557,22 @@ def _request_accounting(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 cost_scope='provider-reported tokens, not verified billing')
 
 
+def _provider_context_accounting(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize exact message reuse in adjacent provider payloads; chars are not token or cost savings."""
+    records = [row for row in rows if isinstance(row.get('message_chars'), int)]
+    return dict(
+        requests=len(records),
+        serialized_message_chars=sum(row['message_chars'] for row in records),
+        serialized_payload_chars=sum(int(row.get('payload_chars') or row['message_chars']) for row in records),
+        tool_schema_chars=sum(int(row.get('tool_schema_chars') or 0) for row in records),
+        exact_repeated_message_chars=sum(int(row.get('repeated_message_chars') or 0) for row in records),
+        common_prefix_chars=sum(int(row.get('common_prefix_chars') or 0) for row in records),
+        nonidentical_suffix_chars=sum(int(row.get('nonidentical_suffix_chars') or 0) for row in records),
+        exact_sequence_repeats=sum(bool(row.get('same_message_sequence')) for row in records),
+        scope='serialized provider message characters; not token or billing savings',
+    )
+
+
 #: What a snapshot keeps: the Pi session, the extension's stores, the agent's workspace, and the binder and python
 #: session checkpoints. Bridge, provider and smoke logs belong to the run that wrote them.
 FORK_ITEMS = ("session.jsonl", "harness", "workspace", ".harness", "maintenance")
@@ -2113,6 +2129,10 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_CONTINUITY"] = continuity
         pi_env["ARC_THIN_CONTINUITY_DECISIONS"] = str(max(1, int(continuity_decisions)))
         pi_env["ARC_THIN_FOUNDATION"] = foundation
+        # ARC task Python is an ephemeral computation sandbox by default. Historical
+        # session behavior remains available only to explicit compatibility runs.
+        if foundation == "native":
+            pi_env.setdefault("ARC_THIN_PYTHON_SESSION", "0")
         pi_env["ARC_THIN_PARENT_OUTPUT_TOKENS"] = str(settings.get("max_tokens") or 0)
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
         # Responses can continue from a stored response ID. Completions resends its local projection on every request;
@@ -2258,20 +2278,20 @@ def run_arc_thin_e2e(
             "decision_reasoning": foundation == "native" and pi_env.get("ARC_THIN_DECISION_REASONING", "1") != "0",
             "decision_reasoning_mode": pi_env.get("ARC_THIN_REASONING_MODE", "all") if foundation == "native" else None,
             "archive_results": foundation == "native" and pi_env.get("ARC_THIN_ARCHIVE_RESULTS", "0") == "1",
-            # Python names defined in one call stay defined in later calls (native default on).
-            "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0",
-            # The session as a live kernel (2026-10-14): one sandbox instance keeps the namespace in memory and env.act
-            # continues where it is called; off: a fresh sandbox per call restored from the checkpoint, acting replayed.
-            "python_kernel": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION", "1") != "0"
+            # ARC Python is a one-off sandbox by default; session persistence is an explicit compatibility mode.
+            "python_session": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION") == "1",
+            "python_kernel": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION") == "1"
                              and pi_env.get("ARC_THIN_PYTHON_KERNEL", "1") != "0",
-            # The working set lists what the python session holds.
-            "session_view": foundation == "native" and pi_env.get("ARC_THIN_SESSION_VIEW", "1") != "0",
+            "session_view": foundation == "native" and pi_env.get("ARC_THIN_PYTHON_SESSION") == "1"
+                            and pi_env.get("ARC_THIN_SESSION_VIEW", "1") != "0",
             # Native history: 0 (default since 2026-10-14) keeps earlier decisions as a transcript before the current head,
             # each earlier result clipped to result_chars; > 0 is a summarised section within that many characters
             # (demo/arc_thin_native_context.ts). Native decisions end at decision_tool_calls.
             "native_history": {"summary_chars": int(pi_env.get("ARC_THIN_NATIVE_HISTORY_CHARS", "0")),
                                "result_chars": int(pi_env.get("ARC_THIN_HISTORY_RESULT_CHARS", "5000")),
                                "decision_tool_calls": 16} if foundation == "native" else None,
+            "tool_history_isolation": {"enabled": foundation == "native" and pi_env.get("ARC_THIN_TOOL_HISTORY_ISOLATION") != "0",
+                                       "recent_batches": max(0, int(pi_env.get("ARC_THIN_RECENT_TOOL_BATCHES", "0") or 0))} if foundation == "native" else None,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
 
@@ -3024,6 +3044,7 @@ def _write_summary(root: Path, summary: dict[str, Any], final_state: dict[str, A
         out["source_state"] = {"head": "unknown", "dirty_count": "unknown", "dirty_summary": "unknown",
                                "reason": "git revision/status unavailable"}
     requests = _read_jsonl(harness / 'request-events.jsonl')
+    out['provider_context'] = _provider_context_accounting(_read_jsonl(harness / 'provider_context.jsonl'))
     if requests:
         out['request_accounting'] = _request_accounting(requests)
         out['reported_tokens'] = out['request_accounting']['known_tokens_lower_bound']

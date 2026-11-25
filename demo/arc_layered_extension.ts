@@ -1,5 +1,5 @@
 /** ARC `layered` profile: one python tool, state messages, context eviction/folding/compaction, carried note blocks, bounded continuation. */
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,6 +20,7 @@ const IMAGE_TOKENS = 1000;
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
+  lite?: boolean;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean;
     claims?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient" | "evolutionDigest">>;
@@ -86,22 +87,24 @@ export function estimateTokens(message: any): number {
 
 /** A block is a user-role message plus the assistant and tool turns after it, so a call never loses its result.
  * Hysteresis: nothing is removed until the estimate passes `cap`; then whole blocks go until `target`, so the
- * remaining prefix stays byte-identical across many requests and provider prefix caching keeps working. */
-export function evict(input: any[], cap: number, target: number, extraBlocks: number) {
+ * remaining prefix stays byte-identical across many requests and provider prefix caching keeps working.
+ * `from` is the previous cut: with it the cut only moves once the kept part passes `cap` again. */
+export function evict(input: any[], cap: number, target: number, extraBlocks: number, from = 0) {
   const lastState = input.findLastIndex(message => message.role === "custom" && message.customType === STATE_TYPE);
   const messages = input.map((message, index) => index === lastState || message.role !== "custom" || message.customType !== STATE_TYPE ? message
     : { ...message, content: message.content.filter((part: any) => part.type !== "image") });
   const starts = messages.flatMap((message, index) => message.role === "user" || message.role === "custom" ? [index] : []);
   const sizes = messages.map(estimateTokens), before = sizes.reduce((sum, size) => sum + size, 0);
-  let cut = 0, removed = 0, blocks = 0;
-  if (before > cap || extraBlocks > 0)
-    for (const next of starts.filter(start => start > 0 && start <= lastState)) {
+  let cut = from > 0 && from <= lastState ? from : 0, blocks = 0;
+  let removed = sizes.slice(0, cut).reduce((sum, size) => sum + size, 0);
+  if (before - removed > cap || extraBlocks > 0)
+    for (const next of starts.filter(start => start > cut && start <= lastState)) {
       if (before - removed <= target && blocks >= extraBlocks) break;
       removed = sizes.slice(0, next).reduce((sum, size) => sum + size, 0);
       cut = next;
       blocks += 1;
     }
-  return { messages: messages.slice(cut), blocks, removed, before };
+  return { messages: messages.slice(cut), blocks, removed, before, cut };
 }
 
 /** Folding (context level 2): old tool results collapse to their `[env]` line; images are stripped. Pairing stays intact. */
@@ -144,7 +147,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     Record<"state" | "reminder" | "nudge", string>;
   const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false, review: false,
     claims: false, ...options.flags };
-  flags.no_model = !flags.model;
+  flags.lite = !!options.lite;
+  flags.no_model = !flags.model && !flags.lite;
   const system = prompt("arc_layered_system.md")
     .replace(/\{\{\?(\w+)\}\}\n?([\s\S]*?)\{\{\/\1\}\}\n?/g, (_, name, body) => flags[name] ? body : "")
     .replaceAll("{{color_legend}}", COLOR_LEGEND)
@@ -165,6 +169,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let rawEstimate = 0, rollThreshold = 0;
   let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
+  let cutAt = 0, notesHead: any = null, nearCap = false, trimWarned = false;
+  const noteFile = (name: string, limit: number) => {
+    const file = join(options.root, "work", name);
+    const text = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+    return `## work/${name}\n${text ? text.slice(0, limit) + (text.length > limit ? "\n[truncated]" : "") : "(empty)"}`;
+  };
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
   let request: string | undefined;
 
@@ -188,7 +198,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         && state.level_budget_left <= Math.max(3, 0.25 * state.level_budget))
       events.push(`LEVEL BUDGET: ${state.level_budget_left} of ${state.level_budget} actions left on this level, and the run ` +
         "ends when they are gone. If the level looks lost, stop re-trying routes: spend the rest on deliberate probes and bank " +
-        "what you learned as work/claims/ files - knowledge survives this level, unspent actions do not.");
+        `what you learned ${flags.claims ? "as work/claims/ files" : "in work/GUIDE.md"} - knowledge survives this level, unspent actions do not.`);
+    if (options.lite && nearCap && !trimWarned) {
+      trimWarned = true;
+      events.push("CONTEXT: older conversation will be trimmed soon. Update work/WORKING.md (and work/GUIDE.md if your " +
+        "understanding of the game changed) so the two files hold everything you need to continue from here.");
+    }
     if (options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter) {
       const rounds = Math.floor(state.stale_steps / options.stuckAfter);
       events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and review in full: name the ` +
@@ -332,14 +347,24 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const window = (ctx.model?.contextWindow ?? 128000);
     const cap = Math.min(options.contextCap || window - 32000, window - options.outputTokens - 8192);
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
-    const result = evict(event.messages, cap, target, extraBlocks);
+    const result = evict(event.messages, cap, target, extraBlocks, options.lite ? cutAt : 0);
     rawEstimate = result.before;
+    if (options.lite) {
+      if (result.blocks) {
+        cutAt = result.cut;
+        extraBlocks = 0;
+        trimWarned = false;
+        notesHead = { role: "user", content: [{ type: "text", text: "Older conversation was trimmed. Your notes as of the " +
+          `trim:\n${noteFile("GUIDE.md", 12000)}\n${noteFile("WORKING.md", 6000)}` }] };
+      }
+      nearCap = result.before - result.removed > 0.85 * cap;
+    }
     rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
       tokens_removed: result.removed, estimate_before: result.before, cap, target });
     const folding = fold(result.messages, options.foldAfter);
     if (folding.folded) log("fold", { parts: folding.folded, keep_blocks: options.foldAfter });
-    let messages = folding.messages;
+    let messages = notesHead && cutAt ? [notesHead, ...folding.messages] : folding.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;
     if (options.compactMargin > 0 && estimate > hardTarget) {
@@ -412,8 +437,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 
 export default function arcLayeredExtension(pi: ExtensionAPI) {
   const env = process.env, root = env.ARC_RUN_ROOT ?? process.cwd(), local = env.ARC_LAYERED_CONFIG === "kaggle-local";
+  const lite = env.ARC_LAYERED_LITE === "1", on = (name: string) => !lite && env[name] !== "0";
   const maxActionsPerCall = 16;
-  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW !== "0";
+  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? (lite ? 0 : 8)), review = on("ARC_LAYERED_REVIEW");
   const reviewTriggers = env.ARC_LAYERED_REVIEW_TRIGGERS
     ? env.ARC_LAYERED_REVIEW_TRIGGERS.split(",").map(part => part.trim()).filter(Boolean) : undefined;
   if (env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
@@ -426,7 +452,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     numericGrid: env.ARC_LAYERED_NUMERIC_GRID !== "0", namespaceResetPerCall: env.ARC_LAYERED_NAMESPACE_RESET === "1",
     undo: env.ARC_LAYERED_UNDO !== "0", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
     competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
-    expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
+    expect: on("ARC_LAYERED_EXPECT"), graph: env.ARC_LAYERED_GRAPH === "1",
     review, reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
@@ -436,8 +462,8 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
-    gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
-    flags: { expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
-      work: env.ARC_LAYERED_WORK !== "0", model: env.ARC_LAYERED_MODEL !== "0", tags: env.ARC_LAYERED_TAGS === "1", review,
-      claims: env.ARC_LAYERED_CLAIMS !== "0" } });
+    gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0), lite,
+    flags: { expect: on("ARC_LAYERED_EXPECT"), graph: env.ARC_LAYERED_GRAPH === "1",
+      work: lite || env.ARC_LAYERED_WORK !== "0", model: on("ARC_LAYERED_MODEL"), tags: env.ARC_LAYERED_TAGS === "1", review,
+      claims: on("ARC_LAYERED_CLAIMS") } });
 }

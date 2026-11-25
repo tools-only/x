@@ -23,17 +23,52 @@ test("task memory projection keeps stable refs and compact, addressable authored
 	}, 7);
 	commit(state, { tests: [{ action: 4, condition: "gate matched", observed: "gate opened", verdicts: { "hyp.exit": "supports" } }] }, 7);
 	const projected = projectTaskMemoryItems(state);
-	assert.deepEqual(projected.map(({ ref }) => ref), ["task-memory:strategy:strat.route", "task-memory:hypothesis:hyp.exit", "task-memory:fact:fact.controls"]);
-	assert.deepEqual(projected[0], {
-		ref: "task-memory:strategy:strat.route", kind: "strategy", key: "strat.route", status: "active", since: 7,
-		depends_on: ["hyp.exit"], sourceRef: "memory:strat.route", text: "follow the marked path; steps: ACTION1 → ACTION2",
-	});
-	assert.equal(projected[1].sourceRef, "memory:hyp.exit");
-	assert.match(projected[1].text, /#4 supports under gate matched: gate opened/);
-	assert.match(projected[1].text, /#7 refutes under gate visible: gate stayed closed/);
-	assert.equal(projected[1].since, 7);
-	assert.equal(projected[2].text, "ACTION1 moves the marker");
-	assert.equal(projected[2].sourceRef, "memory:fact.controls");
+	assert.deepEqual(projected.map(({ ref }) => ref), ["task-memory:checkpoint:active", "task-memory:fact:fact.controls"]);
+	assert.equal(projected[0].kind, "checkpoint");
+	assert.equal(projected[0].depends_on[0], "hyp.exit");
+	assert.match(projected[0].text, /Active experiment strat\.route: follow the marked path/);
+	assert.match(projected[0].text, /hyp\.exit \[contested\].*predicts ACTION2 opens it; next test: try ACTION2 after matching/);
+	assert.match(projected[0].text, /#7 refutes under gate visible: gate stayed closed/);
+	assert.match(projected[0].text, /#4 supports under gate matched: gate opened/);
+	assert.match(projected[0].text, /full record: memory:hyp\.exit/);
+	assert.equal(projected[1].text, "ACTION1 moves the marker");
+	assert.equal(projected[1].sourceRef, "memory:fact.controls");
+});
+
+test("task memory puts active work and the newest unresolved contradiction before durable facts", () => {
+	const state = emptyMemory();
+	commit(state, {
+		key: "fact.old", text: "an older observation", confidence: 3,
+		hypotheses: [
+			{ key: "hyp.open", claim: "older open question", status: "open" },
+			{ key: "hyp.conflict", claim: "new contradicted question", status: "contested", evidence: { action: 8, condition: "same board", observed: "no change", verdict: "refutes" } },
+		],
+		strategies: [
+			{ key: "strat.paused", plan: "older plan", status: "suspended", depends_on: [] },
+			{ key: "strat.active", plan: "current experiment", status: "active", depends_on: [], since: 8 },
+		],
+	}, 8);
+	const projected = projectTaskMemoryItems(state);
+	assert.deepEqual(projected.slice(0, 3).map(item => item.key), ["active", "strat.paused", "hyp.conflict"]);
+	assert.equal(projected[0].kind, "checkpoint");
+	assert.equal(projected.at(-1)?.key, "fact.old");
+});
+
+test("task memory limits repeated hypothesis evidence but keeps the latest result and latest refutation", () => {
+	const state = emptyMemory();
+	commit(state, { hypotheses: [{ key: "hyp.rule", question: "rule", claim: "the marker follows the line", evidence: {
+		action: 1, condition: "start", observed: "first support", verdict: "supports",
+	} }] }, 1);
+	commit(state, { tests: [
+		{ action: 2, condition: "after move", observed: "second support", verdicts: { "hyp.rule": "supports" } },
+		{ action: 3, condition: "after click", observed: "counterexample", verdicts: { "hyp.rule": "refutes" } },
+		{ action: 4, condition: "after reset", observed: "latest support", verdicts: { "hyp.rule": "supports" } },
+	] }, 4);
+	const item = projectTaskMemoryItems(state).find(row => row.key === "hyp.rule")!;
+	assert.match(item.text, /2 earlier results omitted; full evidence at memory:hyp\.rule/);
+	assert.match(item.text, /#3 refutes under after click: counterexample/);
+	assert.match(item.text, /#4 supports under after reset: latest support/);
+	assert.doesNotMatch(item.text, /first support|second support/);
 });
 
 test("a strategy's planned steps are matched against the moves taken, and tracking stops at the first difference", () => {

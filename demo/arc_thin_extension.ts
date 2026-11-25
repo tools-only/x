@@ -26,7 +26,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { SelfRoot, hash } from './self_root.ts';
 import { ARC_SELF_ROOT_OPTIONS, arcMetrics, arcRunPosition, arcRuntimeView, arcSelfRootPaths, installArcSelfRootTools, loadOrCreateArcContract, selfRootToolSchema } from './self_root_arc.ts';
 import { ResponsesContinuation } from "./arc_responses_continuation.ts";
-import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
+import { applyParentOutputLimit } from "./arc_thin_request_policy.ts";
+import { projectNativeHistory, projectNativeDecision, nativeDecisionStart, summarizeHistory, visibleActions, freezeHistory, carryText, boundedResultPreview, CARRY_CHARS as NATIVE_CARRY_CHARS, HISTORY_RESULT_CHARS as NATIVE_HISTORY_RESULT_CHARS } from "./arc_thin_native_context.ts";
 import { outcomeRow, predictionCounts, selfDigest, settlementRow, settlementText, withoutBodies, SELF_CONTEXT_PATH, SELF_FIELDS, SELF_PASS_LINE, SELF_SETTLEMENTS_PATH, SELF_WORKING_PATH, SELF_OUTCOMES_PATH, SELF_SLOTS_PATH } from "./arc_thin_selfview.ts";
 import { changedSlots, slotComponent, slotInventory, slotValues, type SlotValues } from "./arc_thin_selfslots.ts";
 import { coordinateSentences } from "./arc_thin_reuse.ts";
@@ -279,6 +280,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
   if (!['all', 'recent', 'fields', 'none'].includes(reasoningMode)) throw Error('invalid ARC_THIN_REASONING_MODE');
   const carryFieldChars = Math.max(80, Math.floor(Number(process.env.ARC_THIN_CARRY_FIELD_CHARS ?? NATIVE_CARRY_CHARS)));
   const archiveResults = process.env.ARC_THIN_ARCHIVE_RESULTS === '1';
+	const recentToolBatches = Math.max(0, Math.floor(Number(process.env.ARC_THIN_RECENT_TOOL_BATCHES ?? 0) || 0));
 	const control = process.env.ARC_THIN_VARIANT === "control";
 	const evoMetaCore = process.env.ARC_THIN_CORE === "1";
 	/** Evo meta core: reflection writes mount in evolution passes only unless ARC_THIN_EVO_TASK_WRITES=all (2026-11-19). */
@@ -326,12 +328,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// a run that makes no progress gets a stall review instead (the runner's STALL REVIEW).
 	const noEffectRepeats = !native ? 0 : process.env.ARC_THIN_NO_EFFECT_REPEATS === undefined ? (chView ? 0 : 3)
 		: Math.max(0, Math.floor(Number(process.env.ARC_THIN_NO_EFFECT_REPEATS) || 0));
-	// The python session as a live kernel (2026-10-14, Prime's persistent REPL): one sandbox instance keeps the namespace
-	// in memory, env.act waits for feedback where it is called, and the working set lists what the session holds.
-	// ARC_THIN_PYTHON_KERNEL=0 restores a fresh sandbox per call restored from the checkpoint, with acting replayed;
-	// ARC_THIN_SESSION_VIEW=0 leaves the listing out.
-	const pythonKernel = native && !agentNativeProgramLoop && process.env.ARC_THIN_PYTHON_KERNEL !== "0" && process.env.ARC_THIN_PYTHON_SESSION !== "0";
-	const sessionView = native && !agentNativeProgramLoop && process.env.ARC_THIN_SESSION_VIEW !== "0";
+	// Python is a one-off sandbox by default. The live namespace, automatic function export, and session-based env.act
+	// remain behind an explicit compatibility switch for old runs and a matched comparison.
+	const pythonSession = native && !agentNativeProgramLoop && process.env.ARC_THIN_PYTHON_SESSION === "1";
+	const pythonKernel = pythonSession && process.env.ARC_THIN_PYTHON_KERNEL !== "0";
+	const sessionView = pythonSession && process.env.ARC_THIN_SESSION_VIEW !== "0";
 	// Work memory (docs/plans/2026-10-20-work-memory.md): each piece of work exists once and a repeat becomes a reference.
 	// Earlier decisions show repeated python as cell(k) and identical decisions once; each action says whether its result was
 	// already known from the same board; the head shows what this board already showed and, after a decision that learned
@@ -429,6 +430,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         `Exact content: ${saved.ref}; read with offset/limit if needed.`);
     }
     return archivedResults.get(key)!;
+  };
+  const toolBatchRefs = new Map<string, string>(readRows('tool_history_archive.jsonl')
+    .filter(row => typeof row.tool_call_id === 'string' && typeof row.ref === 'string')
+    .map(row => [row.tool_call_id, row.ref]));
+  const archiveToolBatch = (call: any, result: any): string => {
+    const id = String(call.id);
+    let ref = toolBatchRefs.get(id);
+    if (!ref) {
+      const record = JSON.stringify({ tool_call_id: id, tool: call.name, arguments: call.arguments ?? {},
+        result: result.content ?? [], is_error: Boolean(result.isError) }, null, 2);
+      ref = workspace!.saveResult(record).ref;
+      toolBatchRefs.set(id, ref);
+      append('tool_history_archive.jsonl', { tool_call_id: id, tool: call.name, ref });
+    }
+    return ref;
   };
   const binder = workspace ? new Binder(workspace, validatePythonComponent, async (path, source) => slotComponent(path, source)) : undefined;
   let nativeRuntime: NativeRuntime | undefined;
@@ -870,6 +886,43 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	const requestTrace = new RequestTrace(row => append('request-events.jsonl', row));
 	let parentRequest: string | undefined;
+	const providerContextStatePath = join(storeDir, 'provider_context_state.json');
+	const previousProviderContext: { payload_hash?: string; messages: Array<{ hash: string; chars: number }> } =
+		existsSync(providerContextStatePath) ? JSON.parse(readFileSync(providerContextStatePath, 'utf8')) : { messages: [] };
+	const recordProviderContext = (payload: any) => {
+		const messages = Array.isArray(payload?.messages) ? payload.messages : Array.isArray(payload?.input) ? payload.input : [];
+		const current = messages.map((message: any) => {
+			const serialized = JSON.stringify(message);
+			return { hash: hash(serialized), chars: serialized.length };
+		});
+		const prior = previousProviderContext.messages;
+		let commonPrefix = 0, commonPrefixChars = 0;
+		while (commonPrefix < current.length && commonPrefix < prior.length && current[commonPrefix].hash === prior[commonPrefix].hash) {
+			commonPrefixChars += current[commonPrefix].chars;
+			commonPrefix++;
+		}
+		const counts = new Map<string, number>();
+		for (const item of prior) counts.set(item.hash, (counts.get(item.hash) ?? 0) + 1);
+		let repeatedMessageChars = 0, repeatedMessageCount = 0;
+		for (const item of current) {
+			const available = counts.get(item.hash) ?? 0;
+			if (available) { repeatedMessageChars += item.chars; repeatedMessageCount++; counts.set(item.hash, available - 1); }
+		}
+		const payloadHash = hash(JSON.stringify(payload));
+		const messageChars = current.reduce((sum: number, item: any) => sum + item.chars, 0);
+		append('provider_context.jsonl', { request_id: parentRequest, decision, message_count: current.length, message_chars: messageChars,
+			payload_chars: JSON.stringify(payload).length,
+			tool_schema_chars: JSON.stringify(payload?.tools ?? []).length, common_prefix_messages: commonPrefix,
+			common_prefix_chars: commonPrefixChars, nonidentical_suffix_chars: messageChars - commonPrefixChars,
+			repeated_message_count: repeatedMessageCount, repeated_message_chars: repeatedMessageChars,
+			same_message_sequence: current.length === prior.length && commonPrefix === current.length,
+			payload_hash: payloadHash, previous_payload_hash: previousProviderContext.payload_hash ?? null });
+		previousProviderContext.messages = current;
+		previousProviderContext.payload_hash = payloadHash;
+		const temporary = `${providerContextStatePath}.tmp`;
+		writeFileSync(temporary, JSON.stringify(previousProviderContext), 'utf8');
+		renameSync(temporary, providerContextStatePath);
+	};
 	let selfRootRequestStarted = 0;
 	function appendUsage(kind: string, message: any): void {
 		const usage = message?.usage ?? {};
@@ -899,9 +952,6 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	  const saved = existsSync(paths.state) ? JSON.parse(readFileSync(paths.state, 'utf8')) : undefined;
 	  evo = new SelfRoot(contract, saved, validatePythonComponent, workspace, undefined, { ...ARC_SELF_ROOT_OPTIONS,
 	    mechanisms: { meta: evoMetaCore || process.env.ARC_THIN_META === '1' }, metaAtStart: false,
-	    // Level 0 has no level-complete checkpoint; without a request-based fallback it reached the budget before the
-	    // first evolution pass (bp35). Count task requests, not review requests, so the pass does not restart itself.
-	    ...(evoMetaCore ? { metaFallback: { unit: 'request' as const, interval: 6 } } : {}),
 	    // Gap routing and pass-only reflection writes (2026-11-19); ARC_THIN_META_ROUTING=sweep and ARC_THIN_EVO_TASK_WRITES=all restore the earlier arm.
 	    ...(evoMetaCore ? { metaRouting: process.env.ARC_THIN_META_ROUTING === 'sweep' ? 'sweep' : 'gaps', metaActionCheckpoints: true,
 	      metaTaskWrites: evoTaskWrites, metaReplaySource: 'python history.transitions() and history.grid(n) (the grid after action n) read the recorded run; data/trajectory.jsonl has one row per action.' } as const : {}),
@@ -1101,6 +1151,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		harnessExpectations?: string;
 		/** Native view output (contextLayout): placed after the state image, beside THIS BOARD. */
 		observerText?: string;
+		/** Agent-authored primary semantic view, only when its successful observer receipt matches this state. */
+		semanticObserverText?: string;
 		/** What the hooks returned on the latest actions (ARC_THIN_HOOKS), shown with the view output. */
 		hookText?: string;
 		/** Guards (ARC_THIN_GUARDS): each guard's refusals in this decision, and the guards suspended for the rest of it. */
@@ -1507,7 +1559,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 
 	function buildWorkingSet(ctx: ExtensionContext, historyText?: string, imageOnly = false): Run["workingSet"] {
 		if (imageOnly) {
-			const seen = chView ? chObservation(ctx) : undefined;
+			const seen = chView ? chObservation(ctx, run.semanticObserverText) : undefined;
 			let image: { type: "image"; data: string; mimeType: string } | undefined;
 			if (!seen && observation && (imageInputEnabled || ctx.model?.input?.includes("image"))) {
 				try { image = renderArcFrameImage(observation).content; } catch (error) { logError("context:image", error); }
@@ -1596,9 +1648,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (ledgerText && !native) sections.push(["ledger", ledgerText]);
 		if (criticText && !native) sections.push(["critic", criticText]);
 		// ARC_THIN_OBSERVATION=ch: the game as Continual Harness shows it, in place of this harness's current-state block.
-		const seen = chView ? chObservation(ctx) : undefined;
+		const seen = chView ? chObservation(ctx, run.semanticObserverText) : undefined;
 		const stateText = seen ? seen.text : observation
-			? queryObservation ? observationReference(observation, trajectory.length, { pythonSession: !agentNativeProgramLoop }) : `CURRENT STATE\n${renderState(observation)}`
+			? queryObservation ? observationReference(observation, trajectory.length, { pythonSession }) : `CURRENT STATE\n${renderState(observation)}`
 			: "CURRENT STATE: unavailable — do not act on remembered grids.";
 		let image: { type: "image"; data: string; mimeType: string } | undefined;
 		if (!seen && (!queryObservation || agentNativeProgramLoop) && observation && (imageInputEnabled || ctx.model?.input?.includes("image"))) {
@@ -1617,7 +1669,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const self = selfText();
 		if (self && !contextLayout) sections.push(["self", self]);
 		const spin = contextLayout && run.spin?.streak ? spinText(run.spin) : "";
-		const viewOutput = contextLayout ? [run.observerText ?? "", run.hookText ?? ""].filter(Boolean).join("\n") : "";
+		const viewOutput = contextLayout ? [run.semanticObserverText ? "" : run.observerText ?? "", run.hookText ?? ""].filter(Boolean).join("\n") : "";
 		const tail = contextLayout ? [self, spin, viewOutput, board].filter(Boolean).join("\n\n") : "";
 		// What the agent was given this decision, for auditing what later reasoning restates or ignores.
 		// The grid is in states.jsonl, so only its size and hash are logged here.
@@ -1638,7 +1690,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				...(viewOutput ? { observer_and_hook_results: viewOutput } : {}),
 				current_request: { consolidating: run.consolidating, level_review: run.levelReview, stall_review: run.stallReview,
 					evolution_pass: run.evoPass, observation_delivery: observationMode },
-				action_history_ref: 'read_self(section="ledger")',
+				action_history_ref: 'read_self(section="arc_history", offset, count)',
 			});
 			body = JSON.stringify(evo.executionView({ taskObservation: stateText, taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> }));
 		}
@@ -1714,7 +1766,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	 * A review sees the current state only: its own material covers the actions, and what happened since the last
 	 * decision is left for the next one.
 	 */
-	function chObservation(ctx: ExtensionContext): { text: string; images: Array<{ type: "image"; data: string; mimeType: string }>; labels: string[] } {
+	function chObservation(ctx: ExtensionContext, semanticView = ""): { text: string; images: Array<{ type: "image"; data: string; mimeType: string }>; labels: string[] } {
 		const blocks: string[] = [];
 		let shown: Array<{ label: string; grid: number[][] }> = [];
 		const grid = gridOf(observation);
@@ -1728,7 +1780,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			blocks.push("## RECENT HISTORY\n" + history);
 			// CH's action_counter counts the starting RESET, so it is the number the next action gets.
 			blocks.push(`# Step: ${trajectory.length + 1}`);
-			const observed = buildObservationSection(decisionObservations, undefined, grid);
+			const observed = semanticView ? { text: "", grids: [] as Array<{ label: string; grid: number[][] }> }
+				: buildObservationSection(decisionObservations, undefined, grid);
 			if (observed.text.trim()) {
 				let observationText = observed.text.trimEnd();
 				const latest = decisionObservations.at(-1);
@@ -1745,12 +1798,21 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			shown = observed.grids;
 		}
-		blocks.push(observation
-			? currentStateBlock(String(observation.state ?? "UNKNOWN"), Number(observation.levels_completed ?? 0), availableActions(observation), grid)
-			: "## CURRENT STATE\n(unavailable — do not act on remembered grids)");
-		const gridFacts = gridFactsText(grid);
-		if (gridFacts) blocks.push(gridFacts);
-		const rendered = [...shown, ...(grid?.length ? [{ label: CURRENT_STATE_GRID_LABEL, grid }] : [])];
+		if (semanticView) {
+			blocks.push(observation
+				? `## CURRENT STATE\nstate: ${String(observation.state ?? "UNKNOWN")}\nscore (levels completed): ${Number(observation.levels_completed ?? 0)}\navailable actions: ${availableActions(observation).join(", ") || "none"}\nThe grid is represented by the Agent-authored semantic observer below.`
+				: "## CURRENT STATE\n(unavailable — do not act on remembered grids)");
+			blocks.push(`## SEMANTIC OBSERVATION\n${semanticView}\nRaw current frame: data/frames/${trajectory.length}.json (read this exact file when pixel/grid detail is needed).`);
+			const latest = decisionObservations.at(-1);
+			if (latest?.validFrame) blocks.push(`Raw observation frames since the previous decision: data/observations/${latest.step}.json#frames.`);
+		} else {
+			blocks.push(observation
+				? currentStateBlock(String(observation.state ?? "UNKNOWN"), Number(observation.levels_completed ?? 0), availableActions(observation), grid)
+				: "## CURRENT STATE\n(unavailable — do not act on remembered grids)");
+			const gridFacts = gridFactsText(grid);
+			if (gridFacts) blocks.push(gridFacts);
+		}
+		const rendered = semanticView ? [] : [...shown, ...(grid?.length ? [{ label: CURRENT_STATE_GRID_LABEL, grid }] : [])];
 		const images = imageInputEnabled || ctx.model?.input?.includes("image") ? rendered.map((g) => gridImage(g.grid)) : [];
 		return { text: blocks.join("\n\n"), images, labels: rendered.map((g) => g.label) };
 	}
@@ -2064,6 +2126,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       // ls and grep stay out (python lists and searches the workspace, and every schema is resent on each call).
       pi.setActiveTools([...(run.consolidating ? [] : ['arc_action']), ...(run.daemonResponse ? ['daemon_reply'] : []), 'memory',
         ...(evo ? ['python'] : agentNativeProgramLoop ? [] : ['python', 'promote', 'save_tool']), 'save_program', 'read', 'write', 'edit', 'self_component', ...(!run.consolidating && !selfBaseline && !control ? [evoMetaCore ? 'request_evolution' : 'request_adapt'] : []), ...(selfBaseline ? ['save'] : []),
+        ...(evoMetaCore && !evo?.metaT0Pending ? ['publish_observer'] : []),
         ...(criticOn && refineTool ? ['refine'] : []), ...nativeRuntime.toolNames(), ...(skills.size ? ['run_skill'] : []), ...(evo ? ARC_SELFROOT_TOOLS : [])]);
       return;
     }
@@ -3587,7 +3650,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	const text = (value: string, details?: unknown, terminate = false) =>
 		({ content: [{ type: "text" as const, text: value }], details, terminate });
 	if (evo && selfRootPersist) {
-		installArcSelfRootTools({ pi, evo, resolveSessionToolOperation: (operation: any, signal?: AbortSignal) => nativeRuntime!.resolveSessionToolOperation(operation, signal), text, persist: selfRootPersist,
+			installArcSelfRootTools({ pi, evo, resolveSessionToolOperation: (operation: any, signal?: AbortSignal) => nativeRuntime!.resolveSessionToolOperation(operation, signal), text, persist: selfRootPersist, pythonSession, trajectory: () => trajectory,
 			contextItem: (ref: string) => ({ ref, state: 'missing' }),
 			readEvidence: (ref: string, evidenceOffset = 0) => {
 				const match = /^(decision|transition):(\d+)$/.exec(ref ?? '');
@@ -3618,9 +3681,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					return evidenceOffset === 0 ? { ref, phase: 'before', before,
 						action: { action: action.action, x: action.x, y: action.y }, prediction: action.predict ?? null,
 						reveal: `read_self(section="evidence", ref="${ref}", offset=1)` }
-						: { ref, phase: 'after', after: grids.get(n) ?? null, outcome: {
+						: { ref, phase: 'after', after_frame: `data/frames/${n}.json`, outcome: {
 							changed_cells: action.changed_cells, bbox: action.bbox ?? null, level_changed: action.level_changed,
-							state: action.state, levels_completed: action.levels_completed },
+							state: action.state, levels_completed: action.levels_completed, note: action.note ?? null },
 							source: ['harness/states.jsonl', 'harness/trajectory.jsonl'] };
 				}
 				let offset = 0;
@@ -3818,8 +3881,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const carry = (result: any, failed: boolean) => {
 			if (name === "arc_action" || !endsBatch()) return result;
 			const body = String(result?.content?.[0]?.text ?? "").replace(/\s+/g, " ").trim();
-			run.batchResults.push(`${name}${failed ? " FAILED" : ""}: ` +
-				(body.length > CARRIED_RESULT_CHARS ? `${body.slice(0, CARRIED_RESULT_CHARS - 1)}…` : body));
+				run.batchResults.push(`${name}${failed ? " FAILED" : ""}: ` + boundedResultPreview(body, CARRIED_RESULT_CHARS));
 			append("batch_results.jsonl", { decision, tool: name, failed });
 			return result;
 		};
@@ -4506,6 +4568,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				strategies: Type.Optional(Type.Union([Type.Array(Type.Object({
 					key: Type.String({ minLength: 1, maxLength: 48, description: "strat.<name>" }),
 					plan: Type.Optional(line(300, "Plan.")),
+					note: Type.Optional(line(300, "Current experiment result or why the next step changed.")),
 					depends_on: Type.Optional(Type.Array(Type.String({ maxLength: 48 }), { maxItems: 4, description: "Premise keys." })),
 					uses: Type.Optional(Type.Array(Type.String({ maxLength: 64 }), {
 						maxItems: 6, description: "Components it relies on: \"skill:<name>\", \"memory:<key>\", \"prompt\".",
@@ -4828,6 +4891,20 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}),
 		});
 
+		if (evoMetaCore) pi.registerTool({
+			name: "publish_observer",
+			label: "Publish observer",
+			description: "Publish Python source that reads the current ARC state. For cross-state tracking define process(observation, prior_state) and return {facts, state}; prior_state starts as null and restores from the last successful run of this component version on this level. facts (4 KB max) are shown to the Agent; JSON state (8 KB max) is hidden. Or use a stateless script that prints/returns concise facts. Runs at the next request boundary and after each new observation; cannot act. By default the host keeps its raw grid and images. If your output is a sufficient semantic representation for ordinary decisions, start body with '# semantic_view: on'; only then a successful, nonempty result for the current state replaces raw grids/images, with the exact frame file available on demand. Omit this marker when details cannot be safely recovered from your facts.",
+			parameters: Type.Object({
+				name: Type.String({ pattern: "^[a-z][a-z0-9_]{0,39}$" }),
+				body: Type.String({ minLength: 1, maxLength: 16384 }),
+			}),
+			execute: guardTool("publish_observer", async (params: { name: string; body: string }) => {
+				try { return text(await nativeRuntime!.publishObserver(params.name, params.body), undefined, endsBatch()); }
+				catch (error) { throw new Refusal(errorText(error)); }
+			}),
+		});
+
 		/**
 		 * One-off computation: run code once and get the answer, with nothing to name or save. Computation had to go
 		 * through creating a skill (2026-10-12 review: 28-38% of reasoning was coordinate work done by hand, and a route
@@ -4836,7 +4913,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "python",
 			label: "Python",
-			description: native
+			description: native && !pythonSession
+				? "Run one-off Python in a fresh sandbox. Available names: state, grid (grid[y][x]), prev_grid, history (history.grid(n), history.transitions()), artifacts and skill(name, **args). Names, functions and values do not persist between calls. This tool cannot act or publish code. Use arc_action for actions, publish_observer for automatic observation processing, and the available harness source-writing interface for reusable capabilities. Batch independent checks from this observation and return only evidence that could change the next decision. Prints and the final expression are temporary results."
+				: native
 				? evo ? "Run code in the persistent Python sandbox. Available names: state, grid (current rows; grid[y][x]), prev_grid, history (history.grid(n), history.transitions()), artifacts, args, env. A missing frame may make grid None. env.revision counts observations and increments on every action feedback, including when the grid does not change; bare grid/prev_grid/state stay bound at call entry, while env.grid/env.state stay current, so compare against the revision you read with the data and refresh from env when env.revision has moved. If an action's result is unknown, do not send it again: reread env.revision, env.state/env.grid and the history transition, then decide from the observed state. env.grid and env.state expose the current state; after env.act(...) in the same call, read the updated env.grid or returned observation, since the bare grid name was bound at call entry. Batch independent checks from one observation into one call and return only evidence that could change the next decision. A successful top-level def name(args, env) with a purpose docstring and an Applies: scope line is automatically versioned and mounted as a SelfRoot tool. Pass changing inputs in args, use env for current authorized resources, validate external args once, and avoid capturing the current sample. Prints and expressions are temporary results. "
 				: "Run Python in your persistent session. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. " +
 					"Returns what you print and the " +
@@ -4852,13 +4931,13 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
 					"Returns what you print and the value of a final expression. Standard library only; no files or network.",
 			parameters: native
-				? Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }), save: Type.Optional(Type.String({ maxLength: 41 })) })
+				? Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }), ...(pythonSession ? { save: Type.Optional(Type.String({ maxLength: 41 })) } : {}) })
 				: Type.Object({ code: Type.String({ minLength: 1, maxLength: 16384 }) }),
 			prepareArguments: (args: any) => args && typeof args === "object" && typeof args.code === "string"
 				? { ...args, code: unescapeSource(args.code) } : args,
 			execute: guardTool("python", async (params: { code: string; save?: string }, signal) => {
         if (nativeRuntime) {
-          try { return await nativeRuntime.python(params.code, signal, false, params.save || undefined); }
+          try { return await nativeRuntime.python(params.code, signal, !pythonSession, params.save || undefined, undefined, true); }
           catch (error) { throw new Refusal(errorText(error)); }
         }
 				const started = Date.now();
@@ -5105,11 +5184,18 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		hookTurn: () => run.hookTurn,
       state: () => ({ ...skillState(false, true), frames: observation?.frames ?? [], ...(chView ? chSandboxState() : {}) }),
       level: currentLevel, actionCount: () => trajectory.length, decision: () => decision, log: append, usage: appendUsage,
-      act: (call, via) => actForCode(call, via),
+      taskFacts: () => [...readRows('self_harness_task_facts.jsonl').slice(-64),
+        ...readRows('task_runtime_fact_delivery.jsonl').slice(-64)],
+      ...(pythonSession ? { act: (call: any, via: string) => actForCode(call, via) } : {}),
       componentSaved: recordComponentWrite,
-      componentEvent: (type, value) => { if (evo) { evo.fact(type, value); selfRootPersist?.(); } },
+      componentEvent: (type, value) => {
+        if (evo) { evo.fact(type, value); selfRootPersist?.(); }
+        if (type === 'component_execution' && !run.hookTurn)
+          append('self_harness_task_facts.jsonl', { ...value, kind: 'component_execution',
+            surface: evo && (run.consolidating || evo.inEvolutionReview) ? 'review' : 'task', level: currentLevel() });
+      },
       ...(pythonMemory ? { remember: pythonMemory } : {}),
-      pythonSession: !agentNativeProgramLoop && process.env.ARC_THIN_PYTHON_SESSION !== "0",
+      pythonSession,
       pythonKernel,
       workMemory,
       immediateSubagent: selfBaseline,
@@ -5246,7 +5332,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		}
 		// A view that keeps raising goes back to a version that showed something, before it is bound; so does a predictor.
 		if (refinerActive()) { try { await restoreBrokenViews(); await retireBrokenPredictors(); } catch (error) { logError("view:restore", error); } }
-    if (binder) { await binder.scan(currentLevel()); binder.boundary(currentLevel()); nativeRuntime?.register(); }
+		if (binder) { await binder.scan(currentLevel()); binder.boundary(currentLevel()); nativeRuntime?.register(); }
 		// Stage 1: a level finished since the last decision writes its lineage row, before this decision's facts.
 		if (selfLoop) selfOutcomes(currentLevel());
 		const continuing = native && !run.actionDone && /^RECOVER (?:ACTION|CONSOLIDATION|LEVEL REVIEW|STALL REVIEW|EVOLUTION PASS)\b/.test(prompt);
@@ -5378,7 +5464,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		} else { ledgerText = ""; criticText = ""; }
 		const rootPrompt = renderPrompt("arc_thin_agent.md", { adapt: evoMetaCore
 			? evoTaskWrites === 'pass'
-				? 'You may update your prompts, memory, tools, skills and subagent roles in a self-evolution pass. `request_evolution(focus)` opens one at the next request boundary; it does not prevent task actions. A documented Python session function still publishes as a tool during task decisions.'
+				? pythonSession
+					? 'Use publish_observer(name, body) during a task decision when the same observation calculation should run on each new state. Other prompts, memory, tools, skills and subagent roles can be updated in a self-evolution pass. `request_evolution(focus)` opens one at the next request boundary; it does not prevent task actions. A documented Python session function still publishes as a tool during task decisions.'
+					: 'Use publish_observer(name, body) during a task decision when the same observation calculation should run on each new state. Python is a one-off sandbox: names and definitions do not persist, and it cannot act or publish tools. Use `arc_action` for actions; `request_evolution(focus)` opens a pass to write other reusable harness components at the next request boundary.'
 				: 'You may update your prompts, memory, tools, skills and subagent roles at any request through reflect_component and reflect_orchestration. `request_evolution(focus)` opens a self-evolution pass at the next request boundary; it does not prevent task actions.'
 			: 'You may update your prompts, memory, tools, skills and subagent roles. `request_adapt` schedules a separate adjustment turn at the next task boundary; it does not prevent task actions. Read `adapt-config.json` when considering a schedule change; edits take effect at the next task boundary.' }).trimEnd();
 		const systemPrompt = run.hookTurn
@@ -5392,8 +5480,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
         : "current grid" + ((imageInputEnabled || ctx.model?.input?.includes('image')) ? " and its PNG" : ""),
       // ARC_THIN_OBSERVATION=ch: arc_action takes CH's action list, and the ARC information CH's system instruction gives
       // (input format, coordinates, the action key, the game setting) closes the prompt (arc_thin_native_ch_arc.md).
-		acting: agentNativeProgramLoop ? "arc_action for one action per request" : "arc_action for one action per request, or Python calling env.act",
-		predict_on: agentNativeProgramLoop ? "on arc_action" : "on arc_action or env.act",
+		acting: agentNativeProgramLoop || !pythonSession ? "arc_action for one action per request" : "arc_action for one action per request, or Python calling env.act",
+		predict_on: agentNativeProgramLoop || !pythonSession ? "on arc_action" : "on arc_action or env.act",
 		list_stop: "An action list",
       arc: chView ? loadPrompt("arc_thin_native_ch_arc.md") : "",
       // What of a decision's own thinking comes back to it on its next call, and what the agent must write to keep the
@@ -5422,8 +5510,9 @@ export default function arcThinExtension(pi: ExtensionAPI) {
       hook: hooksOn ? ' def after(state, t) runs after every action, before your next decision, on the transition a hypothesis check(t) gets: ' +
         'it may write notes/ and artifacts/ files (artifacts/<name>.json reaches all your code as artifacts[name]) and call env.remember, ' +
         'never act; what it returns is shown with the state.' : '',
-      python: agentNativeProgramLoop ? 'Named programs are created with save_program and run in a fresh sandbox on the current state; source is read on demand.'
-        : evo ? 'Python is a persistent sandbox. A documented def name(args, env) becomes a versioned SelfRoot tool automatically; see the Python tool contract. Source is read on demand.'
+	      python: agentNativeProgramLoop ? 'Named programs are created with save_program and run in a fresh sandbox on the current state; source is read on demand.'
+	        : !pythonSession ? 'Python is a fresh, one-off sandbox; names do not persist and it cannot act or publish tools. Use arc_action to act and publish_observer for automatic observation processing. Source other reusable harness capabilities in a self-evolution pass.'
+	        : evo ? 'Python is a persistent sandbox. A documented def name(args, env) becomes a versioned SelfRoot tool automatically; see the Python tool contract. Source is read on demand.'
         : 'Python is a persistent sandbox; `env.act(action, x, y, predict)` can act when available. `promote` or `save_tool` publishes a session function as a native callable tool.',
       skill: lean ? 'skills/<name>/SKILL.md, a procedure read on demand.' : 'skills/<name>/SKILL.md (name, description), a procedure read on demand.',
       reflect: evoMetaCore && evoTaskWrites === 'pass' ? 'In a self-evolution pass, `reflect_component` defines, revises or restores SelfRoot components.' : '`reflect_component` defines, revises or restores SelfRoot components.' }) : control
@@ -5560,8 +5649,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const surface = evo.surface();
 			const tools = metaReview
 				? [...new Set([...active.filter(name => ['read', 'python', 'memory', 'skill', 'run_skill'].includes(name)), ...evo.surface()])].filter(name => name !== 'arc_action')
-				: active.filter(name => name !== 'decide_exit' && name !== 'self_component' && (agentNativeProgramLoop || name !== 'save_program')
-					&& (!ARC_SELFROOT_TOOLS.includes(name) || surface.includes(name)));
+				: [...new Set([...active.filter(name => name !== 'decide_exit' && name !== 'self_component' && (agentNativeProgramLoop || name !== 'save_program')
+					&& (!ARC_SELFROOT_TOOLS.includes(name) || surface.includes(name))), ...(!evo.metaT0Pending ? ['publish_observer'] : [])])];
 			pi.setActiveTools(tools);
 		}
 		const headKey = `${decision}:${lastUser}:${evo ? [evo.revision, evo.mode, evo.reviewId, trajectory.length, intervalReview].join(':') : ''}`;
@@ -5574,17 +5663,29 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			}
 			if (native && workspace) workspace.runtimeWrite('data/memory.md', renderMemory(memory, trajectory.length, trajectory.map(actionLabel), { ...components(), checkSources: true }) + '\n');
 			run.observerText = nativeRuntime ? await nativeRuntime.observerText() : '';
+			run.semanticObserverText = nativeRuntime ? await nativeRuntime.semanticObserverText() : '';
 			if (native || !run.workingSet) run.workingSet = buildWorkingSet(ctx, summarised ? summary!.text : undefined);
 			// The views' output closes the head (contextLayout, buildWorkingSet) or, without it, follows the capability index.
 			const capabilities = binder ? [binder.index(currentLevel(), undefined, native ? artifactUsage().usage : undefined),
-				contextLayout ? '' : run.observerText, contextLayout ? '' : run.hookText, run.harnessExpectations].filter(Boolean).join('\n') : '';
+				contextLayout || run.semanticObserverText ? '' : run.observerText, contextLayout ? '' : run.hookText, run.harnessExpectations].filter(Boolean).join('\n') : '';
 		if (evo) {
 			const current = arcTaskRuntimeView as any;
 			arcTaskRuntimeView = { ...current, context: { ...current?.context, capability_index: capabilities || undefined } };
-			const taskObservation = metaReview ? '' : chView ? chObservation(ctx).text : undefined;
-			const viewInput = compactArc && taskObservation ? { taskObservation } : chView ? { taskObservation: '' } : {};
+			const runtimeEvidence = nativeRuntime?.taskEvidenceText(currentLevel(), metaReview ? 'review' : 'task') ?? '';
+			const lastExperiment = trajectory.at(-1);
+			const taskObservation = metaReview ? runtimeEvidence : chView
+				? [chObservation(ctx, run.semanticObserverText).text,
+					lastExperiment && (lastExperiment.note || lastExperiment.prediction)
+						? `## LAST EXPERIMENT\n${recentLine(lastExperiment)}` : '',
+					run.semanticObserverText ? '' : run.observerText ? `## AGENT OBSERVATION CODE\n${run.observerText}` : '', runtimeEvidence].filter(Boolean).join('\n\n')
+				: runtimeEvidence ? { ...(arcTaskRuntimeView as any), runtime_evidence: runtimeEvidence } : undefined;
+			const viewInput = taskObservation !== undefined ? { taskObservation } : {};
 			const view = evo.executionView({ ...viewInput, taskMemoryItems: taskMemoryItems() } as Parameters<typeof evo.executionView>[0] & { taskMemoryItems: ReturnType<typeof taskMemoryItems> });
 			const { task_observation, ...selfView } = view;
+			// The task head already supplies current facts. Keep the SelfRoot read directory for reviews;
+			// ordinary task decisions can still call the tools when a specific archived fact is needed.
+			if (compactArc && evoMetaCore && !metaReview && !intervalReview && !run.consolidating)
+				delete (selfView as any).read;
 			// Compact task head: the observation's RECENT HISTORY already lists the actions, so the view's copy goes, and
 			// empty fields go; what the Python session still holds is listed so the decision reuses it (2026-11-19).
 			if (compactArc && evoMetaCore) {
@@ -5609,7 +5710,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				} catch { return 0; }
 			})();
 			run.workingSet!.text = compactArc
-				? [typeof task_observation === 'string' ? task_observation : '', held, selfText].filter(Boolean).join('\n\n')
+				? [typeof task_observation === 'string' ? task_observation : task_observation != null ? JSON.stringify(task_observation) : '', held, selfText].filter(Boolean).join('\n\n')
 				: [run.workingSet!.text, selfText].filter(Boolean).join('\n\nSELFROOT EXECUTION VIEW\n');
 			if (compactArc && evoMetaCore) append("context_budget.jsonl", { decision, repeated_self_fragments: repeatedSelfFragments, self_view_chars: selfText.length });
 		}
@@ -5643,7 +5744,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		const projected = native ? [...projectNativeHistory(history, replayReasoning),
 			...projectNativeDecision([head, ...messages.slice(lastUser + 1).filter(m => m.role !== 'user')], {
         reasoning: replayReasoning ? 'all' : decisionReasoning ? reasoningMode as 'all' | 'recent' | 'fields' | 'none' : 'none',
-        fullResults: slot("history.full_results", 2), carryChars: carryFieldChars, ...(archiveResults ? { archive: archiveResult } : {}) })]
+        fullResults: slot("history.full_results", 2), carryChars: carryFieldChars,
+        isolateTools: native && process.env.ARC_THIN_TOOL_HISTORY_ISOLATION !== '0',
+		recentToolBatches,
+        ...(native ? { archiveTool: archiveToolBatch } : {}), ...(archiveResults ? { archive: archiveResult } : {}) })]
       : [...history, head, ...messages.slice(lastUser + 1).map(truncateToolResult)];
 		if (run.hookTurn && !run.phaseTransport) {
 			const shownHead = `${hookSystemHeader}\n${messageText(head)}`;
@@ -5667,6 +5771,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				tools_json_chars: tools ? JSON.stringify(tools).length : null,
 				tool_names: [...active], messages: projected.length, history_messages: history.length,
 				...(native ? { history_mode: summarised ? 'summary' : 'transcript' } : {}),
+				...(native ? { tool_history_isolation: process.env.ARC_THIN_TOOL_HISTORY_ISOLATION !== '0',
+				archived_tool_batches: toolBatchRefs.size, recent_tool_batches_kept: recentToolBatches } : {}),
 				history_text_chars: summary ? summary.text.length : history.reduce((n, message) => n + messageText(message).length, 0),
 				...(summary ? { history_decisions: summary.decisions, history_omitted: summary.omitted } : {}),
 				message_text_chars: projected.reduce((n, message) => n + messageText(message).length, 0),
@@ -5774,7 +5880,11 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 				const composition = { sections: ['self_root_runtime_view', 'pi_history'], messages: messages.length, chars: deliveredChars,
 					runtime_view_hash: hash(arcTaskRuntimeView ?? null), provider_payload_hash: hash(messages) };
 				evo.recordContext(composition, { revision: evo.revision, hash: hash(evo.policy.context), delivered_chars: deliveredChars });
-				evo.fact('provider_input', { pin, tools: pi.getActiveTools(), component_delivery: nativeRuntime?.componentDeliveries(pi.getActiveTools()) ?? [], context_hash: hash(composition), delivered_chars: deliveredChars });
+				const components = nativeRuntime?.componentDeliveries(pi.getActiveTools()) ?? [];
+				evo.fact('provider_input', { pin, tools: pi.getActiveTools(), component_delivery: components, context_hash: hash(composition), delivered_chars: deliveredChars });
+				if (!run.hookTurn && components.length) append('self_harness_task_facts.jsonl', { kind: 'component_delivery',
+					surface: run.consolidating || evo.inEvolutionReview ? 'review' : 'task', level: currentLevel(), decision,
+					n: trajectory.length, request: pin.request, components });
 				selfRootPersist?.();
 			} catch (error) { logError('self_root:request_boundary', error, true); throw error; }
 		}
@@ -5798,10 +5908,7 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 		if (native && outputPolicy !== undefined) {
 			const limit = Number(outputPolicy);
 			if (!Number.isInteger(limit) || limit < 0) throw Error('invalid parent output-token policy');
-			if (!limit) { delete payload.max_tokens; delete payload.max_completion_tokens; delete payload.max_output_tokens; }
-			else if (ctx.model?.api === 'openai-responses') payload.max_output_tokens = limit;
-			else if ('max_completion_tokens' in payload) payload.max_completion_tokens = limit;
-			else payload.max_tokens = limit;
+			applyParentOutputLimit(payload, ctx.model?.api, limit);
 		}
 		append("provider_policy.jsonl", {
 			decision, max_tokens: payload.max_output_tokens ?? payload.max_tokens ?? payload.max_completion_tokens ?? null,
@@ -5812,8 +5919,10 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const projection = responsesContinuation.project(payload, `${decision}:${ctx.model.provider}:${ctx.model.id}`);
 			append('responses_transport.jsonl', { decision, ...projection.audit,
 				wire_json_chars: JSON.stringify(projection.payload).length, recordedAt: new Date().toISOString() });
+			if (native) recordProviderContext(projection.payload);
 			return projection.payload;
 		}
+		if (native) recordProviderContext(payload);
 	}));
 	pi.on('context_with_system', (event: any) => {
 		if (!evo) return undefined;
@@ -5880,9 +5989,17 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			const said = pick("thinking", "thinking") || pick("text", "text");
 			if (said) run.reasoning.push(said);
 		}
-		if (!run.hookTurn) append('self_harness_task_facts.jsonl', { kind: 'assistant', decision, n: trajectory.length,
-			text: clipText(blocks.filter(block => block?.type === 'text').map(block => String(block.text ?? '')).join('\n'), 1000),
+		if (!run.hookTurn) {
+			const assistantText = blocks.filter(block => block?.type === 'text').map(block => String(block.text ?? '')).join('\n');
+			append('self_harness_task_facts.jsonl', { kind: 'assistant', decision, n: trajectory.length,
+			text: clipText(assistantText, 1000),
 			tool_calls: blocks.filter(block => block?.type === 'toolCall').map(block => block.name).slice(0, 12) });
+			const issueMentions = [assistantText, ...blocks.filter(block => block?.type === 'toolCall')
+				.map(block => JSON.stringify(block.arguments ?? {}))].join('\n');
+			const issueRefs = [...new Set(issueMentions.match(/runtime:(?:repeat|component):[a-f0-9]{12}/g) ?? [])];
+			for (const issue_ref of issueRefs) append('task_runtime_fact_delivery.jsonl', { kind: 'agent_referenced', issue_ref, decision, n: trajectory.length,
+				text: clipText(assistantText, 500) });
+		}
 		for (const block of blocks) if (block?.type === "thinking" && typeof block.thinking === "string") {
 			const counted = coordinateSentences(block.thinking);
 			run.reasoningSentences += counted.sentences; run.coordinateSentences += counted.coordinate;
@@ -5900,18 +6017,31 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 	// Refusals returned as terminating results are still errors to the model.
 	pi.on("tool_result", guard("tool_result", (event: any) =>
 		(event.details as { refused?: boolean } | undefined)?.refused ? { isError: true } : undefined));
+	const taskToolStarts = new Map<string, { n: number; stateHash: string }>();
+	pi.on('tool_call', guard('task_tool_start', (event: any) => {
+		if (!run.hookTurn && ['python', 'read', 'read_self'].includes(String(event.toolName)))
+			taskToolStarts.set(String(event.toolCallId), { n: trajectory.length, stateHash: hash(JSON.stringify(observation?.state ?? observation ?? null)) });
+	}));
 	if (workspace) pi.on('tool_result', (event: any) => {
     // Exact readback is explicitly ranged by the caller; do not replace it with another receipt. An unranged read is
     // capped like any other result and points back at the file itself (kernel-02: one unranged read of an 18k-char
     // result was re-sent in six requests).
-		if (!run.hookTurn) append('self_harness_task_facts.jsonl', { kind: 'tool', decision, n: trajectory.length,
-			tool: event.toolName ?? 'unknown', input: clipJson(event.input ?? 'unknown', 700),
-			output: clipText((Array.isArray(event.content) ? event.content : []).filter((block: any) => block?.type === 'text')
-				.map((block: any) => String(block.text ?? '')).join('\n'), 900), is_error: Boolean(event.isError) });
+		const output = (Array.isArray(event.content) ? event.content : []).filter((block: any) => block?.type === 'text')
+			.map((block: any) => String(block.text ?? '')).join('\n');
+		const taskToolStart = taskToolStarts.get(String(event.toolCallId));
+		taskToolStarts.delete(String(event.toolCallId));
+		const readSource = event.toolName === 'read' ? String(event.input?.path ?? '').replace(/\\/g, '/') || undefined : undefined;
+		const resultRef = output.length > 900 ? (readSource ?? (event.toolName === 'python' ? undefined : workspace.saveResult(output).ref)) : undefined;
+		if (!run.hookTurn) append('self_harness_task_facts.jsonl', { kind: 'tool', tool_call_id: event.toolCallId, decision,
+			n: taskToolStart?.n ?? trajectory.length, ...(taskToolStart ? { state_hash: taskToolStart.stateHash } : {}),
+			tool: event.toolName ?? 'unknown', input_hash: hash(JSON.stringify(event.input ?? 'unknown')),
+			input: clipJson(event.input ?? 'unknown', 700), output_hash: hash(output),
+			...(resultRef ? { result_ref: resultRef } : {}), output: clipText(output, 900), is_error: Boolean(event.isError) });
 		if (event.toolName === 'read' && (event.input?.offset != null || event.input?.limit != null)) return;
-    const source = event.toolName === 'read' ? String(event.input?.path ?? '').replace(/\\/g, '/') || undefined : undefined;
+		if (['python', 'arc_action'].includes(String(event.toolName))) return;
+	    const source = readSource;
     const content = event.content.map((block: any) => block.type === 'text'
-      ? { ...block, text: workspace.receipt(block.text, event.isError ? 'error' : 'ok', [], source) } : block);
+	      ? { ...block, text: workspace.receipt(block.text, event.isError ? 'error' : 'ok', [], source, 'tool') } : block);
     return { content };
   });
 }

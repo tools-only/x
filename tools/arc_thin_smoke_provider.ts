@@ -340,7 +340,8 @@ const COMPONENT_SCRIPT: Step[] = [
 // The Pi process is restarted between the two halves: the python session comes back from its checkpoint.
 const RECEIPT_SCRIPT: Step[] = process.env.ARC_THIN_NATIVE_RESTART === '1' ? [
   { kind: 'decide', calls: [['read', { path: '$last_result', offset: 41, limit: 1 }],
-    ['python', { code: 'kept_across_restart.append(len(kept_across_restart))\n[kept_across_restart, twice(21)]' }]] },
+    ['python', { code: 'kept_across_restart.append(len(kept_across_restart))\n[kept_across_restart, twice(21)]' }],
+    ['read', { path: '$last_result' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ] : [
   { kind: 'decide', calls: [['python', { code: "def twice(v):\n    return 2 * v\nkept_across_restart = [41]\n" +
@@ -371,6 +372,26 @@ const REUSE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'reuse 4' }]] },
   { kind: 'decide', calls: [['python', { code: cellCode(5) }], ['python', { code: cellCode(6) }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 5' }]] },
+];
+const RUNTIME_EVIDENCE_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [
+    ...[1, 2, 3, 3].map(x => ['python', { code: `cells = [grid[0][${x}]]\nprint('sample', ${x}, cells)` }] as [string, Record<string, unknown>]),
+    ['read', { path: 'data/frames/0.json', offset: 1, limit: 3 }],
+    ['read', { path: 'data/frames/0.json', offset: 1, limit: 3 }],
+    ['arc_action', { action: 'ACTION1' }],
+  ] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', text: 'Runtime evidence was delivered.' },
+];
+const RUNTIME_EVIDENCE_REVIEW_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [
+    ...[1, 2, 3, 3].map(x => ['python', { code: `cells = [grid[0][${x}]]\nprint('sample', ${x}, cells)` }] as [string, Record<string, unknown>]),
+    ['read', { path: 'data/frames/0.json', offset: 1, limit: 3 }],
+    ['read', { path: 'data/frames/0.json', offset: 1, limit: 3 }],
+    ['read_self', { section: 'self' }],
+    ['request_evolution', { focus: 'Review the repeated Python work.' }],
+  ] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
 ];
 // Activation: saved code acts in a closed loop (python save= runs env.act and stops itself when a prediction misses;
 // the saved tool does it again), unsaved code cannot act, the agent writes its guidance for refinements and starts
@@ -568,10 +589,86 @@ const META_SCRIPT: Step[] = [
   { kind: 'decide', text: 'NO HARNESS CHANGE: the map, the experiment check and the guard did what they were saved for.' },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION2', note: 'after the second review' }]] },
 ];
+const OBSERVER_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['publish_observer', { name: 'grid_height',
+    body: 'print("OBS_MARKER", len(env.grid))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', text: 'Used the refreshed observation.' },
+];
+const OBSERVER_SEMANTIC_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['publish_observer', { name: 'semantic_board', body:
+    '# semantic_view: on\ndef process(observation, prior_state):\n    return {"facts": "SEMANTIC_BOARD marker=" + str(observation["grid"][0][0]), "state": None}' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['publish_observer', { name: 'semantic_board', body:
+    '# semantic_view: on\nraise RuntimeError("SEMANTIC_OBSERVER_FAILURE")' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', text: 'Raw fallback was restored after the semantic observer failed.' },
+];
+const OBSERVER_LIFECYCLE_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['publish_observer', { name: 'cell_marker', body:
+    'def process(observation, prior_state):\n    count = 1 if prior_state is None else prior_state["count"] + 1\n    return {"facts": "OBSERVER_V1 " + str(observation["grid"][0][0]), "state": {"count": count}}' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['publish_observer', { name: 'cell_marker', body:
+    'def process(observation, prior_state):\n    count = 1 if prior_state is None else prior_state["count"] + 1\n    return {"facts": "OBSERVER_V2 " + str(observation["grid"][0][0]), "state": {"count": count}}' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', calls: [['publish_observer', { name: 'cell_marker', body: 'raise RuntimeError("OBSERVER_V3_FAILURE")' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+];
+const CHECKPOINT_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['memory', { hypotheses: [{ key: 'motion', question: 'control', claim: 'ACTION1 moves the marker right',
+    predicts: 'the marker advances one cell', next_test: 'compare its position after ACTION4' }],
+    strategies: [{ key: 'probe', plan: 'test horizontal movement', depends_on: ['motion'], steps: ['ACTION1', 'ACTION4'] }] }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'first movement probe' }]] },
+  { kind: 'decide', calls: [['memory', { hypotheses: [{ key: 'motion', evidence: { action: 1, condition: 'ACTION1 from initial board',
+    observed: 'marker moved down, not right', verdict: 'refutes' }, next_test: 'test ACTION4 from the new position' }],
+    strategies: [{ key: 'probe', note: 'first result refuted the horizontal prediction' }] }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'distinguish horizontal from vertical movement' }]] },
+  { kind: 'decide', text: 'Continue from the persisted experiment checkpoint.' },
+];
+const OBSERVER_RESTART_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['publish_observer', { name: 'restart_view', body:
+    'def process(observation, prior_state):\n    count = 1 if prior_state is None else prior_state["count"] + 1\n    facts = "RESTART_VIEW " + str(observation["grid"][0][0])\n    state = "x" * 8193 if count == 4 else {"count": count}\n    return {"facts": facts, "state": state}' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print("same-state continuation")' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1' }]] },
+];
+const TOOL_ISOLATION_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: 'print(1) # TOOL_ISOLATION_SECRET_1' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(2) # TOOL_ISOLATION_SECRET_2' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(3) # TOOL_ISOLATION_SECRET_3' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(4) # TOOL_ISOLATION_SECRET_4' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'Finish tool isolation smoke.' }]] },
+];
+const ARC_HISTORY_DELIVERY_SCRIPT: Step[] = [
+  ...[1, 2, 3].map(n => ({ kind: 'decide' as const, calls: [['arc_action',
+    { action: 'ACTION1', note: `history move ${n}: ${'long explanation '.repeat(20)}` }] as [string, Record<string, unknown>]] })),
+  { kind: 'decide', calls: [['read_self', { section: 'arc_history', count: 10 }]] },
+  { kind: 'decide', calls: [['read_self', { section: 'arc_history', count: 10 }]] },
+  { kind: 'decide', calls: [['read_self', { section: 'evidence', ref: 'transition:1', offset: 1 }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'history answer received' }]] },
+];
+const PYTHON_STATELESS_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: 'scratch_value = 41' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(scratch_value)' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(sum(map(sum, grid)))' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print(sum(map(sum, grid)))' }]] },
+  { kind: 'decide', calls: [['python', { code: "env.act('ACTION1')" }]] },
+  { kind: 'decide', calls: [['publish_observer', { name: 'stateless_marker', body: 'print("STATELESS_OBSERVER", len(env.grid))' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION4' }]] },
+];
 const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'guard' ? GUARD_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'stall-guard' ? NATIVE_GUARD_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'meta' ? META_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'observer' ? OBSERVER_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'observer-semantic' ? OBSERVER_SEMANTIC_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'observer-lifecycle' ? OBSERVER_LIFECYCLE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'checkpoint' ? CHECKPOINT_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'observer-restart' ? OBSERVER_RESTART_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'tool-isolation' ? TOOL_ISOLATION_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'arc-history-delivery' ? ARC_HISTORY_DELIVERY_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'python-stateless' ? PYTHON_STATELESS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'restart' ? RESTART_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'repeat' ? REPEAT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'still' ? STILL_SCRIPT
@@ -581,6 +678,8 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'migration' ? MIGRATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'budget' ? BUDGET_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'reuse' ? REUSE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'runtime-evidence' ? RUNTIME_EVIDENCE_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'runtime-evidence-review' ? RUNTIME_EVIDENCE_REVIEW_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'activation' ? ACTIVATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'promotion' ? PROMOTION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-baseline' ? SELF_BASELINE_SCRIPT
@@ -594,6 +693,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'components-feedback' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'auto-component' ? AUTO_COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === "ledger" ? LEDGER_SCRIPT
@@ -610,10 +710,17 @@ const textOf = (message: any): string => typeof message?.content === "string"
 	? message.content
 	: (Array.isArray(message?.content) ? message.content : [])
 		.filter((block: any) => block?.type === "text").map((block: any) => block.text).join("\n");
+const hasToolResult = (messages: any[], name: string) => messages.some(message =>
+	message?.role === 'toolResult' && message.toolName === name
+	|| message?.role === 'assistant' && textOf(message).includes(`[${name} call archived:`));
 
 export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 	const log = join(process.env.ARC_RUN_ROOT ?? process.cwd(), "smoke-requests.jsonl");
 	let step = 0;
+	if (process.env.ARC_THIN_SMOKE_SCRIPT === 'observer-restart' && existsSync(log)) {
+		const previous = readFileSync(log, 'utf8').trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+		step = Number(previous.at(-1)?.step ?? 0);
+	}
 	let evoMetaStage = 0;
 	let toolCall = 0;
 	let probeOrdinary = 0;
@@ -922,8 +1029,8 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 					: "FILE prompts/strategy.md\nRules\n- ACTION1 changes the grid (conf 2, #1)\nOpen questions\n- what ends a level\nNext experiment\n- REFINED_NEXT_EXPERIMENT\nFailure modes\n- none yet\nEND\nWHY first refinement after #6" };
 			}
 			else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo') {
-				const memoryResult = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'memory');
-				const actionResult = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'arc_action');
+				const memoryResult = hasToolResult(currentMessages, 'memory');
+				const actionResult = hasToolResult(currentMessages, 'arc_action');
 				if (evoFocus?.[1] === 'Memory' && !memoryResult) {
 					planned = { kind: 'decide', calls: [['memory', { op: 'set', key: 'evo_specialist_fact',
 						text: 'EVO_MEMORY_REACHED_NEXT_PARENT', confidence: 4 }]] };
@@ -938,13 +1045,20 @@ export default function arcThinSmokeProvider(pi: ExtensionAPI) {
 			else if (critic) planned = { kind: "decide", text: CRITIC_REPLY };
 			else if (['recovery','death','length'].includes(process.env.ARC_THIN_SMOKE_SCRIPT!)) planned={kind:'decide',calls:[['arc_action',{action:'ACTION1'}]]};
 			else {
-				if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo-meta-core') {
-					const seenEvidence = currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'read_self');
+				if (process.env.ARC_THIN_SMOKE_SCRIPT === 'runtime-evidence-review') {
+					const seenEvidence = hasToolResult(currentMessages, 'read_self');
+					planned = head.includes('ROUND 1 - REVIEW AND GAPS')
+						? { kind: 'decide', calls: [seenEvidence
+							? ['decide_exit', { result: { reason: 'Recorded the existing runtime evidence.', carry: [] } }]
+							: ['read_self', { section: 'evidence', ref: 'decision:1', offset: 0 }]] }
+						: SCRIPT[step];
+				} else if (process.env.ARC_THIN_SMOKE_SCRIPT === 'evo-meta-core') {
+					const seenEvidence = hasToolResult(currentMessages, 'read_self');
 					const offeredTools = new Set(tools.map((tool: any) => tool.name ?? tool.function?.name));
 					const gapRound1 = head.includes('ROUND 1 - REVIEW AND GAPS');
 					const priorRefs = [...head.matchAll(/^(\S+) components\.\S+ \(revision/gm)].map(m => m[1]);
 					planned = head.includes('ROUND 2 - GAP EXECUTION')
-						? currentMessages.some((m: any) => m.role === 'toolResult' && m.toolName === 'python')
+						? hasToolResult(currentMessages, 'python')
 							? { kind: 'decide', text: 'no_change: The candidate is written; nothing further in this gap.' }
 							: { kind: 'decide', calls: [['python', { code: 'def grid_size(args, env):\n    """Return the current grid height.\n\n    Applies: any current state.\n    """\n    return len(env.grid) if hasattr(env, "grid") else 0\n' }]] }
 						: gapRound1

@@ -78,6 +78,57 @@ def _rows(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _issue_lifecycle(harness: Path) -> list[dict[str, Any]]:
+    """Join observable delivery, Agent reference and later component execution by issue ref."""
+    events = _rows(harness / "task_runtime_fact_delivery.jsonl")
+    task_facts = _rows(harness / "self_harness_task_facts.jsonl")
+    memory_rows = _rows(harness / "memory.jsonl")
+    observer_runs = _rows(harness / "observer_runs.jsonl")
+    issues: dict[str, dict[str, Any]] = {}
+    for event in events:
+        ref = event.get("issue_ref")
+        if not isinstance(ref, str):
+            continue
+        item = issues.setdefault(ref, {"ref": ref, "delivered": [], "agent_referenced": [], "agent_recorded": [],
+                                       "component_executions": [], "observer_recoveries": [], "status": "unresolved"})
+        if event.get("kind") == "delivered":
+            item["delivered"].append({"decision": event.get("decision"), "action_count": event.get("n"),
+                                      "key": event.get("key")})
+        elif event.get("kind") == "agent_referenced":
+            item["agent_referenced"].append({"decision": event.get("decision"), "action_count": event.get("n")})
+    for item in issues.values():
+        item["agent_recorded"] = [{"key": row.get("key"), "action_count": row.get("at")}
+                                  for row in memory_rows if item["ref"] in json.dumps(row, ensure_ascii=False)]
+        if not item["delivered"]:
+            continue
+        if item["ref"].startswith("runtime:observer:"):
+            path_version = item["ref"].split("runtime:observer:", 1)[1]
+            first = item["delivered"][0]
+            item["observer_recoveries"] = [{"action_count": row.get("n"), "key": row.get("key")}
+                                           for row in observer_runs if str(row.get("key", "")).startswith(path_version + "@")
+                                           and int(row.get("n") or 0) > int(first.get("action_count") or 0)
+                                           and row.get("ok") and row.get("value") not in (None, "", [], {})]
+            if item["observer_recoveries"]:
+                item["status"] = "produced_output_after_delivery"
+            continue
+        if not item["ref"].startswith("runtime:component:"):
+            continue
+        key = str(item["delivered"][0].get("key") or "")
+        path_version = key.split(":component:", 1)[-1].split(":", 1)[0]
+        if "@" not in path_version:
+            continue
+        path, version = path_version.rsplit("@", 1)
+        first = item["delivered"][0]
+        item["component_executions"] = [{"decision": row.get("decision"), "action_count": row.get("n"),
+                                         "outcome": row.get("outcome")}
+                                        for row in task_facts if row.get("kind") == "component_execution"
+                                        and row.get("path") == path and str(row.get("version")) == version
+                                        and int(row.get("n") or 0) >= int(first.get("action_count") or 0)]
+        if item["component_executions"]:
+            item["status"] = "executed_after_delivery"
+    return list(issues.values())
+
+
 def _use_ledger(root: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     """Read-only use classification; absent historical request schemas remain explicitly unknown."""
     harness = root / "harness"
@@ -111,6 +162,38 @@ def _use_ledger(root: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
         args_classes[kind] = args_classes.get(kind, 0) + 1
     ok_true = sum(bool(r.get("ok")) for r in runs)
     ok_false = sum(r.get("ok") is False for r in runs)
+    task_facts = _rows(harness / "self_harness_task_facts.jsonl")
+    deliveries = [row for row in task_facts if row.get("kind") == "component_delivery"]
+    executions = [row for row in task_facts if row.get("kind") == "component_execution"]
+    trajectory = _rows(harness / "trajectory.jsonl")
+    strategies_by_key = {row.get("key"): row["strat"] for row in _rows(harness / "memory.jsonl")
+                         if isinstance(row.get("key"), str) and isinstance(row.get("strat"), dict)}
+    active_strategies = [strategy for strategy in strategies_by_key.values() if strategy.get("status") == "active"]
+    identities = {(component.get("path"), component.get("version"))
+                  for row in deliveries for component in row.get("components", [])
+                  if component.get("kind") == "tool"}
+    component_feedback = []
+    for path, version in sorted(identities):
+        exposed = [row for row in deliveries if any(item.get("path") == path and item.get("version") == version
+                                                     for item in row.get("components", []))]
+        used = [row for row in executions if row.get("path") == path and row.get("version") == version]
+        latest = used[-1] if used else None
+        name = next((item.get("name") for row in exposed for item in row.get("components", [])
+                     if item.get("path") == path and item.get("version") == version), None)
+        after = [row for row in trajectory if latest and int(row.get("n") or 0) > int(latest.get("n") or 0)]
+        action_rows = [row for row in trajectory if row.get("via") in (path, name, f"tool:{name}")]
+        strategy_refs = [strategy.get("key") for strategy in active_strategies
+                         if any(ref in (path, name, f"tool:{name}") for ref in strategy.get("uses", []))]
+        component_feedback.append({
+            "path": path, "version": version, "active_requests": len(exposed),
+            "executions": len(used), "successful_executions": sum(row.get("outcome") == "success" for row in used),
+            "failed_executions": sum(row.get("outcome") == "failed" for row in used),
+            "latest_execution": ({"decision": latest.get("decision"), "action_count": latest.get("n"),
+                                  "outcome": latest.get("outcome")} if latest else None),
+            "environment_actions_after_latest_execution": len(after), "actions_via_component": len(action_rows),
+            "active_strategies_declaring_use": strategy_refs,
+            "interpretation": "delivery and temporal action association are evidence, not causal impact",
+        })
     unknown_reason = "历史 run 未持久化 Decide 实际 callable schema，无法恢复挂载清单与机会窗"
     if schemas:
         mounted = [row.get("tools", []) for row in schemas]
@@ -127,6 +210,7 @@ def _use_ledger(root: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     return {"tools_mounted": mounted_count, "act_capable_count": act_capable_count,
             "kind_tool_attempts": len(runs), "uses": len(runs), "ok_true": ok_true, "ok_false": ok_false,
             "tool_call_args_classes": args_classes, "opportunity_windows": opportunities,
+            "component_feedback": component_feedback,
             "alt_action_mix": {"status": "unknown", "reason": "Pi/harness 尚未把各类行动与每个 Decide schema 窗口稳定关联"},
             "unknown_reasons": reasons, "decide_schema_records": len(schemas)}
 
@@ -451,6 +535,7 @@ def build_report(root: Path) -> dict[str, Any]:
         },
         "categories": categories,
         "use_ledger": use_ledger,
+        "runtime_issues": _issue_lifecycle(harness),
         "process": {"components": process_components,
                     "note": "prompt delivery is logged per working-set decision; delivery does not prove semantic use"},
         "components": components,

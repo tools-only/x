@@ -32,6 +32,8 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; self: any; binder: Binder;
   receipt?(body: string, resultLabel?: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   componentSaved?(path: string, before: number | undefined, receipt: string | undefined, split: ComponentExpectationSource): string | undefined;
   componentEvent?(type: string, value: Record<string, unknown>): void;
+  /** Exact task-call facts recorded by the host before results enter the next request. */
+  taskFacts?(): any[];
   /** Keep the python namespace between python calls (default true). */
   pythonSession?: boolean;
   /** Run the parent's python calls in a live kernel (default true); false: a fresh sandbox per call, restored from the checkpoint. */
@@ -66,6 +68,16 @@ const shown = (result: NativeResult) => !result.ok ? [result.error, result.where
 const text = (value: string, isError = false) => ({ content: [{ type: 'text' as const, text: value }], isError });
 export { codeShape, kitOf, repetitionText, type PythonRun } from './arc_thin_reuse.ts';
 
+export function formatTaskRuntimeEvidence(families: Array<{ gist: string; calls: number; covered?: string; samples: string[] }>) {
+  if (!families.length) return '';
+  const lines = families.slice(0, 2).map(f => {
+    const sample = f.samples[0]?.replace(/\s+/g, ' ').slice(0, 180);
+    return `- ${f.gist}: ${f.calls} recent calls share code structure${f.covered ? `; current component ${f.covered}` : ''}` +
+      `${sample ? `; example: ${sample}` : ''}`;
+  });
+  return `## RUNTIME EVIDENCE\nRecent Python code-structure overlap on this level (source: component_runs.jsonl). This does not establish that the calls answered the same question; decide whether it matters to the current task.\n${lines.join('\n')}`;
+}
+
 /** A component's output that carries nothing: None, an empty string or container, or a script that printed nothing. */
 export function isEmptyValue(value: unknown): boolean {
   if (value === null || value === undefined) return true;
@@ -92,6 +104,10 @@ export class NativeRuntime {
   private mountLocal = new Map<string, unknown>();
   private observed = new Set<string>();
   private outputs = new Map<string, string>();
+  /** Current per-version observer receipt, including whether the Agent selected it as a semantic primary view. */
+  private observerResults = new Map<string, { n: number; ok: boolean; semantic: boolean; current: string }>();
+  /** JSON state returned by a task observer, scoped to its level and exact component version. */
+  private observerStates = new Map<string, unknown>();
   /** path@version → the states on which the view has shown nothing, in a row, and how many of the latest raised. */
   private viewHealth = new Map<string, { path: string; version: number; states: number[]; failed: number; error?: string }>();
   /** path@version of views that showed something at least once. */
@@ -100,6 +116,7 @@ export class NativeRuntime {
   private coverHinted = new Set<string>();
   /** One short in-window review cue per level and canonical action count. */
   private windowCheckHinted = new Set<string>();
+  private taskFactsShown = new Set<string>();
   private savedFeedback = new Map<string, { version: number; n: number; ok: number; failed: number }>();
   /** Active views whose last EMPTY_VIEW_STATES outputs or more were empty. */
   emptyViews() {
@@ -114,8 +131,27 @@ export class NativeRuntime {
   /** Which view versions showed something, from observer_runs.jsonl, after a restart; and what each view has done. */
   seedViews(rows: any[]) {
     for (const r of rows) {
-      if (r?.ok && typeof r.key === 'string' && !isEmptyValue(r.value)) this.viewShowed.add(r.key.replace(/@\d+$/, ''));
-      if (typeof r?.key === 'string' && Number.isInteger(r.n)) this.countView(r.key.replace(/@\d+$/, ''), r.n, r.ok ? r.value : undefined, Boolean(r.ok));
+      if (typeof r?.key !== 'string' || !Number.isInteger(r.n)) continue;
+      const match = /^(.*@\d+)@(\d+)$/.exec(r.key);
+      if (!match) continue;
+      const key = match[1], path = key.replace(/@\d+$/, '');
+      if (r.ok && !isEmptyValue(r.value)) this.viewShowed.add(key);
+      if (r.ok && Number.isInteger(r.level) && Object.hasOwn(r, 'observer_state'))
+        this.observerStates.set(`${r.level}:${key}`, r.observer_state);
+      this.countView(key, r.n, r.ok ? r.value : undefined, Boolean(r.ok));
+      const empty = !r.ok || isEmptyValue(r.value);
+      const health = this.viewHealth.get(key) ?? { path, version: Number(key.slice(key.lastIndexOf('@') + 1)), states: [] as number[], failed: 0 };
+      health.states = empty ? [...health.states, r.n].slice(-EMPTY_VIEW_STATES) : [];
+      health.failed = r.ok ? 0 : health.failed + 1;
+      health.error = r.ok ? undefined : String(r.error ?? '');
+      this.viewHealth.set(key, health);
+      // Reuse the exact view receipt on a same-state process restart. Older records without it rerun once.
+      if (typeof r.current === 'string') {
+        this.observed.add(r.key);
+        this.outputs.set(path, r.current);
+        this.observerResults.set(key, { n: r.n, ok: Boolean(r.ok && !isEmptyValue(r.value) && (r.semantic_view_usable ?? true)),
+          semantic: Boolean(r.semantic_view_usable ?? r.semantic_view), current: r.current });
+      }
     }
   }
   /** path@version → its runs, raised runs, runs whose output differed from the run before, and the last output. */
@@ -146,7 +182,7 @@ export class NativeRuntime {
    * session version and workspace version the call ran on (for the same-state cache).
    */
   private calls: Array<{ id: number; key: string; comments: string; code: string; n: number; session: number; workspace: number;
-    pure: boolean; ok: boolean; result?: string }> = [];
+    stateHash?: string; pure: boolean; ok: boolean; result?: string }> = [];
   /** Calls of this run before a restart (python_calls.jsonl): their code stays runnable with cell(k). */
   seedCalls(rows: any[]) {
     for (const r of rows) if (Number.isInteger(r?.id) && typeof r.code === 'string')
@@ -190,6 +226,8 @@ export class NativeRuntime {
     };
   }
   constructor(private host: Host) {
+    for (const row of host.taskFacts?.() ?? [])
+      if (['shown', 'delivered'].includes(row?.kind) && typeof row.key === 'string') this.taskFactsShown.add(row.key);
     if (host.pythonSession !== false) {
       this.session = new PythonSession(host.sessionDir);
       if (this.session.recovered) host.log('python_session.jsonl', { event: 'restored', version: this.session.recovered, names: this.session.names() });
@@ -221,6 +259,18 @@ export class NativeRuntime {
     const names = new Set(this.toolNames());
     this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
     return { component: this.registryComponents().find((row: Component) => row.path === path), receipt };
+  }
+  async publishObserver(name: string, body: string) {
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(name)) throw Error('observer name must be lowercase letters, digits or underscores');
+    if (!body.trim()) throw Error('observer body is required');
+    const path = `tools/${name}.py`;
+    const lines = body.trim().split(/\r?\n/);
+    const semanticView = lines[0].trim() === '# semantic_view: on';
+    const code = semanticView ? lines.slice(1).join('\n') : body.trim();
+    const source = `# program: on\n# view: on\n${semanticView ? '# semantic_view: on\n' : ''}# description: ${name.replaceAll('_', ' ')}\n${code}\n`;
+    const reflected = await this.reflectSource(path, source);
+    this.noteSave(path, reflected.receipt, reflected.component?.version);
+    return `${reflected.receipt}; runs on the current state at the next request boundary and after each new observation.`;
   }
   /** Agent-bound compute/action tools are callable by name; environment action is not inferred from source text.
    * candidates(), not active(): a save or removal inside a decision is visible immediately (as on r04), while
@@ -423,7 +473,7 @@ export class NativeRuntime {
   componentDeliveries(toolNames: string[]) {
     const names = new Set(toolNames);
     return this.registryComponents().filter(c => names.has(c.name) && c.kind === 'tool')
-      .map(c => ({ kind: c.kind, name: c.name, version: c.version, hash: c.hash }));
+      .map(c => ({ kind: c.kind, name: c.name, path: c.path, level: c.level, version: c.version, hash: c.hash }));
   }
   /** Updated at save/call events; ordinary heads never rescan the run log. */
   selfFeedbackText(path?: string) {
@@ -467,7 +517,105 @@ export class NativeRuntime {
    */
   repeatedWork(level: number) {
     return repeatedFamilies(this.levelRuns(level), this.components()).filter(f => f.recent >= 3)
-      .map(f => ({ key: f.key, gist: f.gist, calls: f.recent, covered: f.covered, samples: f.runs.slice(-2).map(r => r.code ?? '').filter(Boolean) }));
+      .map(f => ({ key: f.key, gist: f.gist, calls: f.recent, covered: f.covered, latest: f.runs.at(-1),
+        samples: f.runs.slice(-2).map(r => r.code ?? '').filter(Boolean) }));
+  }
+  private markTaskFactShown(key: string, decision: number, n: number, issueRef?: string) {
+    if (this.taskFactsShown.has(key)) return false;
+    this.taskFactsShown.add(key);
+    this.host.log('task_runtime_fact_delivery.jsonl', { kind: 'delivered', key, issue_ref: issueRef, decision, n });
+    return true;
+  }
+  /** Facts for the ordinary task view. Structural overlap is evidence for the Agent to assess, not a semantic diagnosis. */
+  taskEvidenceText(level: number, surface: 'task' | 'review' = 'task') {
+    const lines = this.repeatedWork(level).slice(0, 2).flatMap(f => {
+      const key = `${surface}:python:${level}:${kitOf(this.versionMap())}:${f.key}:${f.latest?.decision ?? 'unknown'}:${f.latest?.n ?? 'unknown'}`;
+      if (!this.markTaskFactShown(key, f.latest?.decision ?? 0, f.latest?.n ?? this.host.actionCount())) return [];
+      const sample = f.samples[0]?.replace(/\s+/g, ' ').slice(0, 180);
+      return [`- ${f.gist}: ${f.calls} recent calls share code structure${f.covered ? `; current component ${f.covered}` : ''}` +
+        `${sample ? `; example: ${sample}` : ''}`];
+    });
+    const latestN = this.host.actionCount();
+    const latestDecision = this.host.decision?.() ?? 0;
+    const currentViews = new Set(this.registryComponents().filter(c => (c as any).view && c.level === level)
+      .map(c => `${c.path}@${c.version}`));
+    for (const view of this.emptyViews().filter(item => currentViews.has(`${item.path}@${item.version}`))) {
+      // This is an active symptom, not a one-time event: keep it visible at each new task/review boundary
+      // while it changes; durable delivery keys avoid replaying the same symptom through a review pass/restart.
+      const key = `${surface}:observer:${view.path}@${view.version}:${view.states.join(',')}:${view.error ?? ''}`;
+      const issueRef = `runtime:observer:${view.path}@${view.version}`;
+      if (!this.markTaskFactShown(key, latestDecision, latestN, issueRef)) continue;
+      lines.unshift(`- Active runtime issue ${issueRef}: observer produced no usable output on consecutive states ` +
+        `${view.states.map(n => `#${n}`).join(', ')}${view.error ? `; latest error: ${view.error.slice(0, 160)}` : ''}. ` +
+        `Source: observer_runs.jsonl. This is a runtime symptom, not a diagnosis.`);
+    }
+    const taskFacts = this.host.taskFacts?.() ?? [];
+    const calls = taskFacts.filter(row => row?.kind === 'tool'
+      && ['python', 'read', 'read_self'].includes(row.tool) && Number.isInteger(row.n) && row.n >= Math.max(0, latestN - 1)
+      && Number.isInteger(row.decision) && row.decision >= Math.max(1, latestDecision - 1)
+      && typeof row.input_hash === 'string' && typeof row.state_hash === 'string' && typeof row.tool_call_id === 'string');
+    const groups = new Map<string, any[]>();
+    for (const row of calls) {
+      const key = `${row.decision}:${row.state_hash}:${row.tool}:${row.input_hash}`;
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    }
+    for (const [key, rows] of groups) {
+      const issueRef = `runtime:repeat:${createHash('sha256').update(key).digest('hex').slice(0, 12)}`;
+      if (rows.length < 2 || !this.markTaskFactShown(`${surface}:${key}`, rows[0].decision, rows[0].n, issueRef)) continue;
+      const outputHashes = rows.map(row => row.output_hash).filter((value): value is string => typeof value === 'string');
+      const sameResults = outputHashes.length === rows.length && new Set(outputHashes).size === 1;
+      const refs = [...new Set(rows.map(row => row.result_ref).filter((ref): ref is string => typeof ref === 'string'))];
+      lines.push(`- ${issueRef}: exact ${rows[0].tool} input repeated ${rows.length} times from the same visible state ` +
+        `(decision ${rows[0].decision}, action count ${rows[0].n}, state ${rows[0].state_hash.slice(0, 12)}; ` +
+        `calls ${rows.map(row => row.tool_call_id).join(', ')}); ` +
+        `${sameResults ? 'recorded outputs match' : 'recorded outputs differ or are unavailable'}` +
+        `${refs.length ? `; result refs: ${refs.join(', ')}` : ''}. This is a repeat signal, not proof the calls were unnecessary.`);
+      if (rows[0].tool === 'read_self' && sameResults && typeof rows[0].output === 'string' && rows[0].output.length <= 500)
+        lines.push(`- Answer already obtained in this decision: ${rows[0].output}`);
+    }
+    const componentEvents = taskFacts.filter(row => row?.surface === surface
+      && ['component_delivery', 'component_execution'].includes(row.kind));
+    const components = new Map<string, any>();
+    for (const row of componentEvents) for (const component of row.components ?? [])
+      if (component.kind === 'tool' && component.level === level)
+        components.set(`${component.path}@${component.version}`, component);
+    for (const component of components.values()) {
+      const componentKey = `${component.path}@${component.version}`;
+      const lastExecution = componentEvents.findLastIndex(row => row.kind === 'component_execution'
+        && row.path === component.path && row.version === component.version);
+      const firstExposure = componentEvents.findIndex(row => row.kind === 'component_delivery'
+        && (row.components ?? []).some((item: any) => item.path === component.path && item.version === component.version && item.level === level));
+      const exposures = componentEvents.slice(firstExposure).flatMap(row => row.kind === 'component_delivery'
+        ? (row.components ?? []).filter((item: any) => item.path === component.path && item.version === component.version
+          && item.level === level).map(() => row) : []);
+      const executedAfterFirstExposure = firstExposure >= 0 && componentEvents.slice(firstExposure + 1).some(row =>
+        row.kind === 'component_execution' && row.path === component.path && row.version === component.version);
+      const decisions = [...new Set(exposures.map(row => row.decision).filter(Number.isInteger))];
+      const first = exposures[0], latest = exposures.at(-1);
+      if (!executedAfterFirstExposure && decisions.length >= 2 && first && latest && latest.n > first.n) {
+        // Keep an unresolved exposure gap visible across new decisions. A matching execution above closes it.
+        const issueKey = `${surface}:component:${componentKey}:${decisions.join(',')}:${first.n}:${latest.n}`;
+        const issueRef = `runtime:component:${createHash('sha256').update(componentKey).digest('hex').slice(0, 12)}`;
+        if (!this.markTaskFactShown(issueKey, latest.decision ?? latestDecision, latest.n, issueRef)) continue;
+        lines.push(`- Active issue ${issueRef} for runtime:component:${component.path}@${component.version}: tool ${component.name} appeared in the active tool set at ${decisions.length} ${surface} requests ` +
+          `(decisions ${decisions.join(', ')}, action count ${first.n} → ${latest.n}); no execution record for this version followed its first exposure. ` +
+          `Source: self_harness_task_facts.jsonl. Exposure does not establish that the component was relevant or should have been called.`);
+        continue;
+      }
+      if (lastExecution >= 0) {
+        const execution = componentEvents[lastExecution];
+        const actionsSince = Math.max(0, latestN - Number(execution.n ?? latestN));
+        const key = `${surface}:component-outcome:${componentKey}:${execution.decision ?? 'unknown'}:${execution.n ?? 'unknown'}:${latestN}`;
+        if (this.markTaskFactShown(key, execution.decision ?? latestDecision, latestN))
+          lines.push(`- Component-use feedback runtime:component:${component.path}@${component.version}: ` +
+            `execution recorded ${execution.outcome ?? 'with unknown outcome'} at decision ${execution.decision ?? 'unknown'}, ` +
+            `action count #${execution.n ?? 'unknown'}; ${actionsSince} environment action(s) have followed. ` +
+            `Compare the action receipts in the current observation to judge whether this execution helped. ` +
+            `Source: self_harness_task_facts.jsonl; this is temporal evidence, not causal attribution.`);
+      }
+    }
+    if (!lines.length) return '';
+    return `## RUNTIME EVIDENCE\nRecent mechanically observed facts; exact repeats do not by themselves establish that calls were unnecessary. For an active issue, diagnose and verify a response or record why no change is useful in the existing task memory/strategy. The host records symptoms; diagnosis and disposition stay with you. Exact call records: self_harness_task_facts.jsonl.\n${lines.slice(0, 4).join('\n')}`;
   }
   repetitionText(level: number) { return repetitionText(this.levelRuns(level), this.components()); }
   private snapshot() {
@@ -739,8 +887,10 @@ export class NativeRuntime {
    * Foreground Python uses the parent's namespace and action boundary. With `save`, the exact submitted source is
    * published before execution; this is separate from invoking the saved entry point. Session calls run one at a time.
    */
-  async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
-    return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
+  async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session,
+    recordParent = !readonly) {
+    return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session, recordParent))
+      : this.runPython(code, signal, readonly, save, undefined, recordParent);
   }
   noteReuseRead(path: string, version?: number) {
     const component = this.registryComponents().find(c => c.path === path && (version === undefined || c.version === version) && c.kind === 'tool'
@@ -797,22 +947,26 @@ export class NativeRuntime {
     const source = await this.toolSource(undefined, ref, signal);
     return { ...rest, source: `# program: on\n# description: ${description.trim()}\n${source}` };
   }
-  private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
+  private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined,
+    session: PythonSession | undefined, recordParent: boolean) {
     const savedExpectation = save !== undefined && !readonly ? splitHarnessExpectation(code) : undefined;
     if (savedExpectation) code = savedExpectation.source;
     const definitionsBefore = new Map(session?.payload().defs ?? []);
     // Work memory: the parent's calls have an address and a repeat names the call it repeats. A repeat on an unchanged
     // state (no action, no session change, no workspace write since) gets that call's result instead of a second run.
-    const parent = !readonly && session === this.session && this.host.workMemory !== false;
+    const tracked = recordParent;
+    const cacheable = tracked && this.host.workMemory !== false;
+    const parent = Boolean(session) && cacheable && session === this.session;
     const key = codeKey(code), comments = commentLines(code).join('\n');
+    const stateHash = createHash('sha256').update(JSON.stringify(this.host.state())).digest('hex');
     // A repeat names the first call with this code; the same-state check compares with the latest one.
-    const first = parent ? this.calls.find(c => c.key === key) : undefined;
-    const latest = parent ? this.calls.filter(c => c.key === key).at(-1) : undefined;
-    const id = parent ? Math.max(0, ...this.calls.map(c => c.id)) + 1 : 0;
+    const first = cacheable ? this.calls.find(c => c.key === key) : undefined;
+    const latest = cacheable ? this.calls.filter(c => c.key === key).at(-1) : undefined;
+    const id = tracked ? Math.max(0, ...this.calls.map(c => c.id)) + 1 : 0;
     if (first && latest && save === undefined && latest.pure && latest.ok && latest.result !== undefined && latest.n === this.host.actionCount()
-      && latest.session === (session?.version ?? 0) && latest.workspace === this.host.workspace.version) {
+      && latest.session === (session?.version ?? 0) && latest.workspace === this.host.workspace.version && latest.stateHash === stateHash) {
       this.calls.push({ ...latest, id, comments, code });
-      this.host.log('python_calls.jsonl', { id, same: first.id, cached: true, n: latest.n, decision: this.decision(), ok: true, code });
+      this.host.log('python_calls.jsonl', { id, ephemeral: !session, same: first.id, cached: true, n: latest.n, decision: this.decision(), ok: true, code });
       return text(`[P${id} = P${first.id}: same code on the same state, not run again]\n${this.host.receipt?.(latest.result, 'python') ?? latest.result}`);
     }
     // A new cell that retypes whole statements of an earlier one says which lines (cell(k, a, b) runs them).
@@ -866,7 +1020,7 @@ export class NativeRuntime {
     if (live && outcome?.event === 'rolled_back') { this.kernel!.kill('its checkpoint did not load'); session!.kernelEnded(); }
     // A conforming function definition is the Agent's publication intent. Export and bind it in the same
     // sandbox call; ordinary scratch cells and session values remain transient execution state.
-    if (this.host.reflectedSelf && session === this.session && result.ok && outcome?.committed && !readonly && !save) {
+    if (session && this.host.reflectedSelf && session === this.session && result.ok && outcome?.committed && !readonly && !save) {
       for (const [name, source] of session!.payload().defs) {
         if (source === definitionsBefore.get(name) || !/^def\s+\w+\s*\(\s*args\s*,\s*env\s*\)/m.test(source)) continue;
         try {
@@ -916,7 +1070,7 @@ export class NativeRuntime {
     const shape = codeShape(code);
     // A consult's read-only python is not the parent's own work.
     const decision = this.decision();
-    if (!readonly) this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), ok: result.ok,
+    if (tracked) this.pythonRuns.push({ level: this.host.level(), ...shape, kit, decision, n: this.host.actionCount(), ok: result.ok,
       used: result.session?.uses ?? [], code: code.slice(0, 2000), result: shown(result).slice(0, 1000) } as PythonRun & { result: string });
     this.host.log('component_runs.jsonl', { kind: 'python', n: this.host.actionCount(), versions: snap.versions, ok: result.ok, ms: Date.now() - started,
       ...(readonly ? { readonly } : { level: this.host.level(), decision, ...shape, kit, code_excerpt: code.slice(0, 1200),
@@ -941,13 +1095,10 @@ export class NativeRuntime {
     const windowKey = `${this.host.level()}:${windowAtStart}`;
     const windowCalls = this.pythonRuns.filter(r => r.level === this.host.level() && r.n === windowAtStart).length;
     let windowCheck = '';
-    if (this.host.workMemory !== false && !readonly && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
+    if (this.host.workMemory !== false && tracked && !result.acted?.lines.length && this.host.actionCount() === windowAtStart &&
         windowCalls >= 3 && !this.windowCheckHinted.has(windowKey)) {
       this.windowCheckHinted.add(windowKey);
-      windowCheck = `WINDOW CHECK: ${windowCalls} Python calls since action #${windowAtStart}. Briefly compare what they established and what remains uncertain. ` +
-        (this.host.reflectedSelf
-          ? 'If the next test is clear, act without deeper review. A documented named function is mounted automatically; call the mounted tool instead of rebuilding it.'
-          : 'If the next test is clear, act without deeper review. Investigate a real contradiction, blocker or tool failure. Save checked reusable logic, then call the saved version instead of rebuilding it.');
+      windowCheck = `WINDOW CHECK: ${windowCalls} Python calls since action #${windowAtStart}. Name the remaining uncertainty; if the next test is clear, act. Investigate a real contradiction, blocker or tool failure.`;
       this.host.log('component_runs.jsonl', { kind: 'window_check', level: this.host.level(), n: windowAtStart, decision, calls: windowCalls });
     }
     // Save receipts first: a long output is clipped to its head, and the receipt says which version runs next.
@@ -972,14 +1123,14 @@ export class NativeRuntime {
       const feedback = this.selfFeedbackText(`tools/${save}.py`);
       if (feedback) out.content.push({ type: 'text', text: `${feedback} Next request: call ${save}(args={}) to run the saved version; supply any inputs in args.` });
     }
-    if (parent) {
+    if (tracked) {
       const acted = Boolean(result.acted?.lines.length);
       // Only a computation that acted, wrote, remembered or saved nothing can be answered again from its result.
       const pure = !acted && !result.ops?.length && save === undefined && !/\benv\.(act|remember|restore)\s*\(/.test(code);
       // What the code printed and returned, without this call's notes, answers a repeat on the same state.
-      this.calls.push({ id, key, comments, code, n: this.host.actionCount(), session: session?.version ?? 0, workspace: this.host.workspace.version,
+      this.calls.push({ id, key, comments, code, n: this.host.actionCount(), session: session?.version ?? 0, workspace: this.host.workspace.version, stateHash,
         pure, ok: result.ok, result: shown(result) });
-      this.host.log('python_calls.jsonl', { id, ...(earlier ? { same: earlier.id } : {}), ...(Object.keys(cells).length ? { cells: Object.keys(cells).map(Number) } : {}),
+      this.host.log('python_calls.jsonl', { id, ephemeral: !session, ...(cacheable && earlier ? { same: earlier.id } : {}), ...(Object.keys(cells).length ? { cells: Object.keys(cells).map(Number) } : {}),
         ...(blocks.length ? { blocks } : {}), n: this.host.actionCount(), decision, ok: result.ok, acted, code, result: shown(result).slice(0, 400) });
     }
     return out;
@@ -1046,37 +1197,70 @@ export class NativeRuntime {
     const snap = this.snapshot();
     for (const c of due) {
       const key = `${c.path}@${c.version}@${n}`; this.observed.add(key);
+      const stateKey = `${c.level}:${c.path}@${c.version}`;
+      const stateful = /^\s*def process\s*\(/m.test(c.source);
       const work = async () => {
+        const priorState = stateful ? this.observerStates.get(stateKey) ?? null : undefined;
         const started = Date.now(); let result: NativeResult;
-        try { result = await this.execute({ ...snap, mode: 'call', path: c.path, args: { args: {} } }, undefined, this.viewPool); }
+        try { result = await this.execute({ ...snap, mode: 'call', path: c.path,
+          args: { args: stateful ? { prior_state: priorState } : {} } }, undefined, this.viewPool); }
         catch (error) { result = { ok: false, error: String(error) }; }
+        let displayed = result;
+        let observerState: unknown;
+        if (stateful && result.ok) {
+          const raw = result.value as any;
+          const envelope = raw && typeof raw === 'object' && raw.has_value ? raw.value : raw;
+          if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)
+              || !Object.hasOwn(envelope, 'facts') || !Object.hasOwn(envelope, 'state')) {
+            result = { ok: false, error: 'process(observation, prior_state) must return {facts, state}' };
+            displayed = result;
+          } else {
+            const facts = JSON.stringify(envelope.facts);
+            const nextState = JSON.stringify(envelope.state);
+            if (facts === undefined || Buffer.byteLength(facts) > 4096 || nextState === undefined || Buffer.byteLength(nextState) > 8192) {
+              result = { ok: false, error: 'observer facts must be JSON up to 4096 bytes and state up to 8192 bytes' };
+              displayed = result;
+            } else {
+              observerState = envelope.state;
+              displayed = { ...result, value: { stdout: '', value: envelope.facts, has_value: true } };
+            }
+          }
+        }
         if (this.host.artifacts) result = this.host.artifacts(result, c, n);
+        if (!result.ok) { observerState = undefined; displayed = result; }
+        else if (observerState !== undefined) this.observerStates.set(stateKey, observerState);
         const liveLabel = this.componentLabel(c.path);
-        this.countView(`${c.path}@${c.version}`, n, result.ok ? result.value : undefined, result.ok);
+        this.countView(`${c.path}@${c.version}`, n, result.ok ? displayed.value : undefined, result.ok);
         // An output that has not changed is still shown (a decision sees only its own head), and says so. One that has
         // been the same on every state since the view was saved is a snapshot, not a view of the state (in the su15 runs on
         // record: saved scripts reading fixed frames, such as history.grid(28)); after CONSTANT_VIEW_RUNS states its line
         // keeps only its head, so it does not crowd out the views that change (loop-bound artifacts plan, A4).
         const counts = this.viewCounts.get(`${c.path}@${c.version}`);
         const since = counts?.changedAt;
-        const output = shown(result);
+        const output = shown(displayed);
         const constant = result.ok && counts !== undefined && counts.changes === 0 && counts.runs >= CONSTANT_VIEW_RUNS;
         const body = `${c.name} v${c.version}${liveLabel.startsWith(`${c.name} v${c.version}`) ? liveLabel.slice(`${c.name} v${c.version}`.length) : ''} state #${n}` +
           (constant ? ` (the same output on all ${counts.runs} states since #${since}: a snapshot, not a view of the state; "# view: off" ` +
             `makes it a tool you call): ${output.length > 160 ? `${output.slice(0, 159)}…` : output}`
             : `${result.ok && since !== undefined && since < n ? ` (output unchanged since #${since})` : ''}: ${output}`);
-        this.outputs.set(c.path, this.host.receipt?.(body) ?? body);
+        const current = (this.host.receipt?.(body) ?? body).slice(0, 900);
+        this.outputs.set(c.path, current);
         // A view that shows nothing is a saved component the agent cannot use (tc-01: a refined view returned None on
         // every state and nobody noticed); consecutive empty states are counted for the refinement trigger.
-        const empty = !result.ok || isEmptyValue(result.value);
+        const empty = !result.ok || isEmptyValue(displayed.value);
         const streak = this.viewHealth.get(`${c.path}@${c.version}`) ?? { path: c.path, version: c.version, states: [] as number[], failed: 0 };
         streak.states = empty ? [...streak.states, n] : [];
         streak.failed = result.ok ? 0 : streak.failed + 1;
         streak.error = result.ok ? undefined : String(result.error ?? '');
         this.viewHealth.set(`${c.path}@${c.version}`, streak);
         if (!empty) this.viewShowed.add(`${c.path}@${c.version}`);
-        this.host.log('observer_runs.jsonl', { key, n, name: c.name, version: c.version, versions: snap.versions,
-          ok: result.ok, value: result.ok ? result.value : undefined, error: result.ok ? undefined : result.error, ms: Date.now() - started });
+        const semanticView = Boolean((c as any).semanticView);
+        const semanticUsable = semanticView && result.ok && !empty && body.length <= 900;
+        this.observerResults.set(`${c.path}@${c.version}`, { n, ok: semanticUsable, semantic: semanticView, current });
+        this.host.log('observer_runs.jsonl', { key, n, level: c.level, name: c.name, version: c.version, versions: snap.versions, current,
+          ok: result.ok, semantic_view: semanticView, semantic_view_usable: semanticUsable, value: result.ok ? result.value : undefined,
+          ...(observerState === undefined ? {} : { observer_state: observerState }),
+          error: result.ok ? undefined : result.error, ms: Date.now() - started });
       };
       this.pending = this.pending.then(work);
     }
@@ -1093,6 +1277,23 @@ export class NativeRuntime {
     const stale = views.filter(c => c.level !== level).map(c =>
       `${c.path} v${c.version}: written on level ${c.level}; unconfirmed on level ${level}`);
     return [...shown, ...stale].join('\n').slice(0, 2400);
+  }
+  /** An Agent-authored semantic view may replace raw grids only after usable facts for this exact state. */
+  async semanticObserverText() {
+    let timer: ReturnType<typeof setTimeout>;
+    await Promise.race([this.pending, new Promise<void>(done => { timer = setTimeout(done, 5000); })]);
+    clearTimeout(timer!);
+    const level = this.host.level(), n = this.host.actionCount();
+    const components = this.registryComponents().filter(c => (c as any).semanticView && (c as any).view && c.level === level);
+    if (!components.length) return '';
+    const current: string[] = [];
+    for (const c of components) {
+      const result = this.observerResults.get(`${c.path}@${c.version}`);
+      if (result?.semantic && result.ok && result.n === n) current.push(result.current);
+    }
+    if (current.length !== components.length) return '';
+    const text = current.join('\n');
+    return text.length <= 2400 ? text : '';
   }
   /** One generic, read-only Agent-authored callback at a runtime boundary. Its result is evidence, not authority. */
   private loopMounts(phase: 'decision' | 'action' | 'feedback', level = this.host.level()) {

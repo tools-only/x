@@ -32,6 +32,14 @@ export function projectNativeHistory(messages: any[], replayReasoning = false): 
 /** The size cap applied to a short-field block that had to be lifted out of a reasoning block. */
 export const CARRY_CHARS = 700;
 
+/** Keep both the context of a long result and its terminal answer in compact receipts. */
+export function boundedResultPreview(text: string, limit: number): string {
+ const value = flat(text);
+ if (value.length <= limit) return value;
+ const edge = Math.max(1, Math.floor((limit - 32) / 2));
+ return `${value.slice(0, edge)}… <${value.length - edge * 2} chars omitted> …${value.slice(-edge)}`;
+}
+
 /**
  * The model's own short-field block as it wrote it (Continual Harness's carry), or undefined. Nothing is rewritten or
  * summarised: the marked region is returned verbatim, clipped only when it was lifted out of a reasoning block.
@@ -81,13 +89,56 @@ export function carryFields(messages: any[], limit = CARRY_CHARS): any[] {
   });
 }
 
+/** Replace completed tool batches with short, traceable receipts for the next provider request. */
+export function isolateCompletedToolBatches(messages: any[], archive: (call: any, result: any) => string, keepBatches = 2): any[] {
+ const results = new Map(messages.filter(m => m?.role === 'toolResult').map(m => [String(m.toolCallId), m]));
+ const batches = messages.filter(m => m?.role === 'assistant' && Array.isArray(m.content)
+  && m.content.some((b: any) => b?.type === 'toolCall')
+  && m.content.filter((b: any) => b?.type === 'toolCall').every((b: any) => results.has(String(b.id))));
+ const compact = new Set(batches.slice(0, Math.max(0, batches.length - keepBatches)));
+ if (!compact.size) return messages;
+ const hiddenCalls = new Set<string>();
+ const replacements = new Map<any, any>();
+ const shortAnswers = new Map<string, string>();
+ for (const batch of compact) {
+  const calls = batch.content.filter((b: any) => b?.type === 'toolCall');
+  const retained = batch.content.filter((b: any) => b?.type !== 'toolCall' && b?.type !== 'thinking');
+  const receipts = calls.map((call: any) => {
+   const result = results.get(String(call.id));
+   hiddenCalls.add(String(call.id));
+   const ref = archive(call, result);
+   const output = flat(textOf(result));
+   // A short result is the answer for the next request, not merely a locator for another read.
+   const answerLimit = call.name === 'read_self' && call.arguments?.section === 'arc_history' ? 900 : 700;
+   const shortKey = output.length <= answerLimit ? JSON.stringify([call.name, call.arguments, output]) : undefined;
+   const prior = shortKey ? shortAnswers.get(shortKey) : undefined;
+   if (shortKey && !prior) shortAnswers.set(shortKey, ref);
+   const preview = prior ? `Same answer as ${prior}.` : boundedResultPreview(output, output.length <= answerLimit ? answerLimit : 240);
+   return `[${call.name ?? 'tool'} call archived: ${ref}]${preview ? ` ${preview}` : ''}`;
+  });
+  const text = [...retained.filter((b: any) => b?.type === 'text').map((b: any) => String(b.text ?? '')), ...receipts].filter(Boolean).join('\n');
+  replacements.set(batch, { ...batch, content: text ? [{ type: 'text', text }] : [] });
+ }
+ return messages.flatMap(message => {
+  if (compact.has(message)) {
+   const replacement = replacements.get(message);
+   return replacement.content.length ? [replacement] : [];
+  }
+  if (message?.role === 'toolResult' && hiddenCalls.has(String(message.toolCallId))) return [];
+  return [message];
+ });
+}
+
 /** Retire old raw results without changing the durable Pi transcript. Explicit reads still return actual bodies. */
 export function projectNativeDecision(messages: any[], options: {
  reasoning?: 'all' | 'recent' | 'fields' | 'none'; fullResults?: number; carryChars?: number;
  archive?: (message: any, text: string) => string;
+ isolateTools?: boolean; archiveTool?: (call: any, result: any) => string; recentToolBatches?: number;
 } = {}): any[] {
- const paired = options.reasoning === 'fields' ? carryFields(projectNativeHistory(messages, true), options.carryChars)
+ const base = options.reasoning === 'fields' ? carryFields(projectNativeHistory(messages, true), options.carryChars)
   : projectNativeHistory(messages, options.reasoning !== 'none');
+ const paired = options.isolateTools && options.archiveTool
+  ? isolateCompletedToolBatches(base, options.archiveTool, options.recentToolBatches ?? 2) : base;
  const latestThinking = paired.findLastIndex(m => m.role === 'assistant' && m.content?.some((b: any) => b.type === 'thinking'));
  const results = paired.filter(m => m.role === 'toolResult');
  const recent = new Set(results.slice(-(options.fullResults ?? 2)).map(m => m.toolCallId));
