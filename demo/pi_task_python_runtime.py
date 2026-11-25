@@ -50,15 +50,14 @@ except BaseException as error:
 '''
 
 
-def identity(module_path: Path | None = None) -> dict:
-    # Field names are kept for saved-tool compatibility; "native" marks the non-WASM runtime.
-    return {"python_version": platform.python_version(), "wasmtime_version": "native",
-            "module_sha256": "native",
+def identity() -> dict:
+    # A tool is pinned to the interpreter version plus the runner source it was validated against.
+    return {"python_version": platform.python_version(),
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
 
 
-def execute(module_path: Path | None, request: dict) -> dict:
-    runtime = identity(module_path)
+def execute(request: dict) -> dict:
+    runtime = identity()
     if request.get("runtime") != runtime:
         raise RuntimeError("Saved Python runtime changed; publish a new tool version")
     limits = request["limits"]
@@ -103,14 +102,13 @@ def execute(module_path: Path | None, request: dict) -> dict:
 
 def main() -> None:
     try:
-        module_path = Path(sys.argv[2]) if len(sys.argv) > 2 else None
         if sys.argv[1] == "--check":
-            print(json.dumps({"ok": True, "runtime": identity(module_path)}))
+            print(json.dumps({"ok": True, "runtime": identity()}))
         elif sys.argv[1] == "--run":
             # The request carries the guest source plus its input (input_bytes up to 512K, binaries as base64),
             # so the transport cap sits above the guest's own input ceiling, not below it.
             request = json.loads(sys.stdin.buffer.read(8 * 1024 * 1024 + 1))
-            print(json.dumps(execute(module_path, request), ensure_ascii=True, allow_nan=False))
+            print(json.dumps(execute(request), ensure_ascii=True, allow_nan=False))
         else:
             raise ValueError("Unknown trusted runner mode")
     except Exception as error:

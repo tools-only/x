@@ -7,7 +7,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { assertTaskPythonRuntimeAvailable, taskPythonModulePath, TaskPythonError, type ValidatedTaskPythonProgram } from "./pi_task_python.ts";
+import { assertTaskPythonRuntimeAvailable, TaskPythonError, type ValidatedTaskPythonProgram } from "./pi_task_python.ts";
 
 const host = fileURLToPath(new URL("./pi_task_python_kernel.py", import.meta.url));
 /** The kernel's memory lives as long as the kernel, so it gets the runtime's ceiling rather than one call's default. */
@@ -40,7 +40,7 @@ export class PythonKernel {
   private start(): Promise<{ compile_ms?: number }> {
     if (this.ready) return this.ready;
     assertTaskPythonRuntimeAvailable(this.program.runtime);
-    const child = spawn("python", ["-I", host, taskPythonModulePath()], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false });
+    const child = spawn("python", ["-I", host], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false });
     this.child = child;
     this.stopping = undefined;
     const ready = new Promise<{ compile_ms?: number }>((resolve, reject) => {

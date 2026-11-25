@@ -1,4 +1,4 @@
-"""Real persistent WASI host transport; no provider or ARC game calls."""
+"""Real persistent native host transport; no provider or ARC game calls."""
 import importlib.util
 import json
 from pathlib import Path
@@ -11,7 +11,6 @@ import pytest
 PROJECT = Path(__file__).resolve().parents[1]
 SERVER = PROJECT / "demo/pi_task_python_server.py"
 RUNNER = PROJECT / "demo/pi_task_python_runtime.py"
-MODULE = PROJECT / "node_modules/@antonz/python-wasi/dist/python.wasm"
 
 
 @pytest.mark.parametrize("legacy_stdio", [False, True], ids=["default", "gbk"])
@@ -19,7 +18,7 @@ def test_utf8_requests_survive_legacy_stdio_and_guest_failure(legacy_stdio):
     spec = importlib.util.spec_from_file_location("task_python_runner", RUNNER)
     runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runner)
-    runtime = runner.identity(MODULE)
+    runtime = runner.identity()
     limits = {
         "input_bytes": 128 * 1024, "output_bytes": 64 * 1024,
         "memory_bytes": 128 * 1024 * 1024, "fuel": 1_000_000_000,
@@ -37,7 +36,7 @@ def test_utf8_requests_survive_legacy_stdio_and_guest_failure(legacy_stdio):
                 "source": "result = {(1, 2): 3}", "input": {},
                 "limits": limits, "runtime": runtime,
             }})
-    command = [sys.executable, "-I", str(SERVER), str(MODULE)]
+    command = [sys.executable, "-I", str(SERVER)]
     if legacy_stdio:
         # -I ignores PYTHONIOENCODING: force a legacy text decoder directly.
         bootstrap = (
@@ -45,7 +44,7 @@ def test_utf8_requests_survive_legacy_stdio_and_guest_failure(legacy_stdio):
             "sys.stdin.reconfigure(encoding='gbk',errors='surrogateescape'); "
             "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')"
         )
-        command = [sys.executable, "-I", "-c", bootstrap, str(SERVER), str(MODULE)]
+        command = [sys.executable, "-I", "-c", bootstrap, str(SERVER)]
     payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in requests)
     completed = subprocess.run(command, input=payload.encode("utf-8"),
                                capture_output=True, timeout=60)

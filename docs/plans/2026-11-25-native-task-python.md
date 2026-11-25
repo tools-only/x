@@ -8,12 +8,12 @@
 - 窄命题：task Python 的三条执行路径（one-shot runner、board pool、live kernel）改为原生 CPython 后，协议、事件、返回包与超时语义不变，agent 代码即可使用宿主环境的全部 site-packages（含 numpy）。
 - 减少的负担：解释器 sha256 pin / wasmtime 版本 pin 不再阻塞库演化；无需维护 wasm 重打包流程。
 - 推翻条件：若未来需要运行不可信第三方代码，须重新评估沙箱（WASI/Pyodide/OS 级），本记录不授权该场景。
-- 非目标：不改 Pi 边界的 JSON 校验；不改 prelude/kernel 协议；不重命名 runtime 身份字段。
+- 非目标：不改 Pi 边界的 JSON 校验；不改 prelude/kernel 协议。
 
 ## 设计与成本
 
 - 选择与取舍：威胁模型是"自己的 agent 写错代码"，非对抗代码。保留硬超时、输出字节上限、协议 stdout 隔离（kernel 将 fd1 指向 devnull，协议走 dup 出的私有句柄）；放弃 fuel/内存硬限制/解释器 pin/零宿主文件系统。guest 仍用 `-I`（忽略 PYTHON* 环境变量与 user-site），但不再 `-S`，site-packages 可用。
-- 运行时身份：字段名保留（saved-tool 兼容），`python_version` 改为探测宿主 `python`，`wasmtime_version`/`module_sha256` 置 "native"。旧版保存的工具将按既有 version_conflict 语义要求重新发布。
+- 运行时身份（2026-11-25 追加）：按 CPython 语义重做为 `{python_version, runner_sha256}`，删除 `wasmtime_version`/`module_sha256` 占位字段与 `taskPythonModulePath` 模块路径占位参数（spawn 不再传 "native"）。身份在各消费方均为不透明比较，形状变更安全；run root 按游戏划分（`runs/pi-arc-thin-{game}-{variant}`），新游戏从零开始，兼容包袱仅限续跑旧 run root，按既有 version_conflict 语义要求重新发布。
 - 权限/版本/环境边界：Pi 边界 JSON/limits 校验、timeout_ms、output_bytes 全部保留并实际生效；fuel/memory 字段降级为兼容性参数（注释已标明）。
 - 已知毛边：one-shot 超时时 runner 被 TS 杀掉后，其 guest 孙进程在 Windows 上可能短暂残留至自身 timeout 到期；接受。
 

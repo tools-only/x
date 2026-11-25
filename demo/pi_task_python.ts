@@ -5,7 +5,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const TASK_PYTHON_FORMAT = "task-python-v1" as const;
-export const TASK_PYTHON_MODULE_SHA256 = "native";
 export const TASK_PYTHON_DEFAULT_LIMITS = Object.freeze({
 	input_bytes: 128 * 1024, output_bytes: 64 * 1024, json_depth: 32,
 	allocation_bytes: 8 * 1024 * 1024, memory_bytes: 128 * 1024 * 1024,
@@ -20,7 +19,7 @@ const HARD_LIMITS = Object.freeze({
 	fuel: 4_000_000_000, timeout_ms: 30_000,
 });
 export type TaskPythonLimits = { -readonly [K in keyof typeof TASK_PYTHON_DEFAULT_LIMITS]: number };
-export type TaskPythonRuntime = { python_version: string; wasmtime_version: string; module_sha256: string; runner_sha256: string };
+export type TaskPythonRuntime = { python_version: string; runner_sha256: string };
 export type ValidatedTaskPythonProgram = {
 	format: typeof TASK_PYTHON_FORMAT; source: string; limits: Partial<TaskPythonLimits>;
 	effective_limits: TaskPythonLimits; runtime: TaskPythonRuntime;
@@ -46,9 +45,8 @@ function detectHostPythonVersion(): string {
 	return hostPythonVersion = version;
 }
 export function taskPythonRuntimeIdentity(): TaskPythonRuntime {
-	// Field names are kept for saved-tool compatibility; "native" marks the non-WASM runtime.
-	return { python_version: detectHostPythonVersion(), wasmtime_version: "native",
-		module_sha256: TASK_PYTHON_MODULE_SHA256, runner_sha256: hash(readFileSync(runner)) };
+	// A tool is pinned to the interpreter version plus the runner source it was validated against.
+	return { python_version: detectHostPythonVersion(), runner_sha256: hash(readFileSync(runner)) };
 }
 export function taskPythonLimits(request: unknown = {}, ceiling?: Partial<Record<string, number>>): TaskPythonLimits {
 	if (!request || typeof request !== "object" || Array.isArray(request))
@@ -69,16 +67,13 @@ export function taskPythonLimits(request: unknown = {}, ceiling?: Partial<Record
 		}
 	return result;
 }
-/** The native hosts take no interpreter module; the placeholder keeps spawn argument shapes stable. */
-function modulePath(): string { return "native"; }
 let checkedRuntime: string | undefined;
 export function assertTaskPythonRuntimeAvailable(runtime: TaskPythonRuntime): void {
 	if (JSON.stringify(runtime) !== JSON.stringify(taskPythonRuntimeIdentity()))
 		throw new TaskPythonError("version_conflict", "This Python tool's pinned runtime has changed; publish a new version");
-	const path = modulePath();
-	const key = JSON.stringify(runtime) + path;
+	const key = JSON.stringify(runtime);
 	if (checkedRuntime === key) return;
-	const child = spawnSync("python", ["-I", runner, "--check", path], {
+	const child = spawnSync("python", ["-I", runner, "--check"], {
 		encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024, windowsHide: true, shell: false,
 	});
 	let response: any;
@@ -108,7 +103,7 @@ export async function evaluateTaskPython(program: ValidatedTaskPythonProgram, in
 	if (Buffer.byteLength(inputJson) > limits.input_bytes)
 		throw new TaskPythonError("invalid_input", "Input exceeds input_bytes", "$input");
 	const response = await new Promise<any>((resolve, reject) => {
-		const child = spawn("python", ["-I", runner, "--run", modulePath()], {
+		const child = spawn("python", ["-I", runner, "--run"], {
 			stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false,
 		});
 		const chunks: Buffer[] = [];
@@ -156,5 +151,3 @@ export function taskPythonResult(program: ValidatedTaskPythonProgram, response: 
 	return { value: response.value, output_json: output, consumed: response.consumed,
 		effective_limits: limits, runtime: response.runtime };
 }
-
-export function taskPythonModulePath(): string { return modulePath(); }

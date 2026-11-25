@@ -26,7 +26,7 @@ RUNTIME = _load_runtime()
 
 def main() -> None:
     try:
-        print(json.dumps({"id": None, "ready": True, "runtime": RUNTIME.identity(None)}), flush=True)
+        print(json.dumps({"id": None, "ready": True, "runtime": RUNTIME.identity()}), flush=True)
     except Exception as error:
         print(json.dumps({"id": None, "ready": False, "error": str(error)[:1200]}), flush=True)
         sys.exit(1)
@@ -40,7 +40,7 @@ def main() -> None:
         try:
             message = json.loads(line)
             request_id = message.get("id")
-            result = RUNTIME.execute(None, message["request"])
+            result = RUNTIME.execute(message["request"])
         except Exception as error:
             result = {"ok": False, "error": str(error)[:1200]}
         print(json.dumps({"id": request_id, "result": result}, ensure_ascii=True, allow_nan=False), flush=True)

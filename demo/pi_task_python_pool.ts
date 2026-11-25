@@ -3,7 +3,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { assertTaskPythonRuntimeAvailable, taskPythonModulePath, taskPythonResult, TaskPythonError,
+import { assertTaskPythonRuntimeAvailable, taskPythonResult, TaskPythonError,
 	type ValidatedTaskPythonProgram } from "./pi_task_python.ts";
 
 const server = fileURLToPath(new URL("./pi_task_python_server.py", import.meta.url));
@@ -19,7 +19,7 @@ export class TaskPythonPool {
 
 	private start(): Promise<void> {
 		if (this.ready) return this.ready;
-		const child = spawn("python", ["-I", server, taskPythonModulePath()], {
+		const child = spawn("python", ["-I", server], {
 			stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false,
 		});
 		this.child = child;

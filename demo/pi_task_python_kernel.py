@@ -41,7 +41,7 @@ RUNTIME = _load_runtime()
 
 class Kernel:
     def __init__(self, request: dict):
-        runtime = RUNTIME.identity(None)
+        runtime = RUNTIME.identity()
         if request.get("runtime") != runtime:
             raise RuntimeError("Saved Python runtime changed; publish a new tool version")
         self.limits = request["limits"]
