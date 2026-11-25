@@ -1,5 +1,5 @@
-/** Persistent sandbox host for repeated board evaluations of saved task Python.
- * Every request still runs in a fresh WASI instance; only module compilation is reused.
+/** Persistent host for repeated board evaluations of saved task Python.
+ * Every request still runs in a fresh native guest subprocess; only the host process is reused.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";

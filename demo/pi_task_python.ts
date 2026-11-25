@@ -1,20 +1,19 @@
-/** Ordinary CPython in WASI; the guest receives JSON, never host capabilities. */
+/** Ordinary native CPython; the guest receives JSON over stdio and keeps the host's library ecosystem. */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const TASK_PYTHON_FORMAT = "task-python-v1" as const;
-export const TASK_PYTHON_MODULE_SHA256 = "e5dc5a398b07b54ea8fdb503bf68fb583d533f10ec3f930963e02b9505f7a763";
+export const TASK_PYTHON_MODULE_SHA256 = "native";
 export const TASK_PYTHON_DEFAULT_LIMITS = Object.freeze({
 	input_bytes: 128 * 1024, output_bytes: 64 * 1024, json_depth: 32,
 	allocation_bytes: 8 * 1024 * 1024, memory_bytes: 128 * 1024 * 1024,
 	fuel: 1_000_000_000, timeout_ms: 20_000,
 });
-// Transport ceilings. The sandbox boundaries (memory, fuel, timeout, no preopened dirs) stay below; these only bound
-// what crosses in and out. Base64 binaries (+33%) must fit, so the byte caps sit above the WASI memory ceiling's
-// useful range rather than at it.
+// Transport ceilings; they only bound what crosses in and out. On the native runtime the enforced execution
+// boundary is timeout_ms plus the output budget; fuel/memory/allocation are accepted for saved-tool
+// compatibility but are advisory.
 const HARD_LIMITS = Object.freeze({
 	input_bytes: 4 * 1024 * 1024, output_bytes: 1024 * 1024, json_depth: 64,
 	allocation_bytes: 32 * 1024 * 1024, memory_bytes: 256 * 1024 * 1024,
@@ -35,9 +34,20 @@ export class TaskPythonError extends Error {
 }
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const runner = fileURLToPath(new URL("./pi_task_python_runtime.py", import.meta.url));
-const require = createRequire(import.meta.url);
+let hostPythonVersion: string | undefined;
+function detectHostPythonVersion(): string {
+	if (hostPythonVersion) return hostPythonVersion;
+	const probe = spawnSync("python", ["-c", "import platform;print(platform.python_version())"], {
+		encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024, windowsHide: true, shell: false,
+	});
+	const version = probe.stdout?.trim();
+	if (probe.error || probe.status !== 0 || !version)
+		throw new TaskPythonError("environment_unavailable", "Task Python needs a CPython `python` on PATH");
+	return hostPythonVersion = version;
+}
 export function taskPythonRuntimeIdentity(): TaskPythonRuntime {
-	return { python_version: "3.12.0", wasmtime_version: "49.0.0",
+	// Field names are kept for saved-tool compatibility; "native" marks the non-WASM runtime.
+	return { python_version: detectHostPythonVersion(), wasmtime_version: "native",
 		module_sha256: TASK_PYTHON_MODULE_SHA256, runner_sha256: hash(readFileSync(runner)) };
 }
 export function taskPythonLimits(request: unknown = {}, ceiling?: Partial<Record<string, number>>): TaskPythonLimits {
@@ -59,10 +69,8 @@ export function taskPythonLimits(request: unknown = {}, ceiling?: Partial<Record
 		}
 	return result;
 }
-function modulePath(): string {
-	try { return require.resolve("@antonz/python-wasi/dist/python.wasm"); }
-	catch { throw new TaskPythonError("environment_unavailable", "Install @antonz/python-wasi@3.12.0 for task Python"); }
-}
+/** The native hosts take no interpreter module; the placeholder keeps spawn argument shapes stable. */
+function modulePath(): string { return "native"; }
 let checkedRuntime: string | undefined;
 export function assertTaskPythonRuntimeAvailable(runtime: TaskPythonRuntime): void {
 	if (JSON.stringify(runtime) !== JSON.stringify(taskPythonRuntimeIdentity()))

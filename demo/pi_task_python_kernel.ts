@@ -1,5 +1,6 @@
 /**
- * A live Python kernel: one long-lived WASI instance (pi_task_python_kernel.py) that runs cells in one namespace.
+ * A live Python kernel: one long-lived native CPython process (pi_task_python_kernel.py) that runs cells in one
+ * namespace with the host's full library ecosystem.
  * A cell can ask the host for something (an action, a workspace file) and continues where it asked when the answer
  * comes, so nothing is restarted or replayed. When the process ends (a trap, a timeout, an abort) the kernel is gone
  * and the next cell starts a new one; `fresh` tells the caller that the namespace must be restored.
