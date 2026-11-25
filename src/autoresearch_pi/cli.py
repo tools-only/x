@@ -32,7 +32,7 @@ from .validation_evidence import load_validation_manifest
 from .arc_agi_3_e2e import run_arc_agi_3_e2e, write_arc_method_evolution_audit
 from .arc_harness_smoke import run_arc_harness_smoke
 from .arc_thin_e2e import (
-    run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_ledger_smoke,
+    run_arc_thin_claims_smoke, run_arc_thin_continuity_smoke, run_arc_thin_e2e, run_arc_thin_environment_smoke, run_arc_thin_ledger_smoke,
     run_arc_thin_self_harness_smoke, run_arc_thin_smoke,
 )
 from .arc_blind_policy import run_arc_blind_policy
@@ -182,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="actions between consolidation turns (also after a level change or GAME_OVER)")
     arc_thin.add_argument("--review-on-miss", action="store_true",
                           help="also make a review due after a scored prediction miss (at most every 4 actions)")
+    arc_thin.add_argument("--claim-review-after-actions", type=int, default=4,
+                          help="actions after the last review before claim evidence alone can trigger a review")
+    arc_thin.add_argument("--claim-reviews-per-level", type=int, default=3,
+                          help="maximum claim-triggered review turns per level")
     arc_thin.add_argument("--provider", default="yibu")
     arc_thin.add_argument("--model", default=None)
     arc_thin.add_argument("--thinking", default="high", help="Pi thinking level (default: high; use off to disable)")
@@ -204,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
                                "decisions from Pi's session (text, tool calls, results; no reasoning) stay in view")
     arc_thin.add_argument("--continuity-decisions", type=int, default=8, metavar="N",
                           help="with --continuity session, how many earlier decisions stay in view")
+    arc_thin.add_argument("--level-change-review", action=argparse.BooleanOptionalAction, default=True,
+                          help="force a review turn after a level change (default on; --no-level-change-review drops it)")
     arc_thin_smoke = sub.add_parser("arc-thin-smoke",
                                     help="offline thin-harness check: mock ARC SDK, real bridge and Pi, scripted provider")
     arc_thin_smoke.add_argument("--root", type=Path, required=True)
@@ -214,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
                                 help="run the predictions / history / working-set / carried-reasoning scenario instead")
     arc_thin_smoke.add_argument("--continuity", action="store_true",
                                 help="run the session-continuity scenario instead (earlier decisions kept in view)")
+    arc_thin_smoke.add_argument("--claims", action="store_true",
+                                help="run the hypothesis-check and one-off python scenario instead")
     arc_compaction_probe = sub.add_parser("arc-thin-compaction-probe",
                                            help="offline Pi 0.87.0 native-compaction boundary probe")
     arc_compaction_probe.add_argument("--root", type=Path, default=None)
@@ -424,11 +432,15 @@ def main(argv: list[str] | None = None) -> int:
             max_actions=args.max_actions, max_decisions=args.max_decisions,
             max_reported_tokens=args.max_reported_tokens, experiment_timeout_seconds=args.experiment_timeout,
             turn_idle_timeout_seconds=args.turn_idle_timeout,
-            consolidate_after_actions=args.consolidate_after, review_on_miss=args.review_on_miss, pi_provider=args.provider, pi_model=args.model,
+            consolidate_after_actions=args.consolidate_after, review_on_miss=args.review_on_miss,
+            claim_review_after_actions=args.claim_review_after_actions,
+            claim_reviews_per_level=args.claim_reviews_per_level,
+            pi_provider=args.provider, pi_model=args.model,
             thinking=args.thinking, thinking_format=args.thinking_format,
             input_modalities=args.input_modalities, max_output_tokens=args.max_output_tokens,
             ledger=args.ledger, critic=args.critic, carry_reasoning_chars=args.carry_reasoning,
             continuity=args.continuity, continuity_decisions=args.continuity_decisions,
+            review_at_level_change=args.level_change_review,
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
@@ -436,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = (run_arc_thin_ledger_smoke(args.root) if args.ledger
                    else run_arc_thin_environment_smoke(args.root) if args.environment
                    else run_arc_thin_continuity_smoke(args.root) if args.continuity
+                   else run_arc_thin_claims_smoke(args.root) if args.claims
                    else run_arc_thin_self_harness_smoke(args.root) if args.self_harness else run_arc_thin_smoke(args.root))
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1

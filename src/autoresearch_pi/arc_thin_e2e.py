@@ -48,8 +48,9 @@ CONSOLIDATE_PROMPT = (
     "CONSOLIDATE. No action this turn. Update memory with what the actions since your last review showed: "
     "record new tests and prediction misses with rival verdicts, revise or reject claims only when the evidence "
     "supports it, keep 2-4 live rivals per open question with a separating next_test, update the active strategy "
-    "dependencies, and delete obsolete per-step entries. Skills can be fixed or replaced here too, for example one "
-    "written for an earlier level. Then stop."
+    "dependencies, and delete obsolete per-step entries. If CLAIM CHALLENGES is shown, revise each affected "
+    "claim/check or name a competing explanation and its next separating test; save the outcome. Skills can be "
+    "fixed or replaced here too, for example one written for an earlier level. Then stop."
 )
 CONSOLIDATE_RECOVERY_PROMPT = (
     "RECOVER CONSOLIDATION. The previous review hit the output limit. Do not reason aloud. "
@@ -82,6 +83,52 @@ THINKING_FORMATS = frozenset({"openai", "qwen", "qwen-chat-template"})
 PARTIAL_SUMMARY_EVERY = 10
 # With review_on_miss, a scored miss makes a review due once at least this many actions followed the last one.
 REVIEW_ON_MISS_GAP = 4
+CLAIM_REVIEW_AFTER_ACTIONS = 4
+CLAIM_REVIEWS_PER_LEVEL = 3
+
+
+def _claim_review_due(
+    harness: Path,
+    since_action: int,
+    *,
+    minimum_gap: int,
+    per_level: int,
+    current_level: int,
+) -> tuple[bool, str]:
+    """Read runtime-owned claim evidence mechanically; claim semantics stay with the agent."""
+    if per_level <= 0:
+        return False, ""
+    failing: dict[str, int] = {}
+    errors: dict[str, int] = {}
+    never_applied: dict[str, int] = {}
+    for row in _read_jsonl(harness / "claim_checks.jsonl"):
+        action_number = row.get("n")
+        if not isinstance(action_number, int) or action_number <= since_action:
+            continue
+        key = str(row.get("key") or "")
+        if not key:
+            continue
+        result = row.get("result")
+        if result is False:
+            failing[key] = action_number
+        elif result == "error" and "compile_error" not in row:
+            errors[key] = action_number
+        elif result is None and "error" not in row:
+            never_applied[key] = action_number
+    if failing:
+        return True, "claim:" + ",".join(sorted(failing))
+    if errors:
+        return True, "claim_error:" + ",".join(sorted(errors))
+    if never_applied and since_action - max(never_applied.values()) >= minimum_gap:
+        return True, "claim_never_applied:" + ",".join(sorted(never_applied))
+    return False, ""
+
+
+def _bridge_health(bridge_url: str) -> dict[str, Any] | None:
+    try:
+        return _get_json(bridge_url + "/health", timeout=2.0)
+    except (OSError, ValueError):
+        return None
 
 
 def _bridge_state(bridge_url: str, attempts: int = 3) -> dict[str, Any] | None:
@@ -89,6 +136,9 @@ def _bridge_state(bridge_url: str, attempts: int = 3) -> dict[str, Any] | None:
         try:
             return _get_json(bridge_url + "/state", timeout=10.0)
         except (OSError, ValueError):
+            health = _bridge_health(bridge_url)
+            if health and health.get("status") in {"uncertain", "busy"}:
+                return None
             if attempt + 1 < attempts:
                 time.sleep(2 ** attempt)
     return None
@@ -533,6 +583,8 @@ def run_arc_thin_e2e(
     max_reported_tokens: int | None = None,
     experiment_timeout_seconds: float | None = None,
     consolidate_after_actions: int = 25,
+    claim_review_after_actions: int = 4,
+    claim_reviews_per_level: int = 3,
     review_on_miss: bool = False,
     max_no_action_decisions: int = 3,
     max_environment_failures: int = 2,
@@ -552,6 +604,7 @@ def run_arc_thin_e2e(
     carry_reasoning_chars: int = 0,
     continuity: str = "rebuild",
     continuity_decisions: int = 8,
+    review_at_level_change: bool = True,
     extension_env: dict[str, str] | None = None,
 ) -> Path:
     """Play one ARC game with the thin self-harness and write ``summary.json``.
@@ -559,7 +612,10 @@ def run_arc_thin_e2e(
     ``carry_reasoning_chars`` is the opt-in comparison variable C1 of
     docs/plans/2026-10-10-self-harness-priority-plan.md; off by default. ``continuity="session"`` keeps the
     agent's last ``continuity_decisions`` decisions from Pi's session in view (without reasoning), and recoveries
-    keep that session instead of starting a new one; ``"rebuild"`` is the original per-decision working set."""
+    keep that session instead of starting a new one; ``"rebuild"`` is the original per-decision working set.
+    ``review_at_level_change=False`` drops the forced review turn after a level change (the 25-action and GAME_OVER
+    reviews remain); the agent's hypothesis checks then show on the new level's moves without a review turn
+    (docs/plans/2026-10-12-falsifiable-self-harness-plan.md)."""
     if variant not in {"treatment", "control"}:
         raise ValueError("variant must be treatment or control")
     root = root.resolve()
@@ -660,12 +716,15 @@ def run_arc_thin_e2e(
             "max_actions": max_actions, "max_decisions": max_decisions,
             "max_reported_tokens": max_reported_tokens, "experiment_timeout_seconds": experiment_timeout_seconds,
             "consolidate_after_actions": consolidate_after_actions, "review_on_miss": review_on_miss, "input_modalities": settings["input_modalities"],
+            "claim_review_after_actions": claim_review_after_actions,
+            "claim_reviews_per_level": claim_reviews_per_level,
             "max_output_tokens": settings.get("max_tokens"), "command": command,
             "pi_cli": cli, "pi_version": _pi_cli_version(Path(cli)),
             "ledger": ledger_enabled, "critic": critic_enabled,
             "turn_idle_timeout_seconds": turn_idle_timeout_seconds,
             "carry_reasoning_chars": int(pi_env.get("ARC_THIN_CARRY_REASONING") or 0),
             "continuity": continuity, "continuity_decisions": int(pi_env["ARC_THIN_CONTINUITY_DECISIONS"]),
+            "review_at_level_change": review_at_level_change,
             "auto_compaction": auto_compaction,
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_file()},
         }, indent=2) + "\n", encoding="utf-8")
@@ -693,6 +752,7 @@ def run_arc_thin_e2e(
         bridge_after = 0
         consolidated_at = 0
         level_changed_since_consolidation = False
+        claim_reviews_by_level: dict[int, int] = {}
         no_action_streak = 0
         environment_streak = 0
 
@@ -764,7 +824,12 @@ def run_arc_thin_e2e(
         while True:
             state = _bridge_state(bridge_url)
             if state is None:
-                summary["stop_reason"] = "bridge_unavailable"
+                health = _bridge_health(bridge_url)
+                summary["bridge_health"] = health
+                summary["stop_reason"] = (
+                    "environment_outcome_unknown" if health and health.get("status") in {"uncertain", "busy"}
+                    else "bridge_unavailable"
+                )
                 break
             final_state = state
             if str(state.get("state")) == "WIN":
@@ -792,10 +857,18 @@ def run_arc_thin_e2e(
             miss_due = review_on_miss and action_count - consolidated_at >= REVIEW_ON_MISS_GAP and any(
                 (row.get("prediction") or {}).get("misses") or (row.get("skill_prediction") or {}).get("misses")
                 for row in _read_jsonl(harness / "trajectory.jsonl")[consolidated_at:])
+            current_level = (final_state or {}).get("levels_completed", 0)
+            claim_due, claim_reason = _claim_review_due(
+                harness, consolidated_at, minimum_gap=claim_review_after_actions,
+                per_level=claim_reviews_per_level, current_level=int(current_level or 0),
+            ) if action_count > consolidated_at else (False, "")
+            if claim_due and claim_reviews_by_level.get(int(current_level or 0), 0) >= claim_reviews_per_level:
+                claim_due, claim_reason = False, ""
             consolidate = variant == "treatment" and action_count > consolidated_at and (
-                level_changed_since_consolidation
+                (level_changed_since_consolidation and review_at_level_change)
                 or str(state.get("state")) == "GAME_OVER"
                 or miss_due
+                or claim_due
                 or action_count - consolidated_at >= consolidate_after_actions
             )
             fatal_before = _fatal_errors(harness)
@@ -807,6 +880,12 @@ def run_arc_thin_e2e(
                     summary["consolidations"] += 1
                     consolidated_at = action_count
                     level_changed_since_consolidation = False
+                    if claim_due:
+                        level = int(current_level or 0)
+                        claim_reviews_by_level[level] = claim_reviews_by_level.get(level, 0) + 1
+                        summary.setdefault("claim_reviews", []).append({
+                            "action": action_count, "level": level + 1, "reason": claim_reason,
+                        })
                 else:
                     prompt = NO_ACTION_PROMPT if no_action_streak else DECIDE_PROMPT
                     events = recover_length(prompt, safe_turn(prompt))
@@ -863,6 +942,7 @@ def run_arc_thin_e2e(
             bridge_closed = True
         except (OSError, RuntimeError, ValueError) as exc:
             summary["bridge_close_error"] = str(exc)
+            summary["bridge_health"] = _bridge_health(bridge_url)
         summary["passed"] = summary["stop_reason"] in NORMAL_STOPS
     except Exception as exc:  # noqa: BLE001 - persist every runner failure
         summary["stop_reason"] = summary["stop_reason"] or f"runner_error:{stage}"
@@ -930,6 +1010,8 @@ def _smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
     requests = _read_jsonl(root / "smoke-requests.jsonl")
     agent = [row for row in requests if not row.get("analyst")]
     results = [result for row in requests for result in row.get("last_tool_results", [])]
+    events = _read_jsonl(root / "pi-events.jsonl")
+    event_results = [event.get("result", {}).get("content", []) for event in events if event.get("type") == "tool_execution_end"]
     def result_text(tool: str) -> list[str]:
         return [str(result.get("text") or "") for result in results if result.get("tool") == tool]
     def last_result(row: dict[str, Any]) -> str:
@@ -1150,19 +1232,19 @@ def _environment_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[
     requests = [row for row in _read_jsonl(root / "smoke-requests.jsonl") if not row.get("analyst") and not row.get("critic")]
     planned_notes = [str(((row.get("planned") or {}).get("calls") or [[None, {}]])[-1][1].get("note")) for row in requests]
     environment = [row for row in _read_jsonl(harness / "errors.jsonl") if row.get("environment")]
-    third = next((str(row.get("head")) for row in requests if "environment fails again" in str(row.get("planned"))), "")
+    saved_memory = _read_jsonl(harness / "memory.jsonl")
     checks = [
-        ("stopped_as_environment_error", summary.get("stop_reason") == "environment_error", summary.get("stop_reason")),
+        ("stopped_on_unknown_outcome", summary.get("stop_reason") == "environment_outcome_unknown", summary.get("stop_reason")),
         ("only_the_working_action_recorded", [row.get("action") for row in _read_jsonl(harness / "trajectory.jsonl")] == ["ACTION1"]
          and summary.get("actions_on_bridge") == 1, summary.get("actions_on_bridge")),
         # A failed decision ends at once: one model request per decision, and the spare step is never reached.
-        ("no_retry_inside_a_decision", len(requests) == 3 and all(row.get("message_count") == 1 for row in requests)
+        ("no_retry_or_further_model_turn", len(requests) == 2 and all(row.get("message_count") == 1 for row in requests)
          and "must never be requested" not in planned_notes, [(row.get("message_count"), note) for row, note in zip(requests, planned_notes)]),
-        ("environment_errors_logged", len(environment) == 2 and summary.get("harness", {}).get("environment_errors") == 2
+        ("environment_errors_logged", len(environment) == 1 and summary.get("harness", {}).get("environment_errors") == 1
          and all("EnvironmentReturnedNoFrame" in str(row.get("message")) for row in environment)
          and not any(row.get("fatal") for row in _read_jsonl(harness / "errors.jsonl")), environment[:2]),
-        ("batched_update_survives_failed_action", "RESULTS OF THE TOOLS YOU CALLED TOGETHER WITH YOUR LAST ACTION:" in third
-         and "- memory: memory: set plan" in third, third[:600]),
+        ("batched_update_survives_failed_action", any(row.get("key") == "plan" and row.get("text") == "keep probing"
+         for row in saved_memory), saved_memory),
     ]
     return [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
 
@@ -1209,7 +1291,8 @@ def _self_harness_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict
     heads = [str(row.get("head")) for row in requests]
     head_of = lambda step: next((str(row.get("head")) for row in requests if row.get("step") == step), "")  # noqa: E731
     results = [result for row in requests for result in row.get("last_tool_results", [])]
-    texts = lambda tool: [str(result.get("text") or "") for result in results if result.get("tool") == tool]  # noqa: E731
+    texts = lambda tool: [str(block.get("text") or "") for content in event_results for block in content
+                          if block.get("type") == "text" and _tool_name(events, content, tool) == tool]  # noqa: E731
     harness_stats = summary.get("harness") or {}
     prediction = harness_stats.get("prediction") or {}
     trajectory = _read_jsonl(harness / "trajectory.jsonl")
@@ -1347,6 +1430,7 @@ def run_arc_thin_continuity_smoke(root: Path) -> Path:
     path = run_arc_thin_e2e(
         root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
         max_decisions=3, consolidate_after_actions=100, experiment_timeout_seconds=600.0,
+        claim_review_after_actions=2, claim_reviews_per_level=3,
         decision_timeout_seconds=180.0,
         pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
         bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
@@ -1355,6 +1439,72 @@ def run_arc_thin_continuity_smoke(root: Path) -> Path:
     )
     summary = json.loads(path.read_text(encoding="utf-8"))
     checks = _continuity_smoke_checks(root.resolve(), summary)
+    summary["checks"] = checks
+    summary["passed"] = all(check["ok"] for check in checks)
+    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _claims_smoke_checks(root: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """Hypothesis checks run over history at save and on each new move; one-off python returns output and a value."""
+    harness = root / "harness"
+    requests = [row for row in _read_jsonl(root / "smoke-requests.jsonl") if not row.get("analyst") and not row.get("critic")]
+    events = _read_jsonl(root / "pi-events.jsonl")
+    texts = lambda tool: [str(block.get("text") or "") for event in events if event.get("type") == "tool_execution_end"
+                          and event.get("toolName") == tool
+                          for block in event.get("result", {}).get("content", []) if block.get("type") == "text"]  # noqa: E731
+    first_heads = [str(row.get("head") or "") for row in requests if row.get("message_count") == 1]
+    memory_receipt = next((text for text in texts("memory") if "hyp.right" in text), "")
+    checks_rows = _read_jsonl(harness / "claim_checks.jsonl")
+    by_key = lambda key: [row for row in checks_rows if row.get("key") == key and "result" in row]  # noqa: E731
+    review = next((row for row in requests if row.get("consolidating")), {})
+    review_text = next((str(row.get("head") or "") for row in requests if row.get("consolidating")), "")
+    heads = [str(row.get("head") or "") for row in requests]
+    review_index = next((index for index, row in enumerate(first_heads) if row.startswith("CONSOLIDATE")), -1)
+    after_review = next((text for text in first_heads[review_index + 1:] if "hyp.wrong" in text), "")
+    checks = [
+        ("run_completed", summary.get("stop_reason") == "max_decisions", summary.get("stop_reason")),
+        # At save the checks ran over the one recorded move: right holds, wrong fails at #1, broken is reported.
+        ("checked_at_save", "hyp.right check on 1 recorded move(s): holds 1 · fails 0" in memory_receipt
+         and "hyp.wrong check on 1 recorded move(s): holds 0 · fails 1 (#1)" in memory_receipt
+         and "hyp.broken check: not usable (SyntaxError" in memory_receipt, memory_receipt[-600:]),
+        # One-off python: printed output and the final expression's value, nothing saved.
+        ("python_one_off", any("nine at 3" in text and "→ 4" in text for text in texts("python"))
+         and not _read_jsonl(harness / "skills.jsonl"), texts("python")[:1]),
+        # After the second move (ACTION4) the right check does not apply to it; the view shows the updated record.
+        ("checked_on_new_moves", any("check on 2 recorded move(s): holds 1 · fails 0 · n/a 1" in head for head in heads),
+         [head[:900] for head in heads[-1:]]),
+        # #1 at save, #2 when the third decision starts (the run stops before #3 is checked).
+        ("stored_as_evidence", [row.get("result") for row in by_key("hyp.right")] == [True, None]
+         and [row.get("result") for row in by_key("hyp.wrong")] == [False, None]
+         and any(row.get("key") == "hyp.broken" and row.get("compile_error") for row in checks_rows),
+         [(row.get("key"), row.get("n"), row.get("result", row.get("compile_error"))) for row in checks_rows]),
+        ("claim_failure_triggers_review", bool(review) and "CLAIM CHALLENGES" in review_text
+         and "hyp.wrong: refuted at #1" in review_text and "hyp.broken: check not usable" in review_text,
+         review_text[:1200]),
+        ("review_revises_claim_for_next_decision", "check removed" in memory_receipt
+         and "- hyp.wrong [rejected]" in after_review and "hyp.right [supported]" in after_review,
+         after_review[:1600]),
+        ("python_logged", [row.get("ok") for row in _read_jsonl(harness / "python_runs.jsonl")] == [True], None),
+        ("actions", [row.get("action") for row in _read_jsonl(harness / "trajectory.jsonl")] == ["ACTION1", "ACTION4", "ACTION1"],
+         [row.get("action") for row in _read_jsonl(harness / "trajectory.jsonl")]),
+        ("no_harness_errors", not _read_jsonl(harness / "errors.jsonl"), _read_jsonl(harness / "errors.jsonl")[:3]),
+    ]
+    return [{"name": name, "ok": bool(ok), "detail": detail} for name, ok, detail in checks]
+
+
+def run_arc_thin_claims_smoke(root: Path) -> Path:
+    """Offline check of hypothesis checks and one-off python: mock ARC SDK, real bridge, Pi, extension and sandbox."""
+    path = run_arc_thin_e2e(
+        root, arc_root=PROJECT_ROOT, game="ls20", variant="treatment",
+        max_decisions=3, consolidate_after_actions=100, experiment_timeout_seconds=600.0,
+        decision_timeout_seconds=180.0,
+        pi_provider="offline-arc-thin-smoke", pi_model="scripted", pi_provider_extension=SMOKE_PROVIDER,
+        bridge_python=Path(sys.executable), bridge_module_paths=(PROJECT_ROOT / "tools" / "mock_arc_sdk",),
+        ledger=False, critic=False, extension_env={"ARC_THIN_SMOKE_SCRIPT": "claims"},
+    )
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    checks = _claims_smoke_checks(root.resolve(), summary)
     summary["checks"] = checks
     summary["passed"] = all(check["ok"] for check in checks)
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
