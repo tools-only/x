@@ -184,6 +184,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (state.state === "WIN") events.push("WIN: the game is finished.");
     if (state.budget_left !== undefined && state.budget_left <= Math.max(5, 0.1 * (state.actions_used + state.budget_left)))
       events.push(`BUDGET: ${state.budget_left} actions left.`);
+    if (state.level_budget_left !== undefined && state.level_budget !== undefined
+        && state.level_budget_left <= Math.max(3, 0.25 * state.level_budget))
+      events.push(`LEVEL BUDGET: ${state.level_budget_left} of ${state.level_budget} actions left on this level, and the run ` +
+        "ends when they are gone. If the level looks lost, stop re-trying routes: spend the rest on deliberate probes and bank " +
+        "what you learned as work/claims/ files - knowledge survives this level, unspent actions do not.");
     if (options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter) {
       const rounds = Math.floor(state.stale_steps / options.stuckAfter);
       events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and review in full: name the ` +
@@ -223,7 +228,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     if (options.gradient && python.gradient) {
       const g = python.gradient();
-      events.push(`Gradient: ${g.actions_this_level} actions this level${g.budget_left === undefined ? "" : ` (budget left ${g.budget_left})`}` +
+      events.push(`Gradient: ${g.actions_this_level} actions this level${g.level_budget_left !== undefined
+          ? ` (level budget left ${g.level_budget_left} of ${g.level_budget})`
+          : g.budget_left === undefined ? "" : ` (budget left ${g.budget_left})`}` +
         ` · surprises ${g.surprises} · unchecked batches ${g.unchecked_batches} · repeated routes ${g.repeated_sequences}` +
         `${g.expect_hits ? ` · expect hits ${g.expect_hits}` : ""}${g.model ? ` · model backtest ${g.model}` : ""}`);
     }
@@ -232,7 +239,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       batch: batch ? `Last batch: ${batch.executed} executed: ${shown}${batch.executed > 10 ? ` (+${batch.executed - 10} more)` : ""}` +
         `${batch.stop_reason ? `; stopped: ${batch.stop_reason}` : ""}` : "",
       level: String(state.level), win_levels: String(state.win_levels), state: state.state, step: String(state.step),
-      actions_used: String(state.actions_used), budget: state.budget_left === undefined ? "" : ` | budget left ${state.budget_left}`,
+      actions_used: String(state.actions_used),
+      budget: (state.level_budget_left === undefined ? "" : ` | level budget left ${state.level_budget_left} of ${state.level_budget}`)
+        + (state.budget_left === undefined ? "" : ` | run budget left ${state.budget_left}`),
       valid: state.valid_actions.join(" "), memory: TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
       notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
       revision: activeRevision ? `Active revision: ${activeRevision}` : "",
@@ -281,7 +290,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         segmentActions += batch.executed;
         trail.push(...batch.lines.slice(-3));
         trail = trail.slice(-12);
-        endReason = batch.win ? "win" : state.budget_left === 0 ? "budget" : batch.level_changed ? "level_change" : softLimit();
+        endReason = batch.win ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget"
+          : batch.level_changed ? "level_change" : softLimit();
         if (endReason) pending = batch;
         else pi.sendMessage({ customType: STATE_TYPE, content: content(batch), display: false }, { deliverAs: "steer" });
       }
@@ -387,7 +397,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   pi.on("agent_before_settle", event => {
     if (event.outcome !== "completed" || endReason || lastStop === "length" || lastStop === "error") return;
     const state: LayeredState = python.state();
-    endReason = state.state === "WIN" ? "win" : state.budget_left === 0 ? "budget" : softLimit();
+    endReason = state.state === "WIN" ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget" : softLimit();
     if (!endReason && idle >= options.idleContinuations) endReason = "idle";
     if (endReason) return;
     idle += 1;

@@ -22,13 +22,17 @@ rules and the goal by experimenting, then finish every level.
 - GAME_OVER means this attempt failed: a fatal action (such as a hazard cell) or a depleted step/time budget. A bar
   along the border that shrinks each action is usually that budget. Completed levels are kept; it never means the run
   is won.
+- Budgets: every action spends from two budgets shown in the state line - this level's budget and the run budget.
+  Neither comes back, RESET does not refund them, and the run ends the moment either reaches 0. A level that still
+  looks unreadable when its budget is half gone deserves cheaper probes and banked claims, not more route attempts.
 - Levels usually build on mechanics learned in earlier levels, especially the most recent one. Carry supported
   knowledge forward as a starting hypothesis, re-check anything the new board contradicts, and expect new elements to
   introduce the mechanics the new level needs.
 
 ## The python tool
-You have one tool, `python`. Its code runs in a kernel that lives for the whole game, and these names are bound fresh at
-the start of every call:
+You have one tool, `python`. Its code runs in a plain CPython kernel that lives for the whole game; third-party
+libraries such as numpy may be absent, so try the import once before relying on one and prefer pure-python helpers.
+These names are bound fresh at the start of every call:
 - `current_frame` and `previous_frame`: frames with `.ascii` (one letter per cell: {{color_legend}}; call
   `.ascii(region=(r0, c0, r1, c1))` for a crop), `.grid` (numbers
   0-15, rows of columns), `.segmentation` (a dict: `seg['nodes']` lists same-colour 4-connected objects as dicts with
@@ -95,7 +99,10 @@ the start of every call:
   "prompt", "loop", "context", "skill", "subagent", and `artifact=` the `work/` file that will hold it (for example
   `work/world_model.py` or `work/lib/push.py`). Actions stay frozen until you actually write the declared file -
   a review only completes when its conclusion exists as a file, because a conclusion that only lives in prose is
-  lost at eviction. Direction: after a GAME_OVER review, repair the
+  lost at eviction. The host also checks what you wrote: a `work/claims/` file must load and define `check`, and
+  `work/world_model.py` is only accepted when its back-test beats copying the frame - a stub that returns the frame
+  unchanged keeps actions frozen. Rule- and action-layer conclusions normally land best as a falsifiable
+  `work/claims/<name>.py`. Direction: after a GAME_OVER review, repair the
   hypothesis or build a perception helper; after a completed level, compress - turn the route that worked into a
   parameterized function and shorten your beliefs.
 {{/review}}

@@ -6,20 +6,21 @@ import { join } from "node:path";
 import { LayeredPython, type LayeredConfig } from "../demo/arc_layered_python.ts";
 
 class FakeBridge {
-  row = 6; levels = 0; used = 0; last = "";
+  row = 6; levels = 0; used = 0; levelUsed = 0; last = "";
   frame() {
     const grid = Array.from({ length: 8 }, () => Array(8).fill(0));
     grid[this.row][3] = 2;
     return { frames: [grid], state: this.levels >= 2 ? "WIN" : "NOT_FINISHED", levels_completed: this.levels, win_levels: 2,
       agent_available_actions: ["RESET", "ACTION1", "ACTION2", "ACTION6", "ACTION7"],
-      action_budget: { total_used: this.used, total_maximum: 50 }, observation_delta: { changed_cells: 2 } };
+      action_budget: { total_used: this.used, total_maximum: 50, used: this.levelUsed, maximum: 20 },
+      observation_delta: { changed_cells: 2 } };
   }
   async state() { return this.frame(); }
   async act(payload: { action: string }) {
-    this.used += 1; this.last = payload.action;
+    this.used += 1; this.levelUsed += 1; this.last = payload.action;
     if (payload.action === "ACTION1") this.row -= 1;
     if (payload.action === "RESET") this.row = 6;
-    if (this.row === 4) { this.levels += 1; this.row = 6; }
+    if (this.row === 4) { this.levels += 1; this.row = 6; this.levelUsed = 0; }
     return this.frame();
   }
 }
@@ -462,10 +463,9 @@ test("stagnation freezes acting mid-batch and the freeze survives calls", async 
 
 test("a half-spent level budget freezes acting once", async () => {
   const { python } = await session({ review: true });
-  await python.run("submit_actions(['DOWN'] * 16, stop_on_noop=False)");
   const out = await python.run("r = submit_actions(['DOWN'] * 16, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
   python.close();
-  assert.match(out.text, /^9 review required: half the level budget/);
+  assert.match(out.text, /^10 review required: half the level budget/);
 });
 
 test("review triggers can be restricted to a subset", async () => {
@@ -537,4 +537,35 @@ test("work/startup.py runs once at kernel start and surfaces errors", async () =
   broken.close();
   assert.match(bad.text, /\[startup\] work\/startup.py failed: ValueError: boom/);
   assert.match(bad.text, /alive/);
+});
+
+test("a stub world_model.py keeps the review frozen until predict beats copying the frame", async () => {
+  const { python } = await session({ review: true });
+  await python.run("submit_actions('UP')\nsubmit_actions(['DOWN'] * 4, stop_on_noop=False)");
+  const out = await python.run([
+    "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/world_model.py')",
+    "f = open('work/world_model.py', 'w')\nf.write('def predict(frame, action):\\n    return frame.grid\\n')\nf.close()",
+    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'copying the frame' in str(e))",
+    "code = 'def predict(frame, action):\\n    g = [row[:] for row in frame.grid]\\n    if action != \"UP\":\\n        return g\\n" +
+      "    for r in range(len(g)):\\n        for c in range(len(g[0])):\\n            if g[r][c] == 2 and r > 0:\\n" +
+      "                g[r-1][c] = 2\\n                g[r][c] = 0\\n                return g\\n    return g\\n'",
+    "f = open('work/world_model.py', 'w')\nf.write(code)\nf.close()",
+    "print(submit_actions('UP')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^frozen: True\n1/);
+});
+
+test("a broken claims artifact keeps the review frozen until it loads", async () => {
+  const { python } = await session({ review: true });
+  await python.run("submit_actions(['DOWN'] * 2, stop_on_noop=False)");
+  const out = await python.run([
+    "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/claims/down_noop.py')",
+    "f = open('work/claims/down_noop.py', 'w')\nf.write('def check(t)\\n    return None\\n')\nf.close()",
+    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'failed to load' in str(e))",
+    "f = open('work/claims/down_noop.py', 'w')\nf.write('def check(t):\\n    return None if t.action != \"DOWN\" else t.after_frame.grid == t.before_frame.grid\\n')\nf.close()",
+    "print(submit_actions('UP')['executed_count'])",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^frozen: True\n1/);
 });

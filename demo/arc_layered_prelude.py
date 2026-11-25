@@ -403,6 +403,8 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
     if _S.get("review_required"):
         required = _S["review_required"]
         hint = ("write the declared artifact file to complete the review" if "write that file" in required
+                else "fix the declared artifact file - the review is not complete"
+                if "failed to load" in required or "copying the frame" in required
                 else "call review(layer=..., diagnosis=..., evidence=[history steps], change=..., test=...) "
                      "first — see harness_state for evidence")
         raise RuntimeError("ReviewRequired: %s. Trigger: %s" % (hint, required))
@@ -511,12 +513,75 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
     return summary
 
 
+def _probe_artifact(path, data):
+    name = str(path).replace("\\", "/")
+    if name.startswith("work/"):
+        name = name[5:]
+    if name == "world_model.py":
+        try:
+            mod = {"__name__": "work.world_model"}
+            exec(compile(data, "work/world_model.py", "exec"), mod)
+            fn = mod.get("predict")
+            if not callable(fn):
+                return {"kind": "model", "error": "defines no callable predict(frame, action)"}
+        except BaseException as exc:
+            return {"kind": "model", "error": "%s: %s" % (type(exc).__name__, exc)}
+        tested = correct = identity = 0
+        err = None
+        for t in _T[-24:]:
+            before_grid = t["before"]["grids"][-1]
+            after_grid = t["after"]["grids"][-1]
+            try:
+                predicted = fn(_frame(t["before"]), t["action"])
+            except BaseException as exc:
+                err = "%s: %s" % (type(exc).__name__, exc)
+                continue
+            tested += 1
+            if _same_grid(predicted, after_grid):
+                correct += 1
+            if _same_grid(before_grid, after_grid):
+                identity += 1
+        out = {"kind": "model", "tested": tested, "correct": correct, "identity": identity}
+        if err:
+            out["error_sample"] = err
+        return out
+    if name.startswith("claims/") and name.endswith(".py"):
+        try:
+            mod = {"__name__": "work." + name[:-3].replace("/", ".")}
+            exec(compile(data, "work/" + name, "exec"), mod)
+            fn = mod.get("check")
+            if not callable(fn):
+                return {"kind": "claim", "error": "defines no callable check(transition)"}
+        except BaseException as exc:
+            return {"kind": "claim", "error": "%s: %s" % (type(exc).__name__, exc)}
+        checked = support = counter = 0
+        for t in _T:
+            try:
+                verdict = fn(Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])))
+            except BaseException as exc:
+                return {"kind": "claim", "error": "%s: %s" % (type(exc).__name__, exc)}
+            checked += 1
+            if verdict is True:
+                support += 1
+            elif verdict is False:
+                counter += 1
+        return {"kind": "claim", "checked": checked, "support": support, "counter": counter}
+    return None
+
+
 def _file(op, path, data=None):
-    reply = _rpc({"t": "file", "op": op, "path": str(path), "data": data})
+    req = {"t": "file", "op": op, "path": str(path), "data": data}
+    if op == "write":
+        probe = _probe_artifact(path, data)
+        if probe is not None:
+            req["probe"] = probe
+    reply = _rpc(req)
     if "error" in reply:
         raise (FileNotFoundError if reply.get("missing") else PermissionError)(reply["error"])
     if reply.get("review_cleared"):
         _S["review_required"] = None
+    elif reply.get("review_required"):
+        _S["review_required"] = reply["review_required"]
     return reply.get("data")
 
 

@@ -8,7 +8,8 @@ export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boole
   skipNoops?: boolean; expect?: boolean; graph?: boolean; review?: boolean; reviewStuckSteps?: number;
   reviewTriggers?: string[] };
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
-  step: number; actions_used: number; budget_left?: number; valid_actions: string[]; frame: number[][];
+  step: number; actions_used: number; budget_left?: number; level_budget?: number; level_budget_left?: number;
+  valid_actions: string[]; frame: number[][];
   stale_steps: number; unchecked_batches: number; review_required: string | null };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null;
@@ -71,6 +72,7 @@ export class LayeredPython {
   private reviewRequired: string | null = null;
   private pendingPlacement?: { artifact: string; before: string | null };
   private pendingArtifact: string | null = null;
+  private artifactProbes: Record<string, Record<string, unknown>> = {};
   private writesThisCall = new Set<string>();
   private claimLedger: Record<string, { source: string; support: number; counter: number; checked: number;
     levels: number[]; state: string; error?: string; flaggedInapplicable?: boolean }> = {};
@@ -113,6 +115,8 @@ export class LayeredPython {
     return { level: Math.min(raw.levels_completed + 1, raw.win_levels), levels_completed: raw.levels_completed, win_levels: raw.win_levels,
       state: raw.state, step: budget.total_used ?? 0, actions_used: budget.total_used ?? 0,
       budget_left: budget.total_maximum == null ? undefined : budget.total_maximum - budget.total_used,
+      level_budget: budget.maximum == null ? undefined : budget.maximum,
+      level_budget_left: budget.maximum == null ? undefined : budget.maximum - (budget.used ?? 0),
       valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale,
       unchecked_batches: this.unchecked, review_required: this.reviewRequired };
   }
@@ -138,7 +142,8 @@ export class LayeredPython {
       claims: Object.fromEntries(Object.entries(this.claimLedger).map(([name, entry]) =>
         [name, { state: entry.state, support: entry.support, counter: entry.counter, checked: entry.checked,
           scale: entry.levels.length >= 2 ? "game" : "level", ...(entry.error ? { error: entry.error } : {}) }])),
-      cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null, python_calls: this.calls },
+      cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null,
+        level_budget_left: state.level_budget_left ?? null, python_calls: this.calls },
     };
   }
 
@@ -146,6 +151,7 @@ export class LayeredPython {
   gradient() {
     const state = this.state();
     return { actions_this_level: this.stepsSinceLevel, budget_left: state.budget_left,
+      level_budget: state.level_budget, level_budget_left: state.level_budget_left,
       surprises: this.surprises, unchecked_batches: this.unchecked, repeated_sequences: this.repeatedSequences,
       expect_hits: this.expectHits,
       model: this.modelReport ? `${this.modelReport.correct}/${this.modelReport.tested}` : undefined };
@@ -222,9 +228,11 @@ export class LayeredPython {
       const steps = this.config.reviewStuckSteps ?? 0;
       if (trig("stuck") && steps > 0 && this.stale > 0 && this.stale % steps === 0)
         this.reviewRequired ??= `${this.stale} steps without a new state`;
-      const left = this.state().budget_left;
-      if (trig("budget") && !levelChanged && !this.budgetReviewFired && this.levelStartBudgetLeft !== undefined && left !== undefined
-          && left <= this.levelStartBudgetLeft / 2) {
+      const now = this.state();
+      const halfSpent = now.level_budget !== undefined && now.level_budget_left !== undefined
+        ? now.level_budget_left <= now.level_budget / 2
+        : this.levelStartBudgetLeft !== undefined && now.budget_left !== undefined && now.budget_left <= this.levelStartBudgetLeft / 2;
+      if (trig("budget") && !levelChanged && !this.budgetReviewFired && halfSpent) {
         this.budgetReviewFired = true;
         this.reviewRequired ??= "half the level budget is spent and the level is not done";
       }
@@ -258,8 +266,14 @@ export class LayeredPython {
       this.pendingPlacement = { artifact: review.artifact, before: this.workContent(review.artifact) };
       const relative = review.artifact.replace(/\\/g, "/").replace(/^(\.\/|\/)?work\//, "");
       if (this.writesThisCall.has(relative)) {
-        this.reviewRequired = null;
-        this.pendingArtifact = null;
+        const problem = this.artifactProblem(relative);
+        if (problem) {
+          this.pendingArtifact = relative;
+          this.reviewRequired = problem;
+        } else {
+          this.reviewRequired = null;
+          this.pendingArtifact = null;
+        }
       } else {
         this.pendingArtifact = relative;
         this.reviewRequired = `the review declared ${review.artifact} - write that file to complete the review`;
@@ -269,6 +283,22 @@ export class LayeredPython {
       this.pendingArtifact = null;
     }
     return { ok: true, review_required: this.reviewRequired };
+  }
+
+  /** A declared review artifact must hold executable, non-trivial content, not a stub written to unfreeze. */
+  private artifactProblem(relative: string): string | null {
+    const probe = this.artifactProbes[relative];
+    if (!probe) return null;
+    if (probe.error) return `work/${relative} failed to load: ${probe.error} - fix it to complete the review`;
+    if (probe.kind === "model") {
+      const tested = Number(probe.tested ?? 0), correct = Number(probe.correct ?? 0), identity = Number(probe.identity ?? 0);
+      if (tested === 0 && probe.error_sample)
+        return `work/${relative} raised on every recorded transition (${probe.error_sample}) - fix it to complete the review`;
+      if (tested >= 5 && correct <= identity)
+        return `work/world_model.py predicts no better than copying the frame (${correct}/${tested} vs identity ${identity}/${tested}) - ` +
+          "make predict say what changes, or land the conclusion as a falsifiable work/claims/<name>.py instead";
+    }
+    return null;
   }
 
   private workContent(path: string): string | null {
@@ -290,7 +320,14 @@ export class LayeredPython {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, data, "utf8");
     this.writesThisCall.add(relative);
+    if (request.probe) this.artifactProbes[relative] = request.probe as Record<string, unknown>;
+    else delete this.artifactProbes[relative];
     if (this.pendingArtifact !== null && relative === this.pendingArtifact) {
+      const problem = this.artifactProblem(relative);
+      if (problem) {
+        this.reviewRequired = problem;
+        return { data: null, review_required: problem };
+      }
       this.pendingArtifact = null;
       this.reviewRequired = null;
       return { data: null, review_cleared: true };

@@ -38,7 +38,7 @@ test("the run opens with the replaced system prompt and a state message with an 
   assert.match(opened.systemPrompt, /submit_actions/);
   assert.doesNotMatch(opened.systemPrompt, /\{\{/);
   assert.equal(opened.message.customType, STATE_TYPE);
-  assert.match(textOf(opened.message.content), /Level 1 of 3 \| NOT_FINISHED \| step 0 \| actions used 0 \| budget left 40/);
+  assert.match(textOf(opened.message.content), /Level 1 of 3 \| NOT_FINISHED \| step 0 \| actions used 0 \| run budget left 40/);
   assert.doesNotMatch(textOf(opened.message.content), /\{\{|Last batch/);
   assert.equal(opened.message.content[1].type, "image");
   assert.deepEqual(Object.keys(tool().parameters.properties), ["code"]);

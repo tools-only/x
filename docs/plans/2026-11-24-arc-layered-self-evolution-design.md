@@ -493,6 +493,40 @@ claims 配置时谓词仍被宿主逐 transition 执行并 validated（support 6
 推翻条件：默认开配置相对关闭臂每关动作数或 token 劣化 >30%（沿用 §4 证伪阈值），或评审频率高到吞掉
 行动预算（每关评审轮 > 动作批次的 1/3），则回退第 2、3 条。
 
+### 5.10 评审产物非平凡验收与关卡预算可见（2026-11-25）
+
+真实失败（本地 su15 真实运行 `runs/arc-layered-su15-defaults-20261125` + 用户外部机器 77e7568 运行分析）：
+(a) 评审落点被形式化绕过——5 次评审全部声明 `work/world_model.py`，agent 写 50 字节恒等 stub
+（`return frame.grid`）解锁冻结，知识进了 review_log.md 散文，claims 零采用，evolution.changes=1 即该 stub；
+(b) 预算语义不可见——运行停在 `budget_exhausted`（关卡预算 22×5=110 用尽），但状态行只显示全局 1805，
+agent 全程不知道关卡预算存在；半预算评审触发用的是全局预算，前期关卡永不触发；
+(c) 工具摩擦——agent 多次尝试 import numpy 失败、误判 RESET 被禁，烧动作额度修环境而非解题。
+
+窄命题：评审验收从"文件存在"升级为"产物可执行且非平凡"、预算按关卡呈现后，同配置真实运行中
+(1) 恒等 stub 不能解除冻结，评审落点出现至少一个被宿主执行的 claims 文件；(2) 半关卡预算评审在
+第 1 关即触发；(3) GAME_OVER/预算类评审后的重复致死路线不再复发（沿用上轮已观测的止损效果）。
+
+改动（一个主因子：评审落点验收；预算呈现与 prompt 澄清为配套最小项）：
+1. **产物探针**：kernel 在写 `work/world_model.py` / `work/claims/*.py` 时就地执行+回测
+   （`_probe_artifact`：model 算 tested/correct/identity，claim 算 checked/support/counter），随 file RPC 上报。
+2. **非平凡验收**：待定落点命中时宿主检查探针——加载失败、或 predict 在 ≥5 条已录转移上不优于
+   恒等复制（correct ≤ identity）→ 冻结不解除，冻结文案指明"改 predict 或改落 claims"；新冻结理由
+   回传 kernel（`review_required` 随 file 回包更新）。
+3. **关卡预算可见**：state/gradient/harness_state 增加 `level_budget(_left)`（bridge `used/maximum` 本就
+   按关卡计）；状态行显示两级预算；≤25% 时注入 LEVEL BUDGET 提示（引导把残局花在探针和 claims 沉淀）；
+   半预算评审触发改用关卡预算；extension 预算终止判定并入 `level_budget_left === 0`。
+4. **prompt 澄清**：两级预算语义与"预算不回退、清零即终"；kernel 为纯 CPython、第三方库先试后用；
+   评审节写明 claims/model 落点的验收规则与 rule/action 层结论优先落 claims。
+
+验证（2026-11-25）：功能正确——Node 单测 54/54（新增 stub 冻结、坏 claims 冻结两用例；半预算用例改为
+关卡口径 10/20 触发）。全链路——`runs/arc-layered-boundary-real-20261125-accept-ls20`（真实 bridge + SDK）：
+claims 谓词真实对局 validated（support 7/checked 8）、预算拒绝、评审 placement 在场，探针字段全链无副作用。
+自主采用/净收益——未验证，待下一次真实 provider 运行（观察命题 (1)(2)(3)）。
+推翻条件：非平凡验收导致评审解冻平均多花 >2 个 python 轮，或 agent 转而写"可执行但空洞"的 claims
+（全 None、零 support 文件 ≥3 个）以绕过验收，则回退第 2 条改为仅警告不冻结。
+遗留（记录不实施）：收敛搜索/假设淘汰的更强机制、notebook 默认开对 compaction 重建认知的缓解、
+kernel 偶发 `unknown kernel frame`/`StopIteration` 崩溃（外部机器报告，本地无 repro）。
+
 ## 6. 风险
 
 - 评审冻结是最强干预，与 R6 有张力。边界：宿主只决定"何时必须评审"，不决定"评审出什么"；触发全部是
