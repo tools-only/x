@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Workspace } from '../demo/arc_thin_workspace.ts';
 import { Binder } from '../demo/arc_thin_binder.ts';
-import { NativeRuntime, formatTaskRuntimeEvidence } from '../demo/arc_thin_native_runtime.ts';
+import { NativeRuntime } from '../demo/arc_thin_native_runtime.ts';
 import { validatePythonComponent } from '../demo/arc_thin_components.ts';
 
 test('B: parent Python save records creation separately from a later component call', async () => {
@@ -76,57 +76,6 @@ test('USE-CHANNEL: every saved tool is callable, act-capable or not; the schema 
   } finally { runtime.close(); }
 });
 
-test('TASK-EVIDENCE: repeated Python structure is surfaced as a sourced fact without claiming semantic equivalence', () => {
-  const evidence = formatTaskRuntimeEvidence([{ gist: 'scan one color', calls: 3, samples: ['for y, row in enumerate(grid): pass'] }]);
-  assert.match(evidence, /component_runs\.jsonl/);
-  assert.match(evidence, /3 recent calls share code structure/);
-  assert.match(evidence, /does not establish that the calls answered the same question/);
-  assert.equal(formatTaskRuntimeEvidence([]), '');
-});
-
-test('TASK-EVIDENCE: exact same-observation tool inputs surface once with call and result references', () => {
-  const root = mkdtempSync(join(tmpdir(), 'native-task-repeat-evidence-'));
-  const workspace = new Workspace(root);
-  const binder = new Binder(workspace, validatePythonComponent);
-  const taskFacts = [
-    { kind: 'tool', tool: 'python', decision: 1, n: 0, state_hash: 'state1', input_hash: 'same', output_hash: 'out', tool_call_id: 'call_a', result_ref: 'results/r1.txt' },
-    { kind: 'tool', tool: 'python', decision: 1, n: 0, state_hash: 'state1', input_hash: 'same', output_hash: 'out', tool_call_id: 'call_b', result_ref: 'results/r2.txt' },
-    { kind: 'tool', tool: 'python', decision: 1, n: 0, state_hash: 'state1', input_hash: 'different', output_hash: 'out', tool_call_id: 'call_c' },
-  ];
-  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder, self: binder,
-    state: () => ({}), level: () => 0, actionCount: () => 1, decision: () => 2,
-    taskFacts: () => taskFacts, log() {}, usage() {}, wrap: (_name, fn) => fn });
-  try {
-    const evidence = runtime.taskEvidenceText(0);
-    assert.match(evidence, /exact python input repeated 2 times from the same visible state/);
-    assert.match(evidence, /call_a, call_b/);
-    assert.match(evidence, /recorded outputs match/);
-    assert.match(evidence, /results\/r1\.txt, results\/r2\.txt/);
-    assert.match(evidence, /not proof the calls were unnecessary/);
-    assert.equal(runtime.taskEvidenceText(0), '', 'the same evidence is not repeated within the same run');
-  } finally { runtime.close(); }
-});
-
-test('TASK-EVIDENCE: repeated SelfRoot reads are surfaced as a task-level evidence gap', () => {
-  const root = mkdtempSync(join(tmpdir(), 'native-self-read-repeat-'));
-  const workspace = new Workspace(root);
-  const binder = new Binder(workspace, validatePythonComponent);
-  const taskFacts = [
-    { kind: 'tool', tool: 'read_self', decision: 3, n: 4, state_hash: 'state1', input_hash: 'same', output_hash: 'out', output: 'SelfRoot index answer', tool_call_id: 'read_a' },
-    { kind: 'tool', tool: 'read_self', decision: 3, n: 4, state_hash: 'state1', input_hash: 'same', output_hash: 'out', output: 'SelfRoot index answer', tool_call_id: 'read_b' },
-  ];
-  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder, self: binder,
-    state: () => ({}), level: () => 0, actionCount: () => 5, decision: () => 4,
-    taskFacts: () => taskFacts, log() {}, usage() {}, wrap: (_name, fn) => fn });
-  try {
-    const evidence = runtime.taskEvidenceText(0);
-    assert.match(evidence, /exact read_self input repeated 2 times from the same visible state/);
-    assert.match(evidence, /Answer already obtained in this decision: SelfRoot index answer/);
-    assert.match(evidence, /read_a, read_b/);
-    assert.equal(runtime.taskEvidenceText(0), '', 'the same evidence is not repeated at the same run boundary');
-  } finally { runtime.close(); }
-});
-
 test('AGENT-RUNTIME-IFACE: save adapts an exact session ref and rejects incomplete tool content', async () => {
   const root = mkdtempSync(join(tmpdir(), 'native-save-intent-'));
   const workspace = new Workspace(root);
@@ -186,32 +135,6 @@ test('noteSave forwards process prompt saves to the host callback', async () => 
   try {
     runtime.noteSave('prompts/process/reuse.md', 'saved · loaded');
     assert.deepEqual(saved, [['prompts/process/reuse.md', 'saved · loaded']]);
-  } finally { runtime.close(); }
-});
-
-test('stateless Python reuses an exact successful pure result only while the observation is unchanged', async () => {
-  const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'native-stateless-cache-')));
-  const binder = new Binder(workspace);
-  const logs: any[] = [];
-  let grid = [[1, 2]];
-  let n = 0;
-  const runtime = new NativeRuntime({ pi: { registerTool() {} } as any, workspace, binder, self: binder,
-    state: () => ({ grid }), level: () => 0, actionCount: () => n, pythonSession: false,
-    log(file, row) { logs.push({ file, ...row }); }, usage() {}, wrap: (_name, fn) => fn });
-  try {
-    const code = 'print(sum(map(sum, grid)))';
-    assert.match((await runtime.python(code)).content[0].text, /3/);
-    assert.match((await runtime.python(code)).content[0].text, /same code on the same state, not run again/);
-    assert.deepEqual(logs.filter(row => row.file === 'python_calls.jsonl').map(row => Boolean(row.cached)), [false, true]);
-    grid = [[4, 5]];
-    assert.match((await runtime.python(code)).content[0].text, /9/);
-    assert.equal(logs.filter(row => row.file === 'python_calls.jsonl').filter(row => row.cached).length, 1,
-      'changed observation content invalidates a cache even when action count is unchanged');
-    n = 1;
-    assert.match((await runtime.python(code)).content[0].text, /9/);
-    assert.match((await runtime.python(code)).content[0].text, /same code on the same state, not run again/);
-    assert.equal(logs.filter(row => row.file === 'python_calls.jsonl').filter(row => row.cached).length, 2,
-      'a new action epoch executes once before that result can be reused');
   } finally { runtime.close(); }
 });
 

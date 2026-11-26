@@ -81,17 +81,6 @@ export function arcMetrics(trajectory: any[], observation: any) {
   ];
 }
 
-export function arcHistoryPage(trajectory: any[], offset = 0, count = 8) {
-  const start = Math.max(0, trajectory.length - offset - Math.min(count, 10));
-  const end = Math.max(0, trajectory.length - offset);
-  const actions = trajectory.slice(start, end).map((row, index) => ({ row, n: start + index + 1 })).reverse().map(({ row, n }) => ({
-    n, action: row.action, x: row.x, y: row.y, changed_cells: row.changed_cells,
-    level_changed: row.level_changed, levels_completed: row.levels_completed, state: row.state,
-    note: row.note, transition: `transition:${n}`,
-  }));
-  return { actions, total: trajectory.length, next_offset: start > 0 ? offset + actions.length : null };
-}
-
 /** Opaque ARC run facts stored inside SelfRoot's single live runtime-view object. */
 export function arcRuntimeView(observation: any, trajectory: any[], decision: number, context: Record<string, unknown> = {}) {
   const grid = observation?.grid ?? observation?.frame?.grid ?? observation?.frames?.at?.(-1) ?? null;
@@ -100,7 +89,7 @@ export function arcRuntimeView(observation: any, trajectory: any[], decision: nu
       levels_completed: Number(observation?.levels_completed ?? 0), action_budget: observation?.action_budget ?? null },
     observation: { state: observation?.state ?? null, levels_completed: Number(observation?.levels_completed ?? 0),
       available_actions: observation?.available_actions ?? [], grid },
-    history: { total_actions: trajectory.length, full: 'read_self(section="arc_history", offset, count)' },
+    history: { total_actions: trajectory.length, full: 'read_self(section="ledger")' },
     context,
   };
 }
@@ -129,39 +118,12 @@ export function arcOperationContract(kind: 'component' | 'orchestration' | 'revi
 }
 
 /** ARC-only protocol wiring. The core remains task-neutral; this adapter owns facts and tool dispatch. */
-export function installArcSelfRootTools({ pi, evo, resolveSessionToolOperation, text, persist, contextItem, readEvidence, runPosition, trajectory = () => [],
-  pythonSession = true }: any) {
-  const readResults = new Map<string, unknown>();
+export function installArcSelfRootTools({ pi, evo, resolveSessionToolOperation, text, persist, contextItem, readEvidence, runPosition }: any) {
   const open = (keys: string[]) => Type.Object(Object.fromEntries(keys.map(k => [k, Type.Optional(Type.Any())])), { additionalProperties: true });
   const register = (name: string, description: string, parameters: any, execute: (a: any, ctx: any, signal?: any) => any) => pi.registerTool({
     name, label: name, description, parameters,
       execute: async (_id: string, args: any, signal: any, _update: any, ctx: any) => {
-      try {
-        const result = await execute(args ?? {}, ctx, signal);
-        persist();
-        const selfIndex = name === 'read_self' && (args?.section ?? 'policy') === 'self' && result?.entries;
-        const history = name === 'read_self' && args?.section === 'arc_history' && result?.actions;
-        const output = typeof result === 'string' ? result : history
-          ? `ARC history: ${result.actions.length}/${result.total} actions, newest first; cells=changed cells, level=level changed (0/1).\n` +
-            result.actions.map((row: any, index: number) =>
-              `#${row.n} ${row.action}${Number.isInteger(row.x) && Number.isInteger(row.y) ? `(${row.x},${row.y})` : ''}` +
-              ` cells=${row.changed_cells ?? '?'} level=${Number(Boolean(row.level_changed))} ${row.transition}` +
-              (index === 0 && row.note ? ` note=${JSON.stringify(String(row.note).replace(/\s+/g, ' ').slice(0, 64))}` : '')).join('\n') +
-            `\nnext_offset=${result.next_offset ?? 'none'}; detail: read_self(section="evidence",ref="transition:N",offset=1)`
-          : selfIndex
-          ? `SelfRoot r${result.revision}; entries ${result.entries.offset + 1}-${result.entries.offset + result.entries.count}/${result.entries.total}: ` +
-            `${result.entries.rows.map((row: any) => {
-              const current = row.current ?? {};
-              const state = current.active === false ? 'candidate' : current.version ? `v${current.version}`
-                : row.kind === 'orchestration' ? `r${current.revision ?? 1}` : 'configured';
-              return `${row.kind}/${row.name} ${state} E${Number(row.use.exposed)}R${Number(row.use.body_read)}X${Number(row.use.executed)}` +
-                `${row.use.changed ? '+' : ''}${row.use.outcomes.length ? `@${row.use.outcomes.slice(-1)[0]}` : ''}`;
-            }).join(' | ')}; E=exposed, R=body read, X=executed, +=changed; semantic use is not inferred. ` +
-            `${result.entries.next === null ? 'No next page.' : `Next offset ${result.entries.next}: read_self(section="self", offset=${result.entries.next}, count=8).`} ` +
-            `Expand source/definitions with read_self_component or read_self(section=policy|definition|ledger).`
-          : JSON.stringify(result, null, name === 'read_self' ? 2 : undefined);
-        return text(output, undefined, Boolean(result?.context_reset_requested));
-      }
+      try { const result = await execute(args ?? {}, ctx, signal); persist(); return text(typeof result === 'string' ? result : JSON.stringify(result), undefined, Boolean(result?.context_reset_requested)); }
       catch (error: any) {
         evo.fact('tool_failed', { tool: name, error: String(error?.message ?? error) });
         persist();
@@ -169,31 +131,17 @@ export function installArcSelfRootTools({ pi, evo, resolveSessionToolOperation, 
       }
     },
   });
-  register('read_self', 'On-demand lookup when the working view lacks a needed fact. Current observation, recent action results and task memory are already provided. Use section="arc_history" for older actions (up to 10 per page), section="evidence" for a specific transition, or section="self"/"policy"/"ledger" to inspect SelfRoot.', selfRootToolParameters, (a) => {
-    // SelfRoot policy, component and ledger reads can change during this decision after a reflection.
-    const cacheable = a.section === 'arc_history' || a.section === 'evidence';
-    const actions = trajectory();
-    const key = `${runPosition?.()?.decision ?? 0}:${actions.length}:${JSON.stringify(a)}`;
-    if (cacheable && readResults.has(key)) return readResults.get(key);
-    const result = a.section === 'evidence' ? readEvidence?.(a.ref, a.offset ?? 0) ?? { ref: a.ref, state: 'missing' }
+  register('read_self', 'Read the current ARC SelfRoot view, ledger, evidence, policy, or context item. ARC evidence refs decision:N show recorded work; transition:N at offset 0 shows only the prior frame and action, offset 1 reveals the recorded outcome.', selfRootToolParameters, (a) =>
+    a.section === 'evidence' ? readEvidence?.(a.ref, a.offset ?? 0) ?? { ref: a.ref, state: 'missing' }
       : a.section === 'context_item' && a.ref ? contextItem?.(a.ref) ?? { ref: a.ref, state: 'missing' }
-        : a.section === 'arc_history' ? arcHistoryPage(actions, a.offset ?? 0, a.count ?? 8)
-          : evo.detail(a.section ?? 'policy', a.offset ?? 0, a.count ?? 20);
-    if (cacheable) readResults.set(key, result);
-    return result;
-  });
+        : evo.detail(a.section ?? 'policy', a.offset ?? 0, a.count ?? 20));
   register('read_self_component', 'Read one active or retained ARC SelfRoot component.', selfRootToolParameters, (a) => {
     const rows = evo.allComponents?.() ?? evo.active?.() ?? [];
     const found = rows.filter((x: any) => (!a.kind || x.kind === a.kind) && (!a.name || x.name === a.name) && (a.version === undefined || x.version === a.version));
     return found.length ? found : { state: 'missing', kind: a.kind ?? null, name: a.name ?? null, version: a.version ?? null };
   });
   const component = operationContract('component');
-  const componentKeys = Object.keys(component.properties).filter(key => pythonSession || key !== 'session_ref');
-  const componentDescription = pythonSession ? component.description
-    : component.description.replace('Python session functions can be exported with session_ref and description.',
-      'Provide complete source; Python scratch definitions do not persist.');
-  register('reflect_component', componentDescription, open(componentKeys), async (a, _ctx, signal) => {
-    if (!pythonSession && a.session_ref !== undefined) throw Error('Python session publishing is disabled; provide complete source.');
+  register('reflect_component', component.description, open(Object.keys(component.properties)), async (a, _ctx, signal) => {
     const operation = normalizeOperation('component', a, undefined, { layer: evo.mech.l4 });
     return evo.reflectComponent(await resolveSessionToolOperation(operation, signal));
   });

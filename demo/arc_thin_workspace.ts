@@ -138,16 +138,15 @@ export class Workspace {
     // A python result's address ("[P12]", "[P15 = P12: same code]") stays its first line, whatever is done to the rest.
     const mark = /^\[P\d+[^\]\n]*\]\n/.exec(body)?.[0];
     if (mark) return mark + this.receipt(body.slice(mark.length), status, keyLines, source, resultLabel);
-    const displayLimit = resultLabel === 'tool' ? 900 : this.inlineChars;
     // Python results are always filed with a ref even when short: the agent decides whether to read back exact lines,
     // and other tool outputs keep their whole short text.
-    if (resultLabel !== 'python' && body.length <= displayLimit) return body;
+    if (resultLabel !== 'python' && body.length <= this.inlineChars) return body;
     const {hash, ref} = source ? {hash: createHash('sha256').update(body).digest('hex'), ref: source} : this.saveResult(body);
     const raw = body.split('\n');
     const keys = [...keyLines, ...raw.filter(s => /^(KEY:|\[key\])/.test(s))].join('\n').slice(0, 350);
     const { lines, stubs } = stubLongLines(raw);
     const readBack = `read ${ref} with offset/limit for exact lines${stubs ? ', or open it in python' : ''}.`;
-    if (stubs && lines.join('\n').length <= displayLimit)
+    if (stubs && lines.join('\n').length <= this.inlineChars)
       return `Result ${status}; ${body.length} chars; ${lines.length} lines; sha256=${hash}\nPreview partial; ${stubs} long line${stubs === 1 ? '' : 's'} not shown, every other line whole:\n${lines.join('\n')}\n${keys ? keys + '\n' : ''}ref: ${ref}\n${readBack}`;
     const shown = new Map<number, string>();
     const sample = (indices: number[]) => {

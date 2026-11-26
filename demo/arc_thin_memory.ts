@@ -61,56 +61,27 @@ export type MemoryState = {
 };
 /** Individually addressable ARC task memory passed to SelfRoot for context selection. */
 export type TaskMemoryItem = {
-	ref: string; kind: "checkpoint" | "strategy" | "hypothesis" | "fact"; key: string; status: string; since: number;
+	ref: string; kind: "strategy" | "hypothesis" | "fact"; key: string; status: string; since: number;
 	depends_on: string[]; sourceRef: string; text: string;
 };
 
 /** Project agent-authored semantic memory without selecting or interpreting it. */
 export function projectTaskMemoryItems(state: MemoryState): TaskMemoryItem[] {
-	const orderedStrategies = [...state.strategies].sort(([, a], [, b]) => Number(b.status === "active") - Number(a.status === "active") || b.since - a.since);
-	const active = orderedStrategies.find(([, strategy]) => strategy.status === "active");
-	const checkpointHypotheses = active ? active[1].depends_on.flatMap(key => {
-		const hypothesis = state.hypotheses.get(key);
-		if (!hypothesis) return [];
-		const latestRefutation = [...hypothesis.evidence].reverse().find(item => item.verdict === "refutes");
-		const latestOther = [...hypothesis.evidence].reverse().find(item => item.verdict !== "refutes");
-		const evidence = [latestRefutation, latestOther].filter((item): item is Evidence => Boolean(item));
-		return [{ key, hypothesis, evidence }];
-	}) : [];
-	const strategies = orderedStrategies.map(([key, strategy]): TaskMemoryItem => {
-		if (active?.[0] === key) {
-			const linked = checkpointHypotheses.map(({ key: hypKey, hypothesis, evidence }) =>
-				`${hypKey} [${hypothesis.status}]${hypothesis.predicts ? ` predicts ${hypothesis.predicts}` : ""}` +
-				`${hypothesis.next_test ? `; next test: ${hypothesis.next_test}` : ""}` +
-				`${evidence.map(item => `; #${item.action ?? "?"} ${item.verdict} under ${item.condition}: ${item.observed}`).join("")}` +
-				`; full record: memory:${hypKey}`);
-			const since = Math.max(strategy.since, ...checkpointHypotheses.flatMap(item => item.evidence.map(result => result.action ?? 0)));
-			return { ref: "task-memory:checkpoint:active", kind: "checkpoint", key: "active", status: "active", since,
-				depends_on: strategy.depends_on, sourceRef: `memory:${key}`,
-				text: [`Active experiment ${key}: ${strategy.plan}`, strategy.note && `last update: ${strategy.note}`,
-					strategy.steps?.length && `planned steps: ${strategy.steps.join(" → ")}`,
-					linked.length && `linked evidence: ${linked.join(" | ")}`,
-					"This is Agent-authored memory; action receipts in the current observation contain actual environment feedback."].filter(Boolean).join("; ") };
-		}
-		return { ref: `task-memory:strategy:${key}`, kind: "strategy", key, status: strategy.status,
-			since: strategy.since, depends_on: strategy.depends_on, sourceRef: `memory:${key}`,
-			text: `${strategy.plan}${strategy.note ? `; note: ${strategy.note}` : ""}${strategy.steps?.length ? `; steps: ${strategy.steps.join(" → ")}` : ""}` };
-	});
-	const hypotheses = [...state.hypotheses].sort(([, a], [, b]) => Number(b.status === "contested") - Number(a.status === "contested") ||
-		Math.max(...b.evidence.map(item => item.action ?? 0), 0) - Math.max(...a.evidence.map(item => item.action ?? 0), 0)).map(([key, hypothesis]): TaskMemoryItem => {
+	const strategies = [...state.strategies].map(([key, strategy]): TaskMemoryItem => ({
+		ref: `task-memory:strategy:${key}`, kind: "strategy", key, status: strategy.status,
+		since: strategy.since, depends_on: strategy.depends_on, sourceRef: `memory:${key}`,
+		text: `${strategy.plan}${strategy.note ? `; note: ${strategy.note}` : ""}${strategy.steps?.length ? `; steps: ${strategy.steps.join(" → ")}` : ""}`,
+	}));
+	const hypotheses = [...state.hypotheses].map(([key, hypothesis]): TaskMemoryItem => {
 		const evidence = hypothesis.evidence;
-		const latestRefutation = [...evidence].reverse().find(item => item.verdict === "refutes");
-		const latestOther = [...evidence].reverse().find(item => item.verdict !== "refutes");
-		const shownEvidence = evidence.filter(item => item === latestRefutation || item === latestOther);
 		return {
 			ref: `task-memory:hypothesis:${key}`, kind: "hypothesis", key, status: hypothesis.status,
 			since: evidence.reduce((latest, item) => Math.max(latest, item.action ?? 0), 0), depends_on: [], sourceRef: `memory:${key}`,
 			text: [hypothesis.question, hypothesis.claim, hypothesis.predicts && `predicts ${hypothesis.predicts}`,
 				hypothesis.next_test && `next ${hypothesis.next_test}`,
-				...(evidence.length > shownEvidence.length ? [`${evidence.length - shownEvidence.length} earlier results omitted; full evidence at memory:${key}`] : []),
-				...shownEvidence.map(item => `#${item.action ?? "?"} ${item.verdict} under ${item.condition}: ${item.observed}`)].filter(Boolean).join("; "),
+				...evidence.map(item => `#${item.action ?? "?"} ${item.verdict} under ${item.condition}: ${item.observed}`)].filter(Boolean).join("; "),
 		};
-	}).filter(item => !checkpointHypotheses.some(linked => linked.key === item.key));
+	});
 	const facts = [...state.facts].map(([key, fact]): TaskMemoryItem => ({
 		ref: `task-memory:fact:${key}`, kind: "fact", key, status: "recorded", since: fact.at ?? 0,
 		depends_on: [], sourceRef: `memory:${key}`, text: fact.text,
@@ -129,7 +100,7 @@ export type HypothesisInput = {
 	check?: string;
 };
 export type TestInput = { action?: number; condition?: string; observed?: string; verdicts?: Record<string, Verdict> };
-export type StrategyInput = { key: string; plan?: string; note?: string; depends_on?: string[]; uses?: string[]; status?: StrategyStatus; steps?: string[] | string };
+export type StrategyInput = { key: string; plan?: string; depends_on?: string[]; uses?: string[]; status?: StrategyStatus; steps?: string[] | string };
 export const MAX_STEPS = 64;
 
 /**
@@ -543,9 +514,6 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		const key = stratKey(item.key);
 		const existing = strategies.get(key);
 		if (!existing && !nonEmpty(item.plan)) { errors.push(`${key}: a new strategy needs plan`); continue; }
-		if (item.note !== undefined && (typeof item.note !== "string" || item.note.length > 300)) {
-			errors.push(`${key}: note must be text up to 300 characters`); continue;
-		}
 		const depends = item.depends_on === undefined ? existing?.depends_on ?? [] : [...new Set(item.depends_on.map((k) => hypKey(k)))];
 		const unknown = depends.filter((k) => !hypotheses.has(k) && !existing?.depends_on.includes(k));
 		if (unknown.length) {
@@ -574,10 +542,6 @@ export function planMemoryUpdate(state: MemoryState, params: MemoryParams, actio
 		const status = item.status ?? (existing ? existing.status : item.key === defaultActive ? "active" : "suspended");
 		if (item.status === "active" || (!existing && status === "active")) explicitActive.add(key);
 		next = setStatus(key, next, status);
-		if (item.note !== undefined) {
-			const note = item.note.trim();
-			if (note) next.note = note; else delete next.note;
-		}
 		strategies.set(key, next);
 		touch(changedStrats, key, existing ? (existing.status !== next.status ? `→ ${next.status}` : undefined) : `new, ${next.status}`);
 		if (item.steps !== undefined)

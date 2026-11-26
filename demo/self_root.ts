@@ -151,7 +151,7 @@ export function entranceAskBlock(layer: boolean, closure = true): string {
  * runner's task prompt and through its own orchestration contract. */
 export const META_STRATEGY = 'This harness is yours: components, policy and orchestration are writable at every request; each write activates at the next request boundary and its receipt returns to the same self view. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. While a task is still active, a recorded task-feedback checkpoint or unresolved delivery stall can open a self-evolution pass. The current task pauses for that pass and resumes at the same step; evolution is not deferred until one task ends so the next can use it. Judgment stays with you.';
 /** metaTaskWrites='pass': the reflection writes are mounted in evolution passes; task decisions open one on request. */
-export const META_STRATEGY_PASS_WRITES = 'This harness is yours: components, policy and orchestration are written in a self-evolution pass through reflect_component and reflect_orchestration; each write activates at the next request boundary and its receipt returns to the same self view. During task decisions, request_evolution(focus) opens a pass at the next request boundary. Temporary Python definitions do not become harness components; use the source-writing interface available in the current task or evolution pass. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. A recorded task-feedback checkpoint, an agent request or an unresolved delivery stall can open a pass; the task pauses for it and resumes at the same step. Judgment stays with you.';
+export const META_STRATEGY_PASS_WRITES = 'This harness is yours: components, policy and orchestration are written in a self-evolution pass through reflect_component and reflect_orchestration; each write activates at the next request boundary and its receipt returns to the same self view. During task decisions, request_evolution(focus) opens a pass at the next request boundary, and a documented Python session function still publishes as a tool. The task side - task goal, acceptance and run plan - is yours and lives in your orchestration contract. The runtime books facts without ranking, diagnosis or recommendation. A recorded task-feedback checkpoint, an agent request or an unresolved delivery stall can open a pass; the task pauses for it and resumes at the same step. Judgment stays with you.';
 /** META pass: the host opens an in-task checkpoint; the Agent judges and applies any harness change. */
 export const META_PASS_STRATEGY = 'EVOLUTION PASS DURING THE ACTIVE TASK. The task is paused at a recorded progress/feedback checkpoint, not completed; after this pass, resume the same task at the same step. What exists: read_self(section="observation" | "windows" | "segments" | "ledger" | "self" | "policy") reads the run view; read_self(section="evidence", ref="request:N" | "artifact:vK") expands one recorded provider request or one rendered artifact version; read_self_component(kind, name, version?) reads a component\'s source and retained revisions; reflect_component and reflect_orchestration hot-modify the active harness at the next request boundary. Round 1 closes through decide_exit. Round 2 is seven focused self-evolution execution turns: analyze the focus, then apply a justified change through its reflection interface. A successful hot modification or an explicit evidence-based no_change closes that focus. Resume this task after the seventh focus so later task work can use the active harness.';
 const META_SELECTIVE_STRATEGY = 'EVOLUTION CHECK DURING THE ACTIVE TASK. Read the current SelfRoot view and the preceding task stage. Close with decide_exit. Choose none to resume the task, or one specialist to inspect and modify. A selected specialist ends after its focused turn; then resume the task.';
@@ -760,39 +760,7 @@ export class SelfRoot extends LiveAgentSelf {
   }
   detail(section: string, offset = 0, count = 20): any {
     if (section === 'pin') return this.pinView();
-    if (section === 'self') {
-      const view = this.reviewSelfView();
-      const start = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
-      const size = Number.isSafeInteger(count) && count > 0 ? Math.min(count, 8) : 8;
-      const all = view.entries ?? [];
-      const entries = all.slice(start, start + size).map((entry: any) => {
-        const value = entry.value;
-        const encoded = JSON.stringify(value ?? null);
-        const current = encoded.length <= 360 ? copy(value) : {
-          summary: `current value is ${encoded.length} chars; expand through ${entry.kind === 'policy' ? 'read_self(section="policy")'
-            : entry.kind === 'orchestration' ? 'read_self(section="definition")'
-              : `read_self_component(kind="${entry.kind}", name="${entry.name}")`}`,
-          chars: encoded.length,
-        };
-        return { name: entry.name, kind: entry.kind, writable: entry.writable, current,
-          use: { exposed: entry.facts?.exposure ?? false, body_read: entry.facts?.skill_body_read ?? false,
-            executed: entry.facts?.successful_execution ?? false, semantic_use: entry.facts?.semantic_use ?? 'unknown',
-            changed: entry.facts?.changed ?? false, refs: entry.facts?.source_refs?.slice(-2) ?? [],
-            outcomes: entry.facts?.outcome_refs?.slice(-2) ?? [] } };
-      });
-      return { revision: view.revision, strategy: view.strategy, categories: view.categories,
-        entries: { offset: start, count: entries.length, total: all.length, next: start + entries.length < all.length ? start + entries.length : null, rows: entries },
-        facts: { total: view.facts?.total ?? 0, last: view.facts?.last?.slice(-6) ?? [], read: 'read_self(section="ledger", offset, count)' },
-        ...(view.evolution_pass ? { evolution_pass: {
-          trigger: view.evolution_pass.trigger ?? null,
-          round: view.evolution_pass.round ?? null,
-          specialist: view.evolution_pass.specialist ?? null,
-          entry: typeof view.evolution_pass.entry === 'string' ? view.evolution_pass.entry.slice(0, 900) : undefined,
-          prior: view.evolution_pass.prior ? { closed: view.evolution_pass.prior.closed, outcome: view.evolution_pass.prior.outcome,
-            reason: view.evolution_pass.prior.reason, carry: view.evolution_pass.prior.carry?.slice?.(0, 4) } : undefined,
-        } } : {}),
-        expand: 'read_self(section="policy" | "definition" | "ledger", offset, count) or read_self_component(kind, name, version?)' };
-    }
+    if (section === 'self') return { ...this.mirror(), ledger: this.read(offset, count), conditions: { settlement_count: this.settlementCount, conditions: copy(this.conditionSet), published_steps: copy(FLOOR_STEPS) } };
     if (section === 'ledger') return this.read(offset, count);
     if (section === 'policy') return copy(this.policy);
     if (section === 'contract') return copy(this.contract);
@@ -2443,10 +2411,7 @@ export class SelfRoot extends LiveAgentSelf {
     // plain text, so the adapter places it where a task decision has its observation. It already renders round 1's
     // reason and carry, so the view repeats neither.
     if (meta) return {
-      root_id: this.root_id, revision: this.serial,
-      task_observation: [meta.entry ? `PASS ENTRY\n${meta.entry}` : '',
-        typeof input.taskObservation === 'string' && input.taskObservation ? input.taskObservation : ''].filter(Boolean).join('\n\n'),
-      execution: { mode: this.currentMode, step: run.step },
+      root_id: this.root_id, revision: this.serial, task_observation: meta.entry ? `PASS ENTRY\n${meta.entry}` : '', execution: { mode: this.currentMode, step: run.step },
       evolution: { trigger: meta.facts, stage: this.stageView(meta.window),
         ...(specialist ? { focus: specialist.id, prior: meta.prior?.closed, ...(meta.entry ? {} : { carry: meta.prior?.carry?.join(' | ').slice(0, 600) }) } : {}),
         active_components: this.active().filter(component => !specialist || component.kind === specialist.id)

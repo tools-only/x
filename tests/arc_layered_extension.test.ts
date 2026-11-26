@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -116,22 +116,6 @@ test("note blocks are overwritten one by one, carried and persisted", async () =
   await call();
   assert.match(textOf(sent[0].message.content), /World model: walls are gray\nsecond line\nPlan: go left/);
   assert.deepEqual(extractTags("The plan is simple.\nPlanning ahead"), {});
-});
-
-test("lite: the cut stays put until the kept part passes the cap again, and the notes sit on top of what remains", () => {
-  const { handlers, root } = setup({ lite: true, contextCap: 5000, contextTarget: 2500, foldAfter: 0, compactMargin: 0 });
-  mkdirSync(join(root, "work"), { recursive: true });
-  writeFileSync(join(root, "work", "GUIDE.md"), "UP moves the block");
-  const block = (id: string) => [{ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text: id }] },
-    { role: "assistant", content: [{ type: "text", text: "a".repeat(4000) }] },
-    { role: "toolResult", toolCallId: id, content: [{ type: "text", text: "r".repeat(4000) }] }];
-  const ctx = { model: { contextWindow: 128000 } };
-  const first = handlers.context({ messages: [...block("1"), ...block("2"), ...block("3")] }, ctx).messages;
-  assert.match(first[0].content[0].text, /trimmed[\s\S]*UP moves the block[\s\S]*WORKING.md\n\(empty\)/);
-  assert.equal(first[1].content[0].text, "3");
-  const second = handlers.context({ messages: [...block("1"), ...block("2"), ...block("3"), ...block("4")] }, ctx).messages;
-  assert.equal(second[1].content[0].text, "3");
-  assert.equal(second.length, 7);
 });
 
 test("eviction drops whole user blocks, keeps call/result pairs and the latest state, strips older images", () => {

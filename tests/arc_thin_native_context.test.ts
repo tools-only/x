@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boundedResultPreview, carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, isolateCompletedToolBatches, projectNativeDecision, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
+import { carryFields, clipEnds, collapseRepeatedCalls, freezeHistory, projectNativeHistory, summarizeHistory, visibleActions } from '../demo/arc_thin_native_context.ts';
 import {readFileSync} from 'node:fs';
 import { loadPrompt, renderPrompt } from '../demo/prompt_loader.ts';
 
@@ -90,98 +90,6 @@ test('visible actions are read from action receipts in the summary', () => {
   const seen = visibleActions('arc_action({"action":"ACTION1"}) → #12 ACTION1 → level_changed=false\n#13 ACTION4 → changed 2\n' +
     'python({}) → #14 not an action\nsaid: #15 ACTION1 later');
   assert.deepEqual([...seen], [12, 13]);
-});
-
-test('tool history isolation archives complete old batches and keeps the newest two paired', () => {
-  const history: any[] = [];
-  for (let n = 0; n < 4; n++) history.push(
-    { role: 'assistant', content: [{ type: 'thinking', thinking: 'private reasoning' }, { type: 'toolCall', id: `c${n}`, name: 'python', arguments: { code: `print(${n})` } }] },
-    { role: 'toolResult', toolCallId: `c${n}`, toolName: 'python', content: [{ type: 'text', text: `result ${n}` }] });
-  const archived: string[] = [];
-  const projected = isolateCompletedToolBatches(history, (call, result) => {
-    archived.push(JSON.stringify({ call, result })); return `results/tool-${call.id}.txt`;
-  });
-  assert.equal(archived.length, 2);
-  assert.match(JSON.stringify(projected), /results\/tool-c0\.txt/);
-  assert.match(JSON.stringify(projected), /results\/tool-c1\.txt/);
-  assert.equal(JSON.stringify(projected).includes('print(0)'), false);
-  assert.equal(JSON.stringify(projected).includes('result 0'), true, 'short semantic preview remains visible');
-  assert.equal(projected.filter(m => m.role === 'toolResult').length, 2);
-  assert.deepEqual(projected.filter(m => m.role === 'assistant' && m.content?.some((b: any) => b.type === 'toolCall'))
-    .flatMap(m => m.content.filter((b: any) => b.type === 'toolCall').map((b: any) => b.id)), ['c2', 'c3']);
-  assert.equal(JSON.stringify(projectNativeHistory(projected)).includes('private reasoning'), false);
-});
-
-test('archived tool previews retain both the beginning and the final answer of long results', () => {
-  const body = `INPUT SUMMARY ${'x'.repeat(900)} FINAL ANSWER: region=blue; next_action=ACTION4`;
-  const history = [
-    { role: 'assistant', content: [{ type: 'toolCall', id: 'old', name: 'python', arguments: { code: 'analyze()' } }] },
-    { role: 'toolResult', toolCallId: 'old', toolName: 'python', content: [{ type: 'text', text: body }] },
-  ];
-  const projected = isolateCompletedToolBatches(history, () => 'results/old.txt', 0);
-  const visible = JSON.stringify(projected);
-  assert.match(visible, /INPUT SUMMARY/);
-  assert.match(visible, /FINAL ANSWER: region=blue; next_action=ACTION4/);
-  assert.match(visible, /results\/old\.txt/);
-  assert.doesNotMatch(visible, /x{200}/);
-});
-
-test('completed short tool answers survive the next request and identical answers reuse the first receipt', () => {
-  const answer = `SelfRoot r1; entries 1-8/17: ${'candidate E0R0X0 | '.repeat(18)} Next offset 8: read_self(section="self", offset=8, count=8).`;
-  assert.ok(answer.length > 240 && answer.length < 700);
-  const history: any[] = [];
-  for (const id of ['first', 'repeat']) history.push(
-    { role: 'assistant', content: [{ type: 'toolCall', id, name: 'read_self', arguments: { section: 'self' } }] },
-    { role: 'toolResult', toolCallId: id, toolName: 'read_self', content: [{ type: 'text', text: answer }] });
-  const visible = JSON.stringify(isolateCompletedToolBatches(history, call => `results/${call.id}.txt`, 0));
-  assert.match(visible, /Next offset 8: read_self/);
-  assert.equal(visible.split('Next offset 8: read_self').length - 1, 1);
-  assert.match(visible, /Same answer as results\/first\.txt/);
-  assert.match(visible, /results\/repeat\.txt/);
-});
-
-test('ARC history receipts retain a full page through completed tool isolation', () => {
-  const answer = `ARC history: ${'action result '.repeat(55)} next_offset=10`;
-  assert.ok(answer.length > 700 && answer.length < 900);
-  const history: any[] = [];
-  for (const id of ['first', 'repeat']) history.push(
-    { role: 'assistant', content: [{ type: 'toolCall', id, name: 'read_self', arguments: { section: 'arc_history', count: 10 } }] },
-    { role: 'toolResult', toolCallId: id, toolName: 'read_self', content: [{ type: 'text', text: answer }] });
-  const visible = JSON.stringify(isolateCompletedToolBatches(history, call => `results/${call.id}.txt`, 0));
-  assert.match(visible, /next_offset=10/);
-  assert.equal(visible.split('next_offset=10').length - 1, 1);
-  assert.match(visible, /Same answer as results\/first\.txt/);
-});
-
-test('cross-decision tool receipts retain a long result’s terminal answer', () => {
-  const text = `query context ${'x'.repeat(900)} FINAL: target=(4,7); next=ACTION3`;
-  const preview = boundedResultPreview(text, 400);
-  assert.match(preview, /^query context/);
-  assert.match(preview, /FINAL: target=\(4,7\); next=ACTION3$/);
-  assert.doesNotMatch(preview, /x{300}/);
-});
-
-test('provider projection isolates every completed tool call behind an archived receipt', () => {
-  const history: any[] = [
-    { role: 'user', content: 'inspect the state' },
-    { role: 'assistant', content: [{ type: 'toolCall', id: 'secret-1', name: 'python', arguments: { code: 'print("hidden source")' } }] },
-    { role: 'toolResult', toolCallId: 'secret-1', toolName: 'python', content: [{ type: 'text', text: 'result one' }] },
-    { role: 'assistant', content: [{ type: 'toolCall', id: 'secret-2', name: 'python', arguments: { code: 'print("hidden source two")' } }] },
-    { role: 'toolResult', toolCallId: 'secret-2', toolName: 'python', content: [{ type: 'text', text: 'result two' }] },
-  ];
-  const archived: string[] = [];
-  const projected = projectNativeDecision(history, { isolateTools: true, recentToolBatches: 0, archiveTool(call, result) {
-    archived.push(JSON.stringify({ call, result })); return `results/${call.id}.json`;
-  } });
-  const visible = JSON.stringify(projected);
-  assert.equal(archived.length, 2);
-  assert.equal(visible.includes('toolCall'), false);
-  assert.equal(visible.includes('toolResult'), false);
-  assert.equal(visible.includes('hidden source'), false);
-  assert.match(visible, /results\/secret-1\.json/);
-  assert.match(visible, /results\/secret-2\.json/);
-  assert.match(visible, /result one/);
-  assert.match(visible, /result two/);
 });
 
 test('a long result keeps its start and its end, receipts from the middle, and where the whole text is', () => {

@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { Workspace } from './arc_thin_workspace.ts';
 
 export type ComponentSpec = { kind: string; name: string; description: string; enabled: boolean;
-  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; semanticView?: boolean; predictor?: boolean; guard?: boolean; hook?: boolean };
+  parameters?: any; body?: string; tools?: string[]; refs?: string[]; view?: boolean; predictor?: boolean; guard?: boolean; hook?: boolean };
 export type Component = ComponentSpec & { path: string; version: number; hash: string; source: string; level: number };
 type Entry = { path: string; version: number; hash: string; level: number; error?: string; retired?: boolean; good?: Component };
 export type Validator = (path: string, source: string) => Promise<ComponentSpec>;

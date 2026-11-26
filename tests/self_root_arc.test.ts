@@ -4,49 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SelfRoot } from '../demo/self_root.ts';
-import { ARC_SELF_ROOT_OPTIONS, arcHistoryPage, arcRuntimeView, arcSelfRootPaths, installArcSelfRootTools, loadOrCreateArcContract } from '../demo/self_root_arc.ts';
-
-test('ARC history page returns actionable receipts and preserves newest-first offsets', () => {
-  const page = arcHistoryPage([
-    { action: 'ACTION6', x: 48, y: 15, changed_cells: 2, note: 'test target', state: 'PLAYING' },
-    { action: 'ACTION6', x: 48, y: 14, changed_cells: 0, note: 'no change', state: 'PLAYING' },
-  ]);
-  assert.deepEqual(page.actions.map(row => row.n), [2, 1]);
-  assert.equal(page.actions[0].changed_cells, 0);
-  assert.equal(page.actions[0].transition, 'transition:2');
-  assert.deepEqual(arcHistoryPage([{ action: 'A' }, { action: 'B' }], 1, 1).actions.map(row => row.action), ['A']);
-  assert.equal(arcHistoryPage([{ action: 'A' }, { action: 'B' }], 0, 1).next_offset, 1);
-  assert.equal(arcHistoryPage([{ action: 'A' }, { action: 'B' }], 1, 1).next_offset, null);
-  assert.equal(arcHistoryPage(Array.from({ length: 12 }, () => ({ action: 'ACTION1' })), 0, 40).next_offset, 10);
-});
-
-test('installed ARC history reads the live trajectory after replay replaces its array', async () => {
-  const registered = new Map<string, any>();
-  let trajectory: any[] = [];
-  let revision = 1;
-  const evo = { detail: () => ({ revision }), fact: () => {} };
-  installArcSelfRootTools({ pi: { registerTool: (tool: any) => registered.set(tool.name, tool) }, evo,
-    trajectory: () => trajectory, runPosition: () => ({ decision: 1 }), persist: () => {},
-    text: (value: string) => ({ content: [{ type: 'text', text: value }] }) });
-  const read = (section: string, count?: number, offset?: number) => registered.get('read_self')
-    .execute('call', { section, count, offset }, undefined, undefined, undefined)
-    .then((result: any) => result.content[0].text as string);
-  assert.match(await read('arc_history'), /0\/0 actions/);
-  trajectory = [{ action: 'ACTION6', x: 3, y: 4, changed_cells: 2 }];
-  assert.match(await read('arc_history'), /#1 ACTION6\(3,4\) cells=2 level=0 transition:1/);
-  assert.equal(JSON.parse(await read('self')).revision, 1);
-  revision = 2;
-  assert.equal(JSON.parse(await read('self')).revision, 2, 'mutable SelfRoot reads do not reuse a stale answer');
-  trajectory = Array.from({ length: 12 }, (_, index) => ({ action: 'ACTION6', x: 48, y: 15,
-    changed_cells: 2, level_changed: false, note: `decision ${index} ${'long note '.repeat(100)}` }));
-  const page = await read('arc_history', 40, 0);
-  assert.ok(page.length <= 900, `history receipt has ${page.length} chars`);
-  assert.match(page, /#12 ACTION6/);
-  assert.match(page, /#3 ACTION6/);
-  assert.doesNotMatch(page, /#2 ACTION6/);
-  assert.match(page, /next_offset=10/);
-  assert.match(await read('arc_history', 40, 10), /#2 ACTION6/);
-});
+import { ARC_SELF_ROOT_OPTIONS, arcRuntimeView, arcSelfRootPaths, loadOrCreateArcContract } from '../demo/self_root_arc.ts';
 
 test('ARC SelfRoot starts without a SelfRoot quota, with one run view and a first-action grant', () => {
   const root = mkdtempSync(join(tmpdir(), 'arc-self-root-'));
@@ -62,7 +20,7 @@ test('ARC SelfRoot starts without a SelfRoot quota, with one run view and a firs
     assert.equal((contract as any).budget, undefined);
     assert.equal((evo.contract as any).budget, undefined);
     assert.deepEqual(evo.mirror().task_runtime.observation.grid, [[1, 2]]);
-    assert.equal(evo.mirror().task_runtime.history.full, 'read_self(section="arc_history", offset, count)');
+    assert.equal(evo.mirror().task_runtime.history.full, 'read_self(section="ledger")');
     assert.equal(arcSelfRootPaths(root).state, join(root, 'self_root', 'state.json'));
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-from autoresearch_pi.arc_thin_e2e import _provider_capacity_error, _provider_capacity_summary, _provider_context_accounting, _request_accounting
+from autoresearch_pi.arc_thin_e2e import _provider_capacity_error, _provider_capacity_summary, _request_accounting
 
 
 def test_provider_credit_and_max_output_errors_are_terminal_capacity_failures():
@@ -28,46 +28,6 @@ def test_completed_cancelled_and_unsettled_requests_are_distinct_and_not_zero_co
     assert out['attempts']==92 and out['known_tokens_lower_bound']==910
     assert out['unknown_cost_attempts']==3 and not out['complete_cost_known']
     assert out['by_kind']['parent']==dict(attempts=90,completed=87,aborted=2,unsettled=1,failed=0)
-
-
-def test_provider_context_accounting_separates_exact_reuse_from_new_suffix():
-    out = _provider_context_accounting([
-        dict(message_chars=100, payload_chars=130, tool_schema_chars=30,
-             repeated_message_chars=0, common_prefix_chars=0, nonidentical_suffix_chars=100),
-        dict(message_chars=140, payload_chars=200, tool_schema_chars=60, repeated_message_chars=100, common_prefix_chars=100,
-             nonidentical_suffix_chars=40, same_message_sequence=False),
-        dict(message_chars=140, payload_chars=210, tool_schema_chars=70, repeated_message_chars=140, common_prefix_chars=140,
-             nonidentical_suffix_chars=0, same_message_sequence=True),
-    ])
-    assert out['requests'] == 3
-    assert out['serialized_payload_chars'] == 540 and out['tool_schema_chars'] == 160
-    assert out['exact_repeated_message_chars'] == 240
-    assert out['common_prefix_chars'] == 240
-    assert out['nonidentical_suffix_chars'] == 140
-    assert out['exact_sequence_repeats'] == 1
-    assert 'not token or billing savings' in out['scope']
-
-
-def test_runtime_issue_lifecycle_joins_observer_recovery_and_component_execution(tmp_path):
-    import json
-    from autoresearch_pi.arc_thin_reuse_report import _issue_lifecycle
-
-    harness = tmp_path / "harness"
-    harness.mkdir()
-    def write(name, rows):
-        (harness / name).write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    write("task_runtime_fact_delivery.jsonl", [
-        dict(kind="delivered", issue_ref="runtime:observer:observers/scan.py@2", n=2, decision=2),
-        dict(kind="delivered", issue_ref="runtime:component:abc", key="task:component:tools/probe.py@1:2,3:1:2", n=2, decision=3),
-        dict(kind="agent_referenced", issue_ref="runtime:observer:observers/scan.py@2", n=2, decision=3),
-    ])
-    write("observer_runs.jsonl", [dict(key="observers/scan.py@2@3", n=3, ok=True, value={"target": [1, 2]})])
-    write("self_harness_task_facts.jsonl", [dict(kind="component_execution", path="tools/probe.py", version=1,
-                                                     n=3, decision=4, outcome="success")])
-    issues = {item["ref"]: item for item in _issue_lifecycle(harness)}
-    assert issues["runtime:observer:observers/scan.py@2"]["status"] == "produced_output_after_delivery"
-    assert issues["runtime:observer:observers/scan.py@2"]["agent_referenced"]
-    assert issues["runtime:component:abc"]["status"] == "executed_after_delivery"
 
 
 def test_reuse_report_preserves_partial_cost_and_cache_write_tokens(tmp_path):
@@ -122,28 +82,12 @@ def test_use_ledger_keeps_unrecoverable_history_unknown_and_counts_replayed_tool
     event = {"type": "message_end", "message": {"role": "assistant", "content": [
         {"type": "toolCall", "name": "large", "arguments": {"args": {"grid": [[1] * 30 for _ in range(30)]}}}]}}
     (tmp_path / "pi-events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
-    facts = [
-        {"kind": "component_delivery", "components": [{"kind": "tool", "name": "large", "path": "tools/large.py", "version": 2}]},
-        {"kind": "component_delivery", "components": [{"kind": "tool", "name": "large", "path": "tools/large.py", "version": 2}]},
-        {"kind": "component_execution", "path": "tools/large.py", "version": 2, "decision": 3, "n": 1, "outcome": "success"},
-    ]
-    (harness / "self_harness_task_facts.jsonl").write_text("".join(json.dumps(row) + "\n" for row in facts), encoding="utf-8")
-    (harness / "trajectory.jsonl").write_text("".join(json.dumps(row) + "\n" for row in [
-        {"n": 2, "levels_completed": 0, "via": "tools/large.py"}, {"n": 3, "levels_completed": 1}]), encoding="utf-8")
-    (harness / "memory.jsonl").write_text(json.dumps({"key": "strat.probe", "strat": {"status": "active", "uses": ["tool:large"]}}) + "\n", encoding="utf-8")
     ledger = build_report(tmp_path)["use_ledger"]
     assert ledger["tools_mounted"] == "unknown"
     assert "未持久化" in ledger["unknown_reasons"]["opportunity_windows"]
     assert ledger["kind_tool_attempts"] == ledger["uses"] == 1
     assert ledger["ok_true"] == 0 and ledger["ok_false"] == 1
     assert ledger["tool_call_args_classes"] == {"literal_big": 1}
-    feedback = ledger["component_feedback"][0]
-    assert feedback["path"] == "tools/large.py" and feedback["version"] == 2
-    assert (feedback["active_requests"], feedback["executions"], feedback["successful_executions"]) == (2, 1, 1)
-    assert feedback["environment_actions_after_latest_execution"] == 2
-    assert feedback["actions_via_component"] == 1
-    assert feedback["active_strategies_declaring_use"] == ["strat.probe"]
-    assert "not causal impact" in feedback["interpretation"]
 
     (harness / "request-events.jsonl").write_text(json.dumps({"stage": "decide_callable_schema", "tools": [
         {"name": "large", "act_capable": True}], "act_capable_count": 1}) + "\n", encoding="utf-8")
