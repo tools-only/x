@@ -208,6 +208,10 @@ export class NativeRuntime {
         baseRevision: this.host.reflectedSelf.pendingRevision, level: this.host.level(), origin: { by: 'agent', decision: this.decision() } });
       this.reflectedPending.add(path);
       const binding = result?.component_bindings?.find((item: any) => item.kind === kind && item.name === name);
+      // Evidence chain: book the reflective save through the Binder as well, so .harness/components.jsonl and the
+      // version store cover both paths; SelfRoot stays the activation authority.
+      try { await this.host.binder.publish(path, source, this.host.level(), { by: 'agent', decision: this.decision() }); }
+      catch { /* booking only; the SelfRoot staging above is the authoritative result */ }
       return { component: binding ? { kind, name, path, source, version: binding.version, hash: binding.hash, level: this.host.level() }
           : result?.component ?? this.host.reflectedSelf.active().find((component: Component) => component.path === path),
         receipt: `${kind} ${name}: staged for SelfRoot activation at the next request boundary` };

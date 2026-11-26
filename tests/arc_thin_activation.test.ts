@@ -21,7 +21,7 @@ const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boole
   let stopped: string | undefined;
   const runtime = new NativeRuntime({
     pi: { registerTool(t: any) { registered.push(t.name); }, getActiveTools: () => tools.active, setActiveTools: (names: string[]) => { tools.active = names; } } as any,
-    workspace, binder, state: () => ({ grid: [[7, 8]] }), level: () => 0, actionCount: () => played.length,
+    workspace, self: binder, binder, state: () => ({ grid: [[7, 8]] }), level: () => 0, actionCount: () => played.length,
     log(file: string, row: any) { options.logs?.push({ file, ...row }); }, usage() {},
     wrap: (_name, fn) => fn, ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
     act: async (call, via) => {
@@ -60,7 +60,7 @@ test('saved code acts in a closed loop: python(save=) saves the code as a tool a
     assert.ok(registered.includes('walk') && tools.active.includes('walk'));
     // The saved tool takes a dict of arguments and is callable without a rewrite.
     binder.boundary();
-    const component = binder.active().find(c => c.path === 'tools/walk.py')!;
+    const component = (runtime as any).registryComponents().find((c: any) => c.path === 'tools/walk.py')!;
     assert.deepEqual(Object.keys(component.parameters.properties), ['args']);
     assert.equal(component.parameters.additionalProperties, false);
     assert.equal(component.description, 'Walk until nothing changes.');
@@ -101,18 +101,18 @@ test('every write is versioned and env.restore brings a version back; tools are 
   try {
     await runtime.python('def run(args):\n    return 1\n', undefined, false, 'pick');
     await runtime.python('def run(args):\n    return 2\n', undefined, false, 'pick');
-    assert.equal(binder.versionMap()['tools/pick.py'], 2);
+    assert.equal((runtime as any).versionMap()['tools/pick.py'], 2);
     const restored: any = await runtime.python('env.restore("tools/pick.py", 1)');
     // Free hands: a program/python call may restore and rewrite harness paths itself (Binder versions the write).
-    assert.match(restored.content[0].text, /tools\/pick\.py: restored from v1 · tool pick v3: saved · loaded/);
+    assert.match(restored.content[0].text, /tool pick v3: saved · loaded/);
     assert.equal(workspace.read('tools/pick.py'), 'def run(args):\n    return 1\n');
     const missing: any = await runtime.python('env.restore("tools/pick.py", 9)');
     assert.match(missing.content[0].text, /tools\/pick\.py: no version 9 to restore/);
-    // Removing a tool mid-decision does not take it out of the tool list the model was given.
+    // Since live self reflection, a bare os.remove on a component path is refused; the tool stays.
     binder.boundary();
-    await runtime.python("import os\nos.remove('tools/pick.py')");
+    await assert.rejects(runtime.python("import os\nos.remove('tools/pick.py')"), /can only be changed by a text reflection/);
     assert.ok(tools.active.includes('pick'));
-    assert.equal(runtime.toolNames().includes('pick'), false);
+    assert.equal(runtime.toolNames().includes('pick'), true);
   } finally { runtime.close(); }
 });
 
@@ -148,8 +148,9 @@ test('the python session is the default workspace: kept without a save step, aft
     assert.ok(logs.some(row => row.file === 'python_session.jsonl' && row.event === 'over_capacity' && row.over.largest[0][0] === 'huge'));
   } finally { again.runtime.close(); }
   const workspace = new Workspace(mkdtempSync(join(tmpdir(), 'activation-off-')));
+  const offBinder = new Binder(workspace, validatePythonComponent);
   const off = new NativeRuntime({ pi: { registerTool() {}, getActiveTools: () => [], setActiveTools() {} } as any, workspace,
-    binder: new Binder(workspace, validatePythonComponent), state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {},
+    self: offBinder, binder: offBinder, state: () => ({}), level: () => 0, actionCount: () => 0, log() {}, usage() {},
     wrap: (_name, fn) => fn, pythonSession: false });
   try {
     await off.python('step = 3');

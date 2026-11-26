@@ -1984,6 +1984,10 @@ def run_arc_thin_e2e(
     started = time.monotonic()
     # Explicit zero disables the experimental run deadline; None retains the historical default.
     deadline = math.inf if experiment_timeout_seconds == 0 else started + (experiment_timeout_seconds or OFFICIAL_MAX_RUNTIME_SECONDS)
+    # The 300s hook reserve was tuned for multi-hour real runs; on short (smoke) budgets it must shrink with the
+    # budget or the first turn is refused outright.
+    deadline_reserve = (0.0 if deadline == math.inf
+                        else min(HOOK_DECISION_START_RESERVE_SECONDS, (experiment_timeout_seconds or OFFICIAL_MAX_RUNTIME_SECONDS) / 4))
 
     env = load_project_dotenv(PROJECT_ROOT)
     env.pop("PI_AUTORESEARCH_OWNS_TASK", None)  # never let PiKernel.close seal a legacy task scope
@@ -2343,13 +2347,13 @@ def run_arc_thin_e2e(
 
         def turn(message: str) -> list[dict[str, Any]]:
             remaining = deadline - time.monotonic()
-            if remaining <= HOOK_DECISION_START_RESERVE_SECONDS:
+            if remaining <= deadline_reserve:
                 raise TimeoutError(f"experiment deadline reached before starting Pi turn ({remaining:.1f}s remaining)")
             response = kernel.prompt(message)
             if response.get("success") is False:
                 raise RuntimeError(f"Pi rejected the prompt: {response.get('error')}")
             timeout = min(decision_timeout_seconds or math.inf,
-                          max(1.0, deadline - time.monotonic() - HOOK_DECISION_START_RESERVE_SECONDS))
+                          max(1.0, deadline - time.monotonic() - deadline_reserve))
             try:
                 return kernel.wait_for_agent_events(
                     timeout=timeout,
@@ -2359,7 +2363,7 @@ def run_arc_thin_e2e(
             except PiTurnIdleTimeout:
                 raise
             except TimeoutError as exc:
-                if time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS:
+                if time.monotonic() >= deadline - deadline_reserve:
                     raise TimeoutError(f"experiment deadline reached while waiting for Pi agent turn: {exc}") from exc
                 raise PiDecisionTimeout(str(exc)) from exc
 
@@ -2449,7 +2453,7 @@ def run_arc_thin_e2e(
             """One independent Pi request after a settled task turn."""
             nonlocal pending_inspect_to_call
             ids = ",".join(map(str, action_ids))
-            if deadline - time.monotonic() <= HOOK_DECISION_START_RESERVE_SECONDS:
+            if deadline - time.monotonic() <= deadline_reserve:
                 with (harness / "self_harness_hook.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps({"action_ids": action_ids, "batch_id": batch_id,
                         "phase": "self_harness_hook", "event": "turn_complete", "outcome": "skipped",
@@ -2818,7 +2822,7 @@ def run_arc_thin_e2e(
                                         (max_levels is not None and int(state_after.get("levels_completed") or 0) >= max_levels) or
                                         (max_decisions is not None and summary["decisions"] >= max_decisions) or
                                         (max_reported_tokens is not None and _budget_tokens(harness) - budget_offset >= max_reported_tokens) or
-                                        time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS)
+                                        time.monotonic() >= deadline - deadline_reserve)
                             action_ids = [int(row["n"]) for row in new_rows]
                             batch_ids = sorted({str(row.get("batch_id")) for row in new_rows if row.get("batch_id")})
                             batch_id = batch_ids[-1] if batch_ids else None
@@ -2849,7 +2853,7 @@ def run_arc_thin_e2e(
                                             "phase": "self_harness_hook", "disposition": "shown_in_batch_hook" if disposition == "shown" else disposition,
                                             "arc_action_exposed": False}, ensure_ascii=False) + "\n")
             except TimeoutError as exc:
-                deadline_stop = "experiment deadline" in str(exc) or time.monotonic() >= deadline - HOOK_DECISION_START_RESERVE_SECONDS
+                deadline_stop = "experiment deadline" in str(exc) or time.monotonic() >= deadline - deadline_reserve
                 if deadline_stop and foundation == "native":
                     try:
                         kernel.abort()

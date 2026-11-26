@@ -275,19 +275,23 @@ elif script == "activation":
     parent = parent_requests
     trajectory = [json.loads(s) for s in (root / "harness/trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
     via = [r.get("via") for r in trajectory]
-    # Saved code acts in a closed loop: python save= takes two actions through env.act, the saved tool takes them
-    # again, and code that sees its prediction miss stops itself after one action.
-    assert via[:5] == ["tools/probe.py"] * 4 + [None], via
-    assert via[5] == "tools/miss.py" and via[6] != "tools/miss.py", via
-    assert "ACTED 2 action(s). This decision ends." in shown_history, shown_history[:3000]
-    assert "ACTED 1 action(s). This decision ends." in shown_history
-    # show() prints a region as row runs (the mock grid's corner).
-    assert any(r["tool"] == "python" and r["text"].startswith("rows y0-7, x0-7; background") for r in results), [r["text"][:200] for r in results if r["tool"] == "python"]
+    # Python code acts in a closed loop: python save= takes two actions through env.act, the saved tool takes them
+    # again, an unsaved snippet acts as python, and code that sees its prediction miss stops itself after one action.
+    assert via[:7] == ["tools/probe.py"] * 4 + ["python"] * 2 + [None], via
+    assert via[7] == "tools/miss.py" and via[8] != "tools/miss.py", via
+    # SelfRoot layout: an acting call's decision-end receipt is a tool result in the Pi session; later requests carry
+    # the SelfRoot view instead of a replayed transcript.
+    session_text = (root / "pi-events.jsonl").read_text(encoding="utf-8")
+    assert "ACTED 2 action(s). This decision ends." in session_text, session_text[:3000]
+    assert "ACTED 1 action(s). This decision ends." in session_text
+    # show() prints a region as row runs (the mock grid's corner); results are receipt-wrapped/archived, the raw text
+    # lands in the workspace results files and the session.
+    assert any("rows y0-7, x0-7; background" in p.read_text(encoding="utf-8") for p in (root / "workspace/results").glob("*.txt")), "show() output not found in results"
     played = [json.loads(s) for s in (root / "harness/played_actions.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [(r["via"], r["missed"]) for r in played] == [("tools/probe.py", False)] * 4 + [("tools/miss.py", True)], played
+    assert [(r["via"], r["missed"]) for r in played] == [("tools/probe.py", False)] * 4 + [("python", False)] * 2 + [("tools/miss.py", True)], played
     # Factual receipts: the change count, and coordinates the action ignores are dropped and named.
-    assert trajectory[4]["action"] == "ACTION1" and trajectory[4].get("ignored_xy") is True and "x" not in trajectory[4], trajectory[4]
-    assert "(x,y ignored: ACTION1 takes no coordinates)" in shown_history and "changed=" in shown_history
+    assert trajectory[6]["action"] == "ACTION1" and trajectory[6].get("ignored_xy") is True and "x" not in trajectory[6], trajectory[6]
+    assert "(x,y ignored: ACTION1 takes no coordinates)" in session_text and "changed=" in session_text
     # One arc_action carries a planned sequence: three actions in one decision.
     sequences = [json.loads(s) for s in (root / "harness/action_sequences.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [(r["planned"], r["played"]) for r in sequences] == [(3, 3)], sequences
@@ -295,7 +299,7 @@ elif script == "activation":
     assert [r["action"] for r in trajectory if r["decision"] == planned_decision] == ["ACTION1", "ACTION4", "ACTION1"], trajectory
     # The python session: a function and a value defined in decision 3 are used in decision 5.
     assert "(python session: +plus_one(), +kept_value)" in text, text[:3000]
-    assert any(r["tool"] == "python" and r["text"].endswith("→ 42") for r in results), [r["text"] for r in results if r["tool"] == "python"]
+    assert any(r["tool"] == "python" and "→ 42" in r["text"] for r in results), [r["text"] for r in results if r["tool"] == "python"]
     # env.remember in a python cell commits through the memory tool's own update, with its receipt in the cell's result,
     # and the entry reaches a later decision's memory.
     remembered = [json.loads(s) for s in (root / "harness/memory.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -310,14 +314,15 @@ elif script == "activation":
     assert config["python_kernel"] is True and config["session_view"] is True, config
     assert kernel_runs and sum(1 for row in kernel_runs if row.get("fresh")) == 1, kernel_runs
     assert any(row.get("acts") == 2 for row in kernel_runs), kernel_runs
-    assert any("PYTHON SESSION (" in r.get("current", "") and "plus_one()" in r.get("current", "") and "kept_value 41" in r.get("current", "")
-               for r in parent), [r.get("current", "")[:600] for r in parent]
+    # SelfRoot layout: the decision head is the SelfRoot view without a PYTHON SESSION listing; session carry is
+    # proven by the later-decision reuse (plus_one(kept_value) → 42) asserted above.
     # Reasoning stays in view between tool rounds of its decision (append-only, so the cache prefix holds) and is not
     # carried into later decisions.
     with_mark = [i for i, r in enumerate(parent) if "THINK_MARK_DECISION3" in r.get("reasoning_in_context", [])]
     assert with_mark and with_mark[-1] < len(parent) - 1, [r.get("reasoning_in_context") for r in parent]
     assert len({parent[i]["current"] for i in with_mark}) == 1, 'reasoning must not outlive its decision'
-    assert config["decision_reasoning_mode"] == "all" and config["archive_results"] is False, config
+    # Branch policy (completions): recent reasoning and archived results bound the resent projection.
+    assert config["decision_reasoning_mode"] == "recent" and config["archive_results"] is True, config
     # Within a decision every request extends the previous one unchanged: the cacheable prefix is never rewritten.
     for before, after in zip(parent, parent[1:]):
         if after["message_count"] > before["message_count"] and after["current"] == before["current"]:
@@ -334,9 +339,10 @@ elif script == "activation":
     current = [r.get("current", "") for r in parent]
     for absent in ["GOAL CHECKS", "IDEAS", "PREDICTION CHALLENGE", "EXPLORATION", "CRITIC", "REPEATED WORK", "STRATEGY ("]:
         assert not any(absent in s for s in current), absent
-    assert all(("MEMORY INDEX" in s or "MEMORY: empty" in s or "CURRENT KNOWLEDGE" in s) for s in current)
+    # SelfRoot layout: memory reaches the head as the view's task_memory, not a MEMORY INDEX section.
+    assert all('"task_memory"' in s for s in current)
     assert all(t["name"] not in ("ls", "grep") for r in parent for t in r["tools"])
-    assert any("tool probe v1 active" in s and "probe(args)" in s for s in current), 'the capability index lists the saved tool'
+    assert any('"name":"probe"' in s for s in current), 'the view lists the saved tool among active components'
     assert (root / "workspace/data/memory.md").is_file()
     assert not (root / "workspace/roles").exists() and (root / "workspace/agents").is_dir()
     assert all(("refine" in [t["name"] for t in r["tools"]]) is defaults for r in parent)
@@ -369,8 +375,8 @@ elif script == "activation":
         usage = (root / "harness/usage.jsonl").read_text(encoding="utf-8")
         assert '"kind":"refiner"' in usage
     report = json.loads((root / "reuse_report.json").read_text(encoding="utf-8"))
-    assert report["offload"]["actions_from_components"] == 5 and report["offload"]["replaying_calls"] >= 1, report["offload"]
-    assert report["offload"]["actions_by_component"] == {"tools/probe.py": 4, "tools/miss.py": 1}, report["offload"]
+    assert report["offload"]["actions_from_components"] == 7 and report["offload"]["replaying_calls"] >= 1, report["offload"]
+    assert report["offload"]["actions_by_component"] == {"tools/probe.py": 4, "python": 2, "tools/miss.py": 1}, report["offload"]
     categories = report["categories"]
     assert categories["tool"]["created"] >= 2 and categories["tool"]["used"] >= 1 and categories["tool"]["actions"] == 5, categories
     assert categories["prompt"]["created"] == (2 if defaults else 1), categories["prompt"]

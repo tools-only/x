@@ -326,14 +326,15 @@ test('restore removes later tools, preserves learned memory and adds lineage', a
   assert.equal(all(s).filter(r=>r.type==='reflection_activated').at(-1)!.value.parent,2);
 });
 
-test('late action refuses stale candidate without dropping the real receipt', async () => {
+test('late action fast-forwards into the staged candidate without dropping the real receipt', async () => {
   const s = new SelfRoot(contract()); await start(s);
   const changed = structuredClone(s.policy); changed.context.instruction = 'stale candidate';
   await s.transaction({baseRevision:1,policy:changed});
   s.recordAction('python',{result:'late'});
   await start(s);
-  assert.equal(s.revision,1); assert.equal(s.snapshot().actions.at(-1)!.facts.result,'late');
-  assert.ok(all(s).some(r=>r.type==='activation_failed'));
+  assert.equal(s.revision,2); assert.equal(s.snapshot().actions.at(-1)!.facts.result,'late');
+  assert.ok(all(s).some(r=>r.type==='activation_fast_forward'));
+  assert.ok(!all(s).some(r=>r.type==='activation_failed'));
 });
 
 test('pure control decision uses a real event without fabricated task action', async () => {

@@ -24,7 +24,8 @@ NOT_PLAYED = os.environ.get("MOCK_ARC_NOT_PLAYED") == "1"
 STILL_ACTIONS = {name for name in (os.environ.get("MOCK_ARC_STILL_ACTIONS") or "").split(",") if name}
 
 
-class OperationMode:
+class OperationMode(str):
+    """Callable like the real SDK's enum: OperationMode('online')."""
     ONLINE = 'mock-online'
 
 

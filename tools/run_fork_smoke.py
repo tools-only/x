@@ -54,8 +54,10 @@ requests = read(root / "fork/smoke-requests.jsonl")
 results = json.dumps([r for request in requests for r in request.get("last_tool_results", [])])
 assert f"[42,{k}]" in results.replace(" ", ""), results[:2000]
 first = next(r for r in requests if not r.get("analyst") and not r.get("critic"))
-# Earlier decisions reach the forked parent as a transcript (several user turns) or, with a history summary, as one section.
-assert first["roles"].count("user") > 1 or "RECENT HISTORY" in first.get("current", ""), 'the forked parent sees the source\'s earlier decisions'
+# Earlier decisions reach the forked parent as a transcript, a history summary, or (SelfRoot layout) the view whose
+# state numbering continues the source's.
+assert first["roles"].count("user") > 1 or "RECENT HISTORY" in first.get("current", "") \
+    or f"CURRENT STATE #{k}" in first.get("current", ""), 'the forked parent sees the source\'s earlier decisions'
 
 bad = root / "bad-snapshot"
 shutil.copytree(snapshot, bad)

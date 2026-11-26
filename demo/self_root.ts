@@ -1405,7 +1405,9 @@ export class SelfRoot extends LiveAgentSelf {
   }
   override async reflectOrchestration(input: any): Promise<any> { return this.transaction(input); }
   override assertActionAllowed(type: string) {
-    if (!this.executionGrant.includes(type) && !PROTOCOL.includes(type)) throw Error(`action ${type} outside pinned mode/user surface`);
+    // A dotted action type (python.env_act) is a subaction mediated by its root tool; granting the tool grants it.
+    if (!this.executionGrant.includes(type) && !this.executionGrant.includes(type.split('.')[0]) && !PROTOCOL.includes(type))
+      throw Error(`action ${type} outside pinned mode/user surface`);
     // The protocol surface is never gated by an object it can revise. A step's `actions` list is agent-written
     // orchestration content; letting it refuse read_self/reflect_* would let the first narrow design switch off the
     // tools that widen it again (M3 run 2026-11-16: step `work` listed four task actions and every read/reflect call
@@ -1504,11 +1506,21 @@ export class SelfRoot extends LiveAgentSelf {
     if (!this.pending) return;
     const p = this.pending, old = this.baseSaved(), oldPolicy = this.policy, oldSerial = this.serial, onReflection = this.onReflection;
     if (hash(old.snapshot) !== p.baseStateHash) {
-      this.pending = undefined;
-      this.fact('activation_failed',{ error:'pinned state changed after reflection; retry migration against current state', revision:this.serial });
-      if (this.pendingReview && !this.review) this.fact('review_activation_interrupted', { review: this.pendingReview, outcome: 'not_activated', reason: 'activation failed' });
-      this.pendingReview = undefined;
-      return;
+      // Fast-forward: a cell that saves a component and then acts (python save= with env.act) appends action
+      // receipts after the reflection pinned its base. When the appended receipts are the only difference, carry
+      // them into the candidate; any other divergence still refuses activation.
+      const baseActions = (p.candidate as any).snapshot().actions as any[];
+      const appended = ((old.snapshot as any).actions ?? []).slice(baseActions.length);
+      if (appended.length && hash({ ...old.snapshot, actions: (old.snapshot as any).actions.slice(0, baseActions.length) }) === p.baseStateHash) {
+        ((p.candidate as any).actions as any[]).push(...copy(appended));
+        this.fact('activation_fast_forward', { revision: p.revision, appended_actions: appended.map((row: any) => row.ref) });
+      } else {
+        this.pending = undefined;
+        this.fact('activation_failed',{ error:'pinned state changed after reflection; retry migration against current state', revision:this.serial });
+        if (this.pendingReview && !this.review) this.fact('review_activation_interrupted', { review: this.pendingReview, outcome: 'not_activated', reason: 'activation failed' });
+        this.pendingReview = undefined;
+        return;
+      }
     }
     const windowCount = this.windows.length, definitionCount = this.definitions.length, lineageCount = this.lineage.length;
     try {
