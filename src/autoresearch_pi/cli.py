@@ -39,6 +39,7 @@ from .arc_thin_e2e import (
 from .arc_blind_policy import run_arc_blind_policy
 from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
 from .terminal_bench_e2e import run_terminal_bench_e2e
+from .kernelbench_e2e import run_kernelbench_e2e
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -327,6 +328,13 @@ def main(argv: list[str] | None = None) -> int:
     kernel_eval.add_argument("--backend", choices=("cuda", "triton"), default="cuda")
     kernel_eval.add_argument("--mode", choices=("check", "benchmark"), default="benchmark")
     kernel_eval.add_argument("--reference-timing", action="store_true", help="also measure the PyTorch Eager reference")
+    kernel_e2e = sub.add_parser("kernelbench-e2e", help="run one prepared KernelBench task through a minimal Pi agent")
+    kernel_e2e.add_argument("--root", type=Path, required=True)
+    kernel_e2e.add_argument("--provider", default="openai")
+    kernel_e2e.add_argument("--model", default=None)
+    kernel_e2e.add_argument("--server-url", default="http://127.0.0.1:8010")
+    kernel_e2e.add_argument("--wall-seconds", type=float, default=7200.0)
+    kernel_e2e.add_argument("--turn-seconds", type=float, default=3600.0)
     args = parser.parse_args(argv)
     if args.jev_routing is not None:
         os.environ[JEV_ROUTING_ENV] = args.jev_routing
@@ -621,6 +629,14 @@ def main(argv: list[str] | None = None) -> int:
         value = json.loads(path.read_text(encoding="utf-8"))
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return 2 if value["evaluation_status"] == "infrastructure_error" else 0
+    if args.command == "kernelbench-e2e":
+        if args.wall_seconds <= 0 or args.turn_seconds <= 0:
+            parser.error("--wall-seconds and --turn-seconds must be positive")
+        summary = run_kernelbench_e2e(args.root, provider=args.provider, model=args.model,
+                                      server_url=args.server_url, wall_seconds=args.wall_seconds,
+                                      turn_seconds=args.turn_seconds)
+        print(summary.read_text(encoding="utf-8"), end="")
+        return 0 if json.loads(summary.read_text(encoding="utf-8")).get("status") == "complete" else 1
     return 0
 
 

@@ -87,4 +87,6 @@ GPU 环境先使用可核对版本的 Dream-RSI server。将 GPU 型号、计算
 - 已在 `kernelbench-eval` 增加 `check` 和 `benchmark` 模式。check 关闭正式测时，返回字段仍分别检查 compiled/correctness，避免把关闭测时产生的零分误读成 kernel 失败。benchmark 可显式请求 reference timing。
 - 正式正确结果自动维护按 backend 区分的 `best.json`，记录候选哈希、快照、延迟和 evaluator 返回的 Eager speedup。不能从另一 backend 继承最佳值。
 - 尚未加入 GPU 型号和计算能力观测。当前公开 evaluator 的普通响应不提供这些字段，待真实 server 确认后再决定采用启动配置还是小幅扩充服务端响应。
-- 极薄 Pi runner、extension 与真实 GPU server 验收未实现。下一步优先打通参考耗时、硬件事实来源和 Pi 基线，再采集轨迹。
+- 极薄 Pi runner 已实现雏形：`kernelbench-e2e` 启动一个 Pi session，使用 `--no-context-files` 和 `--no-builtin-tools`，只注册 confined workspace 文件工具与 `kernel_eval`。评测快照保存在 agent workspace，Pi 直接收到 evaluator 响应。尚未通过实际 Pi provider 和 GPU server 验收。
+- 启动参数提供 wall/turn deadline。runner 当前没有拆分推理时长与评测等待时长的遥测，evaluator 超时由 server 请求 signal 和外层 turn deadline 约束。真实运行前需核查等待时间不会误触发 Pi turn idle timeout。
+- 真实硬件事实仍缺 API 来源，reference Eager timing 可从既有 adapter 的 `--reference-timing` 获取，但 Pi 启动路径还未自动建立并注入一次性 baseline。作为下一项实现与 GPU smoke 验收内容。

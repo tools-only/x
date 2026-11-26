@@ -297,6 +297,15 @@ python -m autoresearch_pi.cli kernelbench-eval --root 'runs/kb-layernorm-1' --se
 
 GPU server 按 [Dream-RSI 的 KernelBench 说明](https://github.com/google-research/dream-rsi/blob/main/tasks/kernelbench/README.md) 在有 CUDA GPU 的机器上启动；其文档要求 KernelBench commit `423217d9fda91e0c2d67e4a43bf62f96f6d104f1`。本客户端固定论文默认协议：fp32、5 次正确性输入、100 次 CUDA-event 测时、seed 42，返回 server 的完整 `result`。默认 `--backend cuda` 与 Dream-RSI 论文运行保持一致；单文件 Triton kernel 可选 `--backend triton`，但两种 backend 的结果不能混作同一对照。题面写的 `1/geomean(latencies)` 与实际 server 的单次 `1/latency_ms` 不一致，报告以 server 返回值为准。`evaluation_status=completed` 表示 server 给出评测结果，即使 kernel 不正确、分数为 0；`infrastructure_error` 表示请求或返回协议失败，CLI 退出码为 2。每次评测保留 `attempts/<sha256>.py` 和 `evaluations.jsonl`，最新结果在 `evaluation.json`；Agent 后续改进可直接读取这些反馈。当前入口只负责题目和评测接口，尚未把 KernelBench 自动接入 Pi/SelfRoot 的自主优化循环，真实 GPU 性能与自进化收益也尚未验证。
 
+极薄 Pi 基线使用 `kernelbench-e2e`，单会话运行，不加载 ARC Layered 或 SelfRoot：
+
+```powershell
+$env:PYTHONPATH = 'src'
+python -m autoresearch_pi.cli kernelbench-e2e --root 'runs/kb-layernorm-1' --provider openai --model 'your-model' --server-url 'http://GPU-SERVER:8010'
+```
+
+Pi 只获得 run 内的 `workspace/` 文件工具和 `kernel_eval`。候选写入 `workspace/work/candidate.py`，每次评测在 `workspace/attempts/` 留快照并向 Pi 返回完整 evaluator 结果；`--mode check` 用于快速正确性反馈，`benchmark` 执行正式测时。Pi 进程级时限用 `--wall-seconds` 和 `--turn-seconds` 分开设置。Reference timing 可在适配器评测中用 `--reference-timing` 单独执行，避免每次候选评测都重复计时。
+
 要验证 task-local self-harness 的基础闭环，可在 treatment ARC 运行中加
 `--harness-validation`。该模式仍使用真实 ARC 环境、资源仍从 0 开始，但会要求
 Agent 先对 system prompt、memory、skill、tool、subagent 完成 create/use/revise 探针；
