@@ -114,6 +114,19 @@ These names are bound fresh at the start of every call:
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
 ## Working method
+Use one Python call for related observations and an action when the checks can be expressed in code. Read the
+preloaded variables, branch on what you find, call `submit_actions` only when the evidence supports an action, then
+inspect the refreshed variables in that same call. For example:
+```python
+before = current_frame.step
+objects = current_frame.segmentation['nodes']
+if objects and 'UP' in valid_actions:
+    result = submit_actions('UP')
+    print('after', current_frame.step, len(history), result['lines'])
+else:
+    print('need a closer look', len(objects), valid_actions)
+```
+Return a compact summary without acting when the choice needs model judgment after seeing the observation.
 1. Look first. Find the objects with the segmentation, check what changed after the last action, and read only small
    regions as text.
 2. Build a model: what each action does, what the goal seems to be, and which observations support each belief.

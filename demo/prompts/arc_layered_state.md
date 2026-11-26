@@ -8,8 +8,8 @@ Valid actions: {{valid}}
 {{notebook}}
 The image shows the latest frame.
 ## reminder
-Use `python` to look at `current_frame.segmentation` and compare with `previous_frame`, then act with
-`submit_actions([...])`.{{tags_hint}}
+In one `python` call, inspect the needed variables, branch on the result, and call `submit_actions([...])` when ready.
+Read the refreshed variables after acting.{{tags_hint}}
 ## nudge
 You stopped without taking an action and the game is still running. Static inspection cannot reveal new causality on an
 unchanged board — act with `submit_actions` (even a 1-step probe) instead of re-inspecting.
