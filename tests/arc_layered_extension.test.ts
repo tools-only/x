@@ -54,7 +54,7 @@ test("the gradient line is appended to state messages when enabled", async () =>
     /Gradient: 5 actions this level \(budget left 40\) · surprises 1 · unchecked batches 2 · repeated routes 0 · expect hits 1\/2/);
 });
 
-test("only an acting call steers a state message, and a second call in the same reply is not run", async () => {
+test("only an acting call ends the decision, and a second call in the same reply is not run", async () => {
   const { handlers, sent, python, game, rows, call } = setup({ reminder: true, flags: { tags: true } });
   await handlers.before_agent_start({});
   handlers.turn_start();
@@ -63,16 +63,17 @@ test("only an acting call steers a state message, and a second call in the same 
   python.next = batch({ stop_reason: "stop_on" });
   game.step = game.actions_used = 12; game.budget_left = 3;
   const acted = await call();
-  assert.equal(acted.terminate, undefined);
-  assert.deepEqual(sent[0].options, { deliverAs: "steer" });
-  const text = textOf(sent[0].message.content);
-  assert.match(text, /Last batch: 12 executed: (UP ){9}UP \(\+2 more\); stopped: stop_on/);
-  assert.match(text, /BUDGET: 3 actions left/);
-  assert.match(text, /Start your reply with updated/);
-  assert.equal(sent[0].message.content[1].type, "image");
+  assert.equal(acted.terminate, true);
+  assert.equal(sent.length, 0);
   const refused = await call();
   assert.match(refused.content[0].text, /^Not run/);
   assert.equal(python.runs, 2);
+  const opened = await handlers.before_agent_start({});
+  const text = textOf(opened.message.content);
+  assert.match(text, /Last batch: 12 executed: (UP ){9}UP \(\+2 more\); stopped: stop_on/);
+  assert.match(text, /BUDGET: 3 actions left/);
+  assert.match(text, /Start your reply with updated/);
+  assert.equal(opened.message.content[1].type, "image");
   handlers.turn_start();
   python.next = null;
   await call();
@@ -95,13 +96,14 @@ test("a level change ends the segment and the next segment opens with it", async
   assert.match(textOf(opened.message.content), /LEVEL COMPLETE: 1 of 3[\s\S]*Last batch: 1 executed: UP; stopped: level_change/);
 });
 
-test("game over stays in the segment and is announced", async () => {
+test("game over ends the decision and is announced next", async () => {
   const { handlers, sent, python, game, call } = setup();
   await handlers.before_agent_start({});
   python.next = batch({ game_over: true, stop_reason: "game_over" });
   game.state = "GAME_OVER";
-  assert.equal((await call()).terminate, undefined);
-  assert.match(textOf(sent[0].message.content), /GAME_OVER: this attempt FAILED/);
+  assert.equal((await call()).terminate, true);
+  assert.equal(sent.length, 0);
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /GAME_OVER: this attempt FAILED/);
 });
 
 test("note blocks are overwritten one by one, carried and persisted", async () => {
@@ -114,7 +116,7 @@ test("note blocks are overwritten one by one, carried and persisted", async () =
   assert.deepEqual(entries[1].data, { "World model": "walls are gray\nsecond line", Plan: "go left" });
   python.next = batch();
   await call();
-  assert.match(textOf(sent[0].message.content), /World model: walls are gray\nsecond line\nPlan: go left/);
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /World model: walls are gray\nsecond line\nPlan: go left/);
   assert.deepEqual(extractTags("The plan is simple.\nPlanning ahead"), {});
 });
 
@@ -183,7 +185,7 @@ test("continuation is bounded by idle count, action budget, soft limits, length 
   idle.python.next = batch();
   await idle.handlers.before_agent_start({});
   await idle.call();
-  assert.equal(idle.handlers.agent_before_settle(settle).continue, true);
+  assert.equal(idle.handlers.agent_before_settle(settle), undefined);
   assert.equal(idle.handlers.agent_before_settle({ ...settle, outcome: "aborted" }), undefined);
   idle.handlers.message_end(say("cut", { stopReason: "length" }));
   assert.equal(idle.handlers.agent_before_settle(settle), undefined);
@@ -250,7 +252,7 @@ test("a surprise batch is announced with the running hit rate", async () => {
   handlers.turn_start();
   python.next = batch({ surprise: true, expect_hits: "7/10", stop_reason: "surprise" });
   await call();
-  const text = textOf(sent[0].message.content);
+  const text = textOf((await handlers.before_agent_start({})).message.content);
   assert.match(text, /SURPRISE: the last action did not match expect/);
   assert.match(text, /Expectations: 7\/10 recent predictions held/);
 });

@@ -1,8 +1,7 @@
-"""One ARC game with the layered profile: one Pi session, one python tool, segments opened by this runner.
+"""One ARC game with the layered profile: one Pi session, one python tool, decisions opened by this runner.
 
-A segment is one prompt. The extension (demo/arc_layered_extension.ts) keeps the model playing inside a segment and
-ends it at a level change, a win, a length stop, repeated idle replies or a soft limit; the runner opens the next one
-in the same session. Design: docs/plans/2026-11-23-arc-layered-duck-aligned-dev-plan.md sections 5 and 8.
+The extension (demo/arc_layered_extension.ts) ends a decision after a Python call executes actions; the runner opens
+the next one in the same Pi session. Design: docs/plans/2026-11-23-arc-layered-duck-aligned-dev-plan.md sections 5 and 8.
 """
 
 from __future__ import annotations
@@ -91,7 +90,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
                         segment_seconds: float = 1_000_000.0, segment_tokens: int = 100_000_000, idle_continuations: int = 3,
                         idle_timeout: float = 300.0, max_output_tokens: int = 12000, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
-                        fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel) -> Path:
+                        fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel,
+                        bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = ()) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
     root = root.resolve()
@@ -105,7 +105,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                                "model": pi_model, "thinking": thinking or "provider-default", "stop_reason": None,
                                "segments": 0, "segment_reasons": [], "provider_errors": 0}
     bridge, bridge_stderr, launch_id, action_token = _start_bridge(
-        root, arc_root=arc_root, game=game, max_actions=max_actions, env=env, bridge_python=None, bridge_module_paths=())
+        root, arc_root=arc_root, game=game, max_actions=max_actions, env=env, bridge_python=bridge_python,
+        bridge_module_paths=bridge_module_paths)
     kernel: PiKernel | None = None
     closed = False
     state: dict[str, Any] = {}

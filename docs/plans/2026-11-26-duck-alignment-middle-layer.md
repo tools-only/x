@@ -1,6 +1,16 @@
 # Duck 对齐（middle layer 分支）
 
-日期：2026-11-26。状态：F1 差距补齐已实现并通过 deterministic smoke；真实 provider 对照需另行授权。遵循 docs/development-workflow.md。Duck 机制核实与因素框架沿用 activation 分支的 docs/plans/2026-11-26-duck-alignment.md（commit d1cabafd），此记录只写本分支的差异。
+日期：2026-11-26。状态：layer 行动边界已实现并通过实际 Pi/ARC bridge（mock 游戏、脚本 provider）；真实 provider 对照未验证。遵循 docs/development-workflow.md。Duck 机制核实与因素框架沿用 activation 分支的 docs/plans/2026-11-26-duck-alignment.md（commit d1cabafd）。
+
+## layer 路径纠正（本分支主方案）
+
+此前记录和交付结论针对 `arc_thin_extension.ts` / SelfRoot，不能代表主方案 `arc_layered_extension.ts`。主方案已通过 `arc_layered_prelude.py` 把 `current_frame`、`history`、`valid_actions` 等变量绑定在常驻 CPython namespace；`submit_actions` 在同一个 Python cell 中经 bridge 行动并刷新变量。Pi 模型仍在 Python 进程之外；需要执行任意 Python 读取或计算时仍有一次 `python` 工具调用，这与 Duck 的模型/沙箱边界一致。消息中直接附带状态概览和图像，可不调用工具读取这些已呈现内容；不能把“模型直接读进程变量”作为已实现能力。
+
+实际缺口是行动后的决策生命周期：layer 原先在普通行动后 `steer` 新状态到同一 Pi turn，直到关卡变化或软限制才结束。现在每个有行动的 Python cell 都 `terminate` 当前 turn，runner 在同一 Pi session 中开启下一决策，把上一批行动和最新状态送入下一条消息。零行动 cell 保持在当前决策内；cell 内多步 `submit_actions` 与即时变量刷新保持可用。
+
+受影响代码：`demo/arc_layered_extension.ts`、`src/autoresearch_pi/arc_layered_e2e.py`、`tools/arc_thin_smoke_provider.ts`（仅增加 layer 脚本诊断）。layer runner 增加可选 bridge Python/模块路径，以便使用现有 mock SDK 实际走 production bridge 和 Pi；默认真实运行配置不变。
+
+验证：`tmp/layered-duck-smoke-20261126`（actual Pi 0.87.0 + production ARC bridge + mock ARC SDK + scripted provider）产生 3 次 provider request：第一次只读，第二次在同一决策中行动并终止，第三次在下一决策中看到 `current_frame.step=1`、`len(history)=2` 和上一 cell 的变量，再行动。2 个实际 bridge 动作，segment reasons 为 `action`、`budget`。`tests/arc_layered_extension.test.ts` 17/19；剩余 review freeze 与 compaction 两项为原分支旧断言，均与本次行动边界无关。功能正确和确定性全链路可达有证据；真实 provider 自主采用、净收益未验证。
 
 ## Duck 机制要点（官方源码，github.com/Tufalabs/duck-harness）
 

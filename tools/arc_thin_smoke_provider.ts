@@ -403,6 +403,11 @@ const FORK_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: '(plus_one(kept_value), len(history))' }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION4', note: 'after fork' }]] },
 ];
+const LAYERED_SCRIPT: Step[] = [
+  { kind: 'decide', calls: [['python', { code: 'print("LAYER_READ", current_frame.step, len(history), valid_actions)' }]] },
+  { kind: 'decide', calls: [['python', { code: 'before = current_frame.step\nsubmit_actions("UP")\nprint("LAYER_ACT", before, current_frame.step, len(history))' }]] },
+  { kind: 'decide', calls: [['python', { code: 'print("LAYER_NEXT", current_frame.step, len(history), before)\nsubmit_actions("RIGHT")' }]] },
+];
 // Promotion (docs/plans/2026-10-14-knowledge-promotion.md), on the mock game where ACTION1/ACTION4 move the 9 in row 3
 // one cell right and it wraps at the edge: a belief rewritten three times makes a refinement write it as a checked
 // hypothesis; four holds and failing controls make one write prompts/rules.md citing it; the wrap at #8 fails the check
@@ -594,6 +599,7 @@ const SCRIPT = process.env.ARC_THIN_SMOKE_SCRIPT === 'history' ? HISTORY_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-hook' || process.env.ARC_THIN_SMOKE_SCRIPT === 'self-batch-hook' ? SELF_HOOK_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'self-components' ? SELF_COMPONENTS_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'fork' ? FORK_SCRIPT
+  : process.env.ARC_THIN_SMOKE_SCRIPT === 'layered' ? LAYERED_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'receipts' ? RECEIPT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'components' ? COMPONENT_SCRIPT
   : process.env.ARC_THIN_SMOKE_SCRIPT === 'foundation' ? FOUNDATION_SCRIPT

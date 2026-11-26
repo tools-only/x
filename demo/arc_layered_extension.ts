@@ -328,9 +328,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         trail.push(...batch.lines.slice(-3));
         trail = trail.slice(-12);
         endReason = batch.win ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget"
-          : batch.level_changed ? "level_change" : softLimit();
-        if (endReason) pending = batch;
-        else pi.sendMessage({ customType: STATE_TYPE, content: content(batch), display: false }, { deliverAs: "steer" });
+          : batch.level_changed ? "level_change" : batch.game_over ? "game_over" : "action";
+        pending = batch;
       }
       for (const fact of outcome.steps ?? []) {
         write("decisions.jsonl", { t: new Date().toISOString(), ...fact, notes: outcome.notes ?? [], error: outcome.error ?? null });
