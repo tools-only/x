@@ -90,11 +90,16 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                         provider_extension: Path | None = None, agent_dir: Path | None = None, thinking: str | None = None,
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
                         segment_seconds: float = 1_000_000.0, segment_tokens: int = 100_000_000, idle_continuations: int = 3,
-                        idle_timeout: float = 300.0, max_output_tokens: int = 12000, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
+                        idle_timeout: float = 300.0, max_output_tokens: int | None = None, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
+                        profile: str | None = None,
                         fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel,
                         bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = ()) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
+    if profile not in (None, "qwen27b"):
+        raise ValueError("profile must be qwen27b")
+    if max_output_tokens is None:
+        max_output_tokens = 4096 if profile == "qwen27b" else 12000
     root = root.resolve()
     harness = root / "harness"
     harness.mkdir(parents=True, exist_ok=True)
@@ -136,6 +141,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         pi_env.setdefault("PI_PROVIDER_TEXT_BYTES_PER_TOKEN", "3")
         pi_env.update({"PI_CODING_AGENT_DIR": str(agent_dir), "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_ACTION_TOKEN": action_token,
                        "ARC_RUN_ROOT": str(root), "ARC_GAME": game, "ARC_LAYERED_CONFIG": config, "ARC_LAYERED_COUNT_CACHE": str(int(count_cache)), "ARC_LAYERED_OUTPUT_TOKENS": str(max_output_tokens),
+                       "ARC_LAYERED_PROFILE": profile or "",
                        "ARC_LAYERED_SEGMENT_SECONDS": str(segment_seconds), "ARC_LAYERED_SEGMENT_TOKENS": str(segment_tokens),
                        "ARC_LAYERED_IDLE_CONTINUATIONS": str(idle_continuations), **(extension_env or {})})
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", pi_model, "--session", str(root / "session.jsonl"),
@@ -149,7 +155,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             **{key: summary[key] for key in ("format", "game", "config", "provider", "model", "thinking")},
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
             "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
-            "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
+            "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "profile": profile, "extension_env": extension_env or {},
             "fresh_level_session": fresh_level_session, "command": command,
             "pi_version": _pi_cli_version(Path(cli)),
         }, indent=2) + "\n", encoding="utf-8")
@@ -305,6 +311,8 @@ def main() -> None:
     parser.add_argument("--provider-extension", type=Path)
     parser.add_argument("--agent-dir", type=Path)
     parser.add_argument("--thinking")
+    parser.add_argument("--profile", choices=["qwen27b"])
+    parser.add_argument("--max-output-tokens", type=int)
     parser.add_argument("--max-actions", type=int)
     parser.add_argument("--max-reported-tokens", type=int)
     parser.add_argument("--wall-seconds", type=float, default=3600.0)
@@ -316,7 +324,8 @@ def main() -> None:
                                config=args.config, provider_extension=args.provider_extension, agent_dir=args.agent_dir,
                                thinking=args.thinking, max_actions=args.max_actions, max_reported_tokens=args.max_reported_tokens,
                                wall_seconds=args.wall_seconds, segment_seconds=args.segment_seconds,
-                               fresh_level_session=args.fresh_level_session, dotenv_root=args.dotenv_root)
+                               fresh_level_session=args.fresh_level_session, dotenv_root=args.dotenv_root, profile=args.profile,
+                               max_output_tokens=args.max_output_tokens)
     summary = json.loads(path.read_text(encoding="utf-8"))
     print(json.dumps({key: summary.get(key) for key in ("stop_reason", "segments", "actions", "levels_completed", "requests",
                                                          "reported_tokens", "evolution", "sessions", "error")}, ensure_ascii=False))
