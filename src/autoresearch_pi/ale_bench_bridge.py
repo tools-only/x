@@ -62,6 +62,20 @@ class AleBenchBridge:
         if not hasattr(os, "getuid"):
             os.getuid = lambda: 0  # type: ignore[attr-defined]
         module = importlib.import_module("ale_bench")
+        # ALE-Bench builds container paths with pathlib.Path("/", ...), which
+        # becomes backslash-prefixed on Windows and produces invalid Docker
+        # bind targets. Restore the POSIX paths expected inside containers.
+        constants = importlib.import_module("ale_bench.constants")
+        constants.TMP_DIR = "/tmp"
+        constants.WORK_DIR = "/workdir"
+        constants.JUDGE_DIR = "/judge"
+        constants.GEN_BIN = "/judge/target/release/gen"
+        constants.TESTER_BIN = "/judge/target/release/tester"
+        constants.VIS_BIN = "/judge/target/release/vis"
+        constants.SEEDS_FILE = "/tmp/seeds.txt"
+        constants.IN_DIR = "/workdir/in"
+        constants.INPUT_FILE = "/tmp/input.txt"
+        constants.OUTPUT_FILE = "/tmp/output.txt"
         kwargs: dict[str, Any] = {"problem_id": problem_id, "lite_version": lite_version}
         if num_workers is not None:
             kwargs["num_workers"] = num_workers
