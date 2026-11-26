@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compactHistory, evict, extractTags, fold, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
+import { compactHistory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
 
 const grid = Array.from({ length: 64 }, () => Array(64).fill(0));
 
@@ -320,4 +320,42 @@ test("memory survives a process restart through memory.json", async () => {
   const second = setup({ root: first.root });
   const opened = await second.handlers.before_agent_start({});
   assert.match(textOf(opened.message.content), /World model: two keys open two doors/);
+});
+
+test("pure-observation calls are capped per turn and nudge mentions observe limit", async () => {
+  const { handlers, rows, call } = setup({ maxObserveCallsPerTurn: 2 });
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  const first = await call();
+  assert.equal(first.terminate, undefined);
+  assert.match(first.content[0].text, /\[observe 1\/2: no action taken/);
+  const second = await call();
+  assert.equal(second.terminate, true);
+  assert.equal(second.details.observe_limit, true);
+  assert.match(second.content[0].text, /\[observe 2\/2: observation limit reached/);
+  const third = await call();
+  assert.equal(third.terminate, true);
+  assert.match(third.content[0].text, /Not run: observation limit reached/);
+  assert.equal(rows("observe_limit").length, 1);
+  const settled = handlers.agent_before_settle(settle);
+  assert.equal(settled.continue, true);
+  assert.match(textOf(settled.entries[0].content), /OBSERVE LIMIT: static inspection already ran 1 turn/);
+});
+
+test("foldPreActionObservations collapses pure-observe results before an acting result", () => {
+  const obs = (id: string, text: string) => [
+    { role: "assistant", content: [{ type: "toolCall", id, name: "python", arguments: {} }] },
+    { role: "toolResult", toolCallId: id, content: [{ type: "text", text }, { type: "image", data: "x", mimeType: "image/png" }] },
+  ];
+  const act = (id: string, text: string) => [
+    { role: "assistant", content: [{ type: "toolCall", id, name: "python", arguments: {} }] },
+    { role: "toolResult", toolCallId: id, content: [{ type: "text", text }] },
+  ];
+  const messages = [...obs("1", "big grid dump"), ...act("2", "ok\n[env] executed 1 (UP)"), ...obs("3", "latest observe")];
+  const { messages: out, folded } = foldPreActionObservations(messages);
+  assert.equal(folded, 1);
+  assert.equal(out[1].content.length, 1);
+  assert.match(out[1].content[0].text, /^\[folded pre-action observe: 13 chars\]$/);
+  assert.equal(out[3].content[0].text, "ok\n[env] executed 1 (UP)");
+  assert.equal(out[5].content[0].text, "latest observe");
 });

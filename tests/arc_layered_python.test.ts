@@ -488,3 +488,28 @@ test("a never-applying claim is reported but does not block actions", async () =
   python.close();
   assert.match(out.text, /\n1\n1$/);
 });
+
+test("anim_summary summarizes multi-frame animations without dumping all frames", async () => {
+  const bridge = new FakeBridge();
+  (bridge as any).act = async function (payload: { action: string }) {
+    this.used += 1;
+    const f0 = Array.from({ length: 8 }, () => Array(8).fill(0));
+    const f1 = Array.from({ length: 8 }, () => Array(8).fill(0));
+    const f2 = Array.from({ length: 8 }, () => Array(8).fill(0));
+    f0[6][3] = 2;
+    f1[6][3] = 2; f1[2][2] = 8; f1[2][3] = 8; f1[2][4] = 8;
+    f2[5][3] = 2;
+    return { ...this.frame(), frames: [f0, f1, f2] };
+  };
+  const python = new LayeredPython(bridge as any, config());
+  await python.init();
+  const out = await python.run([
+    "r = submit_actions('UP')",
+    "print(r['lines'][0])",
+    "s = anim_summary()",
+    "print(s['n_frames'], s['net_diff']['count'], s['transient_cells'], s['transient_bbox'], s['nonzero_jumps'], len(s['peak_jumps']))",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /call anim_summary\(1\) once instead of dumping frames_of\(1\)/);
+  assert.match(out.text, /3 2 3 \(2, 2, 2, 4\) 2 2/);
+});

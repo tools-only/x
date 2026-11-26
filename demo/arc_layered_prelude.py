@@ -119,6 +119,49 @@ def _transient(grids):
     return count
 
 
+def anim_summary(step=-1):
+    """Compact summary of an action's frame sequence: net diff, transient bbox, and peak frame-to-frame jumps."""
+    entry = _H[step]
+    grids = entry["grids"]
+    n = len(grids)
+    if n <= 1:
+        return {"step": entry["raw"]["step"], "n_frames": n, "note": "single frame, no animation"}
+    first, last = grids[0], grids[-1]
+    net = diff(first, last)
+    net_summary = {"count": net["count"], **({"bbox": net["bbox"]} if "bbox" in net else {})}
+    color_deltas = {}
+    for r in range(len(last)):
+        for c in range(len(last[r])):
+            if first[r][c] != last[r][c]:
+                a_ch, b_ch = CHARS[first[r][c]], CHARS[last[r][c]]
+                color_deltas[a_ch] = color_deltas.get(a_ch, 0) - 1
+                color_deltas[b_ch] = color_deltas.get(b_ch, 0) + 1
+    color_deltas = {k: v for k, v in color_deltas.items() if v != 0}
+    tr_rows, tr_cols, tr_count = [], [], 0
+    for r in range(len(last)):
+        for c in range(len(last[r])):
+            if any(g[r][c] != first[r][c] and g[r][c] != last[r][c] for g in grids[1:-1]):
+                tr_count += 1
+                tr_rows.append(r)
+                tr_cols.append(c)
+    deltas = []
+    for i in range(n - 1):
+        d = diff(grids[i], grids[i + 1])
+        if d["count"] > 0:
+            deltas.append({"from": i, "to": i + 1, "count": d["count"], "bbox": d["bbox"]})
+    peaks = sorted(deltas, key=lambda x: x["count"], reverse=True)[:3]
+    return {
+        "step": entry["raw"]["step"],
+        "n_frames": n,
+        "net_diff": net_summary,
+        "color_deltas": color_deltas,
+        "transient_cells": tr_count,
+        "transient_bbox": (min(tr_rows), min(tr_cols), max(tr_rows), max(tr_cols)) if tr_count else None,
+        "nonzero_jumps": len(deltas),
+        "peak_jumps": peaks,
+    }
+
+
 def frame_diff(a=None, b=None):
     """Object-level changes between two frames (default: previous_frame -> current_frame). Heuristic: touching
     objects merge into one component and similar objects can be matched ambiguously."""
@@ -396,7 +439,8 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         if len(grids) > 2:
             transient = _transient(grids)
             if transient:
-                lines[-1] += "  [animation: %d transient cells; inspect frames_of(%d)]" % (transient, len(_H) - 1)
+                lines[-1] += "  [animation: %d transient cells across %d frames; call anim_summary(%d) once instead of dumping frames_of(%d)]" % (
+                    transient, len(grids), len(_H) - 1, len(_H) - 1)
         lines[-1] += _echo(_observe(before, forecast, source))
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
@@ -620,7 +664,7 @@ def _mkdir(path, *args, **kwargs):
 _os_makedirs, _os_mkdir = os.makedirs, os.mkdir
 os.makedirs, os.mkdir = _makedirs, _mkdir
 _API = dict(open=_open, submit_actions=submit_actions, diff=diff, ascii=ascii, frames_of=frames_of,
-            frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed)
+            anim_summary=anim_summary, frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed)
 
 
 def _cell(req):
@@ -637,7 +681,8 @@ def _cell(req):
     if fresh:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
-                    "diff": diff, "ascii": ascii, "frames_of": frames_of, "frame_diff": frame_diff}
+                    "diff": diff, "ascii": ascii, "frames_of": frames_of, "anim_summary": anim_summary,
+                    "frame_diff": frame_diff}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
