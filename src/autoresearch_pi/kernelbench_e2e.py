@@ -44,20 +44,25 @@ def run_kernelbench_e2e(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not (root / "task.triton").is_file() or not (root / "reference.py").is_file():
         raise FileNotFoundError("prepared task must contain task.triton and reference.py")
-    env = load_project_dotenv(PROJECT_ROOT)
+    dotenv_path = Path(os.environ.get("KERNELBENCH_ENV_FILE", r"D:\autoresearch_pi_project\.env"))
+    env = load_project_dotenv(dotenv_path.parent)
     settings = resolve_model_settings(env)
-    selected_model = model or settings["model"]
-    selected_provider = provider or "openai"
+    selected_model = model or env.get("KERNELBENCH_MODEL") or "gemini-3.1-pro-preview"
+    selected_provider = provider or env.get("KERNELBENCH_PROVIDER") or "az"
+    base_url = env.get("KERNELBENCH_API_BASE") or env.get("OPENAI_API_BASE")
+    api_key = env.get("KERNELBENCH_API_KEY") or env.get("OPENAI_API_KEY")
+    pi_api = env.get("KERNELBENCH_PI_API") or env.get("ARC_PI_API") or "openai-completions"
     node, cli = _pi_cli()
     agent_dir = root / ".pi-agent"
     agent_dir.mkdir(exist_ok=True)
     (agent_dir / "settings.json").write_text(json.dumps({"compaction": {"enabled": False}}) + "\n", encoding="utf-8")
-    if settings.get("base_url") and settings.get("api_key"):
-        settings_path = agent_dir / "models.json"
-        settings_path.write_text(json.dumps({"providers": {selected_provider: {
-            "baseUrl": settings["base_url"], "apiKey": settings["api_key"], "api": settings["pi_api"],
-            "models": [{"id": selected_model, "name": selected_model, "reasoning": True, "input": ["text"], "contextWindow": settings["context_window"]}],
-        }}}, indent=2) + "\n", encoding="utf-8")
+    if not base_url or not api_key:
+        raise RuntimeError("KernelBench Pi run needs KERNELBENCH_API_BASE/KEY or OPENAI_API_BASE/KEY in the environment or selected .env")
+    settings_path = agent_dir / "models.json"
+    settings_path.write_text(json.dumps({"providers": {selected_provider: {
+        "baseUrl": base_url, "apiKey": api_key, "api": pi_api,
+        "models": [{"id": selected_model, "name": selected_model, "reasoning": True, "input": ["text"], "contextWindow": settings["context_window"]}],
+    }}}, indent=2) + "\n", encoding="utf-8")
     env.update({"PI_CODING_AGENT_DIR": str(agent_dir), "KERNELBENCH_RUN_ROOT": str(root),
                 "KERNELBENCH_SERVER_URL": server_url.rstrip("/"),
                 "KERNELBENCH_BACKEND": os.environ.get("KERNELBENCH_BACKEND", "cuda")})

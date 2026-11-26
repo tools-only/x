@@ -301,10 +301,10 @@ GPU server 按 [Dream-RSI 的 KernelBench 说明](https://github.com/google-rese
 
 ```powershell
 $env:PYTHONPATH = 'src'
-python -m autoresearch_pi.cli kernelbench-e2e --root 'runs/kb-layernorm-1' --provider openai --model 'your-model' --server-url 'http://GPU-SERVER:8010'
+python -m autoresearch_pi.cli kernelbench-e2e --root 'runs/kb-layernorm-1' --server-url 'http://GPU-SERVER:8010'
 ```
 
-Pi 只获得 run 内的 `workspace/` 文件工具和 `kernel_eval`。候选写入 `workspace/work/candidate.py`，每次评测在 `workspace/attempts/` 留快照并向 Pi 返回完整 evaluator 结果；`--mode check` 用于快速正确性反馈，`benchmark` 执行正式测时。Pi 进程级时限用 `--wall-seconds` 和 `--turn-seconds` 分开设置。Reference timing 可在适配器评测中用 `--reference-timing` 单独执行，避免每次候选评测都重复计时。
+Pi 只获得 run 内的 `workspace/` 文件工具和 `kernel_eval`。默认读取 `D:\autoresearch_pi_project\.env`，使用 `OPENAI_API_BASE`/`OPENAI_API_KEY` 连接 az OpenAI-compatible provider，模型默认为 Dream-RSI 论文所用的 `gemini-3.1-pro-preview`，provider id 默认为 `az`。可用 `KERNELBENCH_ENV_FILE`、`KERNELBENCH_PROVIDER`、`KERNELBENCH_MODEL`、`KERNELBENCH_API_BASE`、`KERNELBENCH_API_KEY` 覆盖。候选写入 `workspace/work/candidate.py`，每次评测在 `workspace/attempts/` 留快照并向 Pi 返回完整 evaluator 结果；`--mode check` 用于快速正确性反馈，`benchmark` 执行正式测时。Pi 进程级时限用 `--wall-seconds` 和 `--turn-seconds` 分开设置。Reference timing 可在适配器评测中用 `--reference-timing` 单独执行，避免每次候选评测都重复计时。
 
 要验证 task-local self-harness 的基础闭环，可在 treatment ARC 运行中加
 `--harness-validation`。该模式仍使用真实 ARC 环境、资源仍从 0 开始，但会要求

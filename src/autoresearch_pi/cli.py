@@ -330,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     kernel_eval.add_argument("--reference-timing", action="store_true", help="also measure the PyTorch Eager reference")
     kernel_e2e = sub.add_parser("kernelbench-e2e", help="run one prepared KernelBench task through a minimal Pi agent")
     kernel_e2e.add_argument("--root", type=Path, required=True)
-    kernel_e2e.add_argument("--provider", default="openai")
+    kernel_e2e.add_argument("--provider", default=None)
     kernel_e2e.add_argument("--model", default=None)
     kernel_e2e.add_argument("--server-url", default="http://127.0.0.1:8010")
     kernel_e2e.add_argument("--wall-seconds", type=float, default=7200.0)
