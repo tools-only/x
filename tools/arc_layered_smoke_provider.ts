@@ -19,6 +19,13 @@ const SCRIPT: Array<{ text?: string; code?: string; stop?: "length"; filler?: bo
   { code: ACT },
   { code: ACT },
 ];
+const READ_ACT_SCRIPT: typeof SCRIPT = [
+  { code: "initial_step = current_frame.step\nobjects = current_frame.segmentation['nodes']\n" +
+      "if objects:\n    detail = objects[0]['color']\nelse:\n    detail = len(current_frame.grid)\n" +
+      "print('READ_PATH', initial_step, len(objects), detail)\n" +
+      "if 'UP' in valid_actions:\n    r = submit_actions('UP')\n    print('POST_ACT', current_frame.step, len(history), r['executed_count'])" },
+  { code: "print('NEXT_TURN', initial_step, current_frame.step, len(history))\nsubmit_actions('RIGHT')" },
+];
 
 export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
   let step = 0;
@@ -28,7 +35,8 @@ export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple: scriptedProviderTransport((model, context) => {
       const stream = createAssistantMessageEventStream();
-      const row = SCRIPT[step] ?? { text: "done" };
+      const script = process.env.ARC_LAYERED_SMOKE_SCRIPT === "read-act" ? READ_ACT_SCRIPT : SCRIPT;
+      const row = script[step] ?? { text: "done" };
       step += 1;
       const messages: any[] = context.messages ?? [], system = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
       const tools: any[] = (context.tools?.length ? context.tools : getCurrentTools(messages as any)) ?? [];

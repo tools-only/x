@@ -4,6 +4,12 @@
 
 ## layer 路径纠正（本分支主方案）
 
+## 同一调用内观察与行动（2026-11-26）
+
+实际机会：模型把变量观察拆成多个只读 Python 调用，每次结果回到模型后才决定下一项读取，造成额外 provider request。窄命题：在已有状态消息的基础上，用一次简短的系统提示示例与现有 reminder 引导模型把可编码的条件读取、行动和行动后复查写进同一 Python cell，可减少每次行动前的只读请求。代价是系统提示增加约 120 词；不增加工具、门或常驻 worker。证据不足时仍返回紧凑摘要，保留模型判断。
+
+边界与验证：现有状态消息已含图像、有效动作、步数、预算和上一批动作，本次不扩充。`ARC_LAYERED_SMOKE_SCRIPT=read-act` 经真实 Pi 0.87 + production ARC bridge + mock ARC SDK 的 `tmp/layered-read-act-20261126` 验证，首个 provider request 的一个 Python cell 依次读取 step、segmentation，按对象数量条件读取 detail，执行 UP，随后读到 `current_frame.step=1`、`len(history)=2`。下一 provider request 才进入下一 turn；总计 2 requests、2 calls、2 actions，segment reasons 为 action、budget，0 provider/Python error。脚本验证功能和确定性链路；真实模型自主采用、只读请求下降与净收益仍待同模型同预算对照。负例为可用动作或证据不足时不执行 `submit_actions`，只返回摘要。比较指标为每动作前只读 requests、总 tokens、延迟、无效动作和关卡进展；若只读请求下降但动作质量变差，则推翻采用命题。
+
 2026-11-26 用户选择：只保留 layer 及其相关机制；Python namespace 固定跨调用持久。已移除 `ARC_LAYERED_NAMESPACE_RESET` 分支及对应 guest 参数。layer runner 的 bridge、Pi 与预算支持代码已拆到 `arc_layered_support.py`，不再导入旧 runner；layer extension 不再导入 thin 的观测模块，请求追踪改为共用的 `arc_request_trace.ts`。原有 `arc_layered_smoke_provider.ts` 已独立提供 layer 诊断，不需要 thin provider。
 
 依赖拆分的验证：`tests/test_arc_layered_evolution.py` 2/2；`arc_layered_extension.test.ts` 与请求追踪测试 21/23，两个失败是原有 review freeze 和 compaction 断言。使用实际 Pi 0.87、production ARC bridge、mock ARC SDK、现有 layer provider 跑 `tmp/layered-detached-existing-20261126`：2 次 provider request、2 个 bridge 动作，`budget_exhausted`，无 provider 错误。功能与确定性全链路可达；真实 provider 自主采用和净收益仍未验证。旧 thin/runtime 文件尚未物理删除；CLI 和 PPT demo 仍引用其中若干模块，删除前需按调用方分别处理。
