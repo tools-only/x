@@ -168,7 +168,7 @@ const tokens = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n
 
 export default function arcThinExtension(pi: ExtensionAPI) {
   const native = process.env.ARC_THIN_FOUNDATION === "native";
-  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'query' : 'inline';
+  const observationMode = native ? process.env.ARC_THIN_OBSERVATION ?? 'inline' : 'inline';
   if (!['query', 'inline'].includes(observationMode)) throw Error('ARC_THIN_OBSERVATION must be query or inline');
   const queryObservation = native && observationMode === 'query';
   const replayReasoning = native && process.env.ARC_THIN_REPLAY_REASONING === "1";

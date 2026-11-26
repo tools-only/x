@@ -49,8 +49,8 @@ async function fixture(mode?: string) {
   };
 }
 
-test('native default keeps every raw frame outside context and returns exact requested measurements/images', async () => {
-  const h = await fixture();
+test('explicit query delivery keeps every raw frame outside context and returns exact requested measurements/images', async () => {
+  const h = await fixture('query');
   try {
     const messages = await h.project(), content = messages[0].content;
     assert.equal(content.filter((b: any) => b.type === 'image').length, 0, 'no automatic image even for vision model');
@@ -96,8 +96,13 @@ test('invalid observation mode fails rather than silently changing delivery', ()
   } finally { process.env = old; }
 });
 
-test('explicit inline delivery retains the old full grid/image option', async () => {
-  const h = await fixture('inline');
-  try { const messages = await h.project(); assert.ok(messages[0].content.some((b: any) => b.type === 'image')); }
-  finally { await h.close(); }
+test('native default delivers the current grid inline, with its image for vision models', async () => {
+  const h = await fixture();
+  try {
+    const messages = await h.project();
+    assert.ok(messages[0].content.some((b: any) => b.type === 'image'), 'current frame PNG is delivered without a tool call');
+    const text = JSON.stringify(messages);
+    assert.ok(text.includes(renderArcLatestFrameRuns(h.state(), { derived: false }).split('\n')[5]),
+      'lossless grid runs are in the model context without a tool call');
+  } finally { await h.close(); }
 });

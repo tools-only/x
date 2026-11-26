@@ -64,3 +64,17 @@ runtime 自动保存完整公开观测及 PNG，父默认只收状态、动作�
 ## 与 Claude 优化的整合
 
 上述“隔离工作树”和“未修改 Claude”描述的是此前单项交付阶段。用户随后授权整合；最新源快照、最小差异、计算会话/行动/查询/子代理共存验证及实际部署状态见[合并记录](../reports/2026-10-13-query-claude-merge.md)。此前原始实验链接已改为原 Codex 工作树的精确绝对路径，避免复制记录后指向错误的 runs 目录。真实自主采用及净收益仍未验证。
+
+## 2026-11-26 默认值翻转：inline 成为 native 默认，query 保留为对照开关
+
+用户决定进一步对齐 The Duck 的交付方式：读取当前游戏状态不应消耗 tool 请求，Agent 执行代码消耗请求是可接受的。因此 native 默认观测交付从 query 翻转为 inline（完整 lossless 网格 + 视觉模型自动附 PNG 直接进入每个决策的上下文）；`ARC_THIN_OBSERVATION=query` 保留原按需查询模式作消融对照。持久 Python 会话（grid/prev_grid/history/state 绑定与跨调用命名空间）不变。
+
+改动：`demo/arc_thin_extension.ts`（默认 'query'→'inline'）、`src/autoresearch_pi/arc_thin_e2e.py`（run-config 记录同步）、`tools/run_foundation_smoke.py`（query 场景显式设置 `ARC_THIN_OBSERVATION=query`）、`tests/arc_thin_query_observation.test.ts`（默认用例改为断言 inline 网格/图像免费进上下文，query 行为在显式模式下继续全量断言）。
+
+验证（Node 25.5.0 `--experimental-transform-types`；实际 Pi 0.87.0 / production runner / mock SDK / scripted provider）：
+
+- `node --experimental-transform-types --test tests/arc_thin_query_observation.test.ts`：3/3。
+- `python tools/run_foundation_smoke.py … foundation defaults | components | receipts | migration`：各自通过；defaults 的首个真实请求含 `CURRENT STATE` 与 "Lossless coordinate runs"，run-config 记录 `observation_delivery=inline`。
+- `python tools/run_foundation_smoke.py … query defaults`：通过；显式 query 下父请求仍只含元数据与 refs。
+
+证据边界：这是功能与接线验证。2026-10-13 记录的 query 收益命题（减少常驻数据）与本次 inline 命题（减少取证往返）方向相反，哪个在真实模型下净收益更好仍未验证；需要同预算 inline/query 独立对照（父子总 tokens、取证轮次、动作质量）。本次翻转依据用户的设计决定，不依据已证实的净收益。

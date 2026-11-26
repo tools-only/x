@@ -85,8 +85,9 @@ What folds away:
    - outputs of tools marked as views;
    - a summarised history: action lines plus the latest two tool results in full, older results one line each, within a
      12,000-character budget;
-   - current state metadata and exact observation references by default; raw grids and images are queried with python/read
-     (`ARC_THIN_OBSERVATION=inline` retains the comparison mode).
+   - the current state inline by default (2026-11-26): the full lossless grid, with its PNG for vision models, is in every
+     decision's context without a tool call; `ARC_THIN_OBSERVATION=query` retains the on-demand mode (metadata and exact
+     observation references; raw grids and images queried with python/read) as the comparison mode.
 
    Pi's compaction stays as a fallback for long decisions. The agent can see how full its context is (P2, P4).
 3. **Lifecycle (P3).** One surface: workspace files through the binder, plus the memory tool for structured memory.

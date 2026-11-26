@@ -95,6 +95,7 @@ path = run_arc_thin_e2e(root, arc_root=PROJECT_ROOT, game="ls20", foundation="na
     extension_env={"ARC_THIN_SMOKE_SCRIPT": script,
         **({'ARC_THIN_SMOKE_CONSULT_LENGTH':'1'} if script=='components' else {}),
         **({'ARC_REFINE_EVERY': '6'} if script == 'activation' else {}),
+        **({'ARC_THIN_OBSERVATION': 'query'} if script == 'query' else {}),
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '1200'} if tight else {}),
         **({'ARC_THIN_NATIVE_HISTORY_CHARS': '0'} if disabled else {}),
         **({'ARC_THIN_SMOKE_AUTO_COMPACTION': '1'} if automatic else {} if defaults or disabled else {'ARC_THIN_AUTO_COMPACTION': '0'})})

@@ -756,7 +756,7 @@ def run_arc_thin_e2e(
         pi_env["ARC_THIN_FOUNDATION"] = foundation
         pi_env["ARC_THIN_REPLAY_REASONING"] = "1" if replay_reasoning else "0"
         pi_env.update(extension_env or {})
-        observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "query") if foundation == "native" else "inline"
+        observation_delivery = pi_env.get("ARC_THIN_OBSERVATION", "inline") if foundation == "native" else "inline"
         if observation_delivery not in ("query", "inline"):
             raise ValueError("ARC_THIN_OBSERVATION must be query or inline")
         auto_compaction = continuity == "session" and pi_env.get("ARC_THIN_AUTO_COMPACTION", "1" if foundation == "native" else "0") == "1"
