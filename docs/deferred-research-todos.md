@@ -1,5 +1,23 @@
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-11-01 用户确认的长期定位已收敛到 [Harness 与 Self-Harness 设计原则](harness-design-principles.md)：五类可修改组件池及其基础、组织机制共同构成 harness；self-harness 不限于工具复用，在线最小闭环以真实使用结束，显式保留/修订/撤下可选。以下较早 LIVE-BIND 记录仅为局部实验历史。本次仅维护设计文档与入口，未改 runtime，研究到行动、总成本及连续性的实证状态不变。
+
+2026-11-01 Act→Save→Use 复核：定位 self-harness-minimal-path 的 HEAD 90d636fe 与 dirty native 补丁；默认 native 显式 session 引用的 CARD-ADOPT 组件测试通过，但测试无行动宿主，历史 smoke 存在 tool ok=true/acted=0。缺参同名装配尚未实现；提出输入契约约束的 LIVE-BIND 与行动回执关联验收，未修改 runtime、未启动真实 provider。B/C/D 的自主研究到行动、父子总成本与连续性仍开放，见[诊断与最小方案](reports/2026-11-01-act-save-use-design-review.md)及[Continual Harness 源码复核](reports/2026-11-01-continual-harness-reference.md)。
+
+2026-10-22 P1/P2 逐项审计后收紧：实装 Pi 的 all-terminate 与混合批次回执断裂（13/22 批次续轮）；Refiner 原回复已有 hypothesis，却被 FILE 优先路由丢弃；missing 的结算只看编辑类型，未检查实际解除。strategy 断在 binder 格式校验，重复反馈已交付，summary 为刷新及计数口径问题。撤回跨组件发布事务/新控制器/新门禁，先修现有批次回执、Refiner 路由与后置条件，再收窄 Prompt 合同和 summary。只读日志及源码审计，未改 runtime/未运行测试或新实验；修复四层均未验证，研究到行动、父子成本和连续性继续开放。见[同一设计记录](plans/2026-10-22-harness-state-evidence-and-effects-design.md)及其中审计产物。
+
+2026-10-22 新 r3 的 #63–#93 诊断与后续设计：CH 差分已实际交付，未发生 compaction（transcript，history_omitted=0）；L2 目标关系未成为有效条件检验，旧 L1 混合 fact 与 stale record 仍影响当前建议，newState 会持续清零 R3 进展计数。提出 E1 条件证据投影、E2 历史支持/当前适用性分离、E3 假设关联预测、E4 策略级转向触发，复用已有 memory/check/strategy/idea；包含逐因素预算、负例和撤下标准。仅设计，未改 runtime/未启动实验；功能、接线、自主采用、净收益均未验证，研究到行动、父子总成本和连续性继续开放。见[唯一设计记录](plans/2026-10-22-r3-evidence-and-strategy-revision-design.md)。
+
+2026-10-22 su15 六条真实轨迹及 R2h 冻结源码诊断：历史成功共享同类对象组合与反例后修订；最新两路发现 L1 对象写入 analyst 长期角色、旧坐标观察器跨关常驻且 first-ok 被标 held、精确坐标新颖度与机制信息增益脱节，以及重复无答复 consult 的开销。补查确认实跑为 query，未启用已有 CH 差分；stale 目录标记也不等于停止绑定/执行。已按 L2 重算父子 budget tokens、动作 decision 和研究子账；同一记录补齐 O1–O8 问题对应方案，优先实际差分交付、阶段事实与工具适用性、普通接口/研究往返简化，再检验反证到实验与计划复用。包含单因素预算、负例、推翻条件及保留/撤下标准；仅诊断/设计，未改 runtime、未启动 provider，候选的功能/接线/自主采用/净收益均未验证，B/C/D 不关闭。见[同一诊断报告](su15-log-comparison-2026-10-22.md)。
+
+2026-10-21 社区组件化只读设计：基于 r04 源码、既有真实轨迹与 Claude Code/Agent Skills 官方资料，提出自由 Coding、按需 creator 创作与确定性组件包装配分层；Auto-Research worker 仍只读取证，由 parent 判断创作与采用。仅完成调研和方案，未改 runtime、未启动测试或 provider，功能/接线/自主采用/净收益均未验证；B/C/D 的研究到行为、父子总成本和跨压缩连续性继续开放。见[唯一设计记录](plans/2026-10-21-community-aligned-harness-design.md)。
+
+2026-10-14 native 决策效率方案：Python 会话已保留计算状态，但当前 native memory 索引省略 next_test/完整证据且不展示 rejected 假设，同决策工作集只生成一次；建议先复用已有 memory/strategy 做语义内容交付与 revision 刷新，再分别验证完整当前观测、较大结果直返和有界 reasoning。仅完成源码诊断与方案，未修改 runtime/未启动实验，不据此声明重复取证因果或收益；B/C/D 保持开放。见[同一诊断记录与候选协议](../tmp/opus-efficiency-source-check-20261013.md#2026-10-14-proposed-change-retain-decision-knowledge-and-deliver-current-evidence-directly)。
+
+2026-11-26 状态更新：按用户决定（对齐 The Duck 的免费状态读取），激活工作树 D:/autoresearch_pi_activation_20261013 的 native 观测默认从 query 翻转为 inline，`ARC_THIN_OBSERVATION=query` 保留为消融对照；上一条方案的"完整当前观测"因素就此成为默认。Node 定向测试 3/3 与 foundation defaults/components/receipts/migration/query 五个真实 runner smoke 通过，首个真实请求确认含完整 lossless 网格。inline vs query 的真实模型净收益（父子总 tokens、取证轮次、动作质量）仍未对照，B/C/D 不关闭。见[同一变更记录](D:/autoresearch_pi_activation_20261013/docs/plans/2026-10-13-query-observation-context.md)末节。
+
+2026-10-13 最新 native 无上限真实 ls20 只读诊断（17:05 快照，yibu/qwen3.8-27b）：3 动作/0 关，前三已完成决策 4/7/7 父请求、222555 reported tokens；当前样本已知 284753，另有失败未知成本和 pending。实际 simple-action schema 无坐标，但 bridge 忽略额外坐标而回执保留 click 形态；动作回执/公开 trajectory 缺已有 changed_cells，父先误判零变化后多轮恢复。Refiner 将行动 probe v1 改为 view v2，装配成功但只在下一动作后调度，当前状态语义输出尚未到达。同决策已完成 thinking 被剥离是重复推导的待验证因果因素；history_omitted=0，无压缩事件，不能归因于历史窗口耗尽。B/C/D 的证据到行动、父子总成本和认知连续性继续开放；未改 runtime/未启动新 provider 实验。下一窄候选是复用既有回执交付事实变化计数。见[同一运行记录](../runs/arc-activation-all-uncapped-20261013/record.md)及[冻结轨迹诊断](../runs/arc-activation-all-uncapped-20261013/diagnostics/efficiency-20261013/analysis.md)。
+
 2026-10-10 ARC 动作接口修复：P040 实际 provider 已收到正确 scope，但静态工具枚举仍暴露 ACTION5/6；当前 workspace 改为 observation 驱动的动态 schema/激活状态，覆盖 RESET、scope 变化、空/失败/恢复和旧调用执行边界。54 Node、32 thin scripted/mock smoke 通过，installed Pi 的实际 7 请求语义检查及 18 smoke 请求 scope 一致性审计通过。未修改独立 checkout/冻结实验，无新付费；完整闭环、自主采用、净收益及 B/C/D 保持未验证。见[唯一变更记录](plans/2026-10-10-arc-action-live-scope.md)。
 
 2026-10-10 两路 round-2 实验已按用户要求关闭（ka59/ls20 runner、bridge、Pi 子进程均确认退出）。针对 ka59 真实 memory 撤销被拒绝的修订摩擦，已将“rejected 必须附 refutes”从硬门槛改成非阻塞缺证据提示，保留原子性、真实动作编号和已提交证据校验；真实失败参数及 native 后轮视图回归通过，thin Node 52/52、pytest 4/4、scripted/mock ARC smoke 通过。仅支持功能修复，不提升完整链路、自主采用、净收益或 B/C/D 质量状态；见[唯一变更记录](plans/2026-10-10-memory-rejection-friction.md)。
@@ -266,6 +284,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 ## 后续更新
 
+2026-10-15：完成 Prime Agent / DeepSeek Harness / Continual Harness 的[上下文与决策内 loop 源码比较](reports/2026-10-15-harness-context-management-comparison.md)，区分模型 step、工具组、环境动作、实验及会话恢复边界；核对逐工具轮消息连续性、reasoning/provider 协议、语义 memory 与执行状态的不同寿命。只读研究，未改 runtime、未启动 ARC/provider 实验；B/C/D 的自主采用、跨压缩反证连续性及父子总成本净收益状态不变。下一检查仍应核对实际 provider 输入及反证后的行动，不能以日志或 checkpoint 存在替代。
+
 2026-10-12 thin 路径：依据 tu93 round-5 真实轨迹诊断（[报告与变更记录](reports/2026-10-12-tu93-new-design-analysis.md)），实现了以下改动：
 - skill 产物（artifacts）存储，记录产出者、状态与关卡，并作为 `state["artifacts"]` 供后续 skill 读取；
 - skill 写于旧关卡时给出标记；
@@ -296,6 +316,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 2026-09-18：证据驱动 self-harness 第一波已实现：blocking Auto-Research 可在当前计算片段结束时 yield 为 pending，后台恢复强制 non-blocking；研究 findings 支持解释/方法正确性/方法收益的独立 assessment；task tool 与 saved subagent 调用检查当前可用性。见 `docs/plans/2026-09-18-evidence-driven-self-harness-design.md`。仍未完成真实 ARC 全链路重新验收、父子主动实验通信、跨压缩语义质量和真实 provider/DeepSeek 研究收益对照。
 
 开始任一项时，补充最新代码证据、范围与验收方式；完成后勾选并链接实现/实验结果。候选方案在确认前保留为待探索项。
+
+2026-10-15 r03b 上下文设计：按当前 Claude worktree `767e0fc6` 核对 CH/Prime、native 台账投影、carry 计量、类型化目标检验与 Refiner 失败/激活边界；su15 日志不在本地，其次数和错误仅作为用户远端观察。已形成 [诊断、优化与单因素实验协议](plans/2026-10-15-r03b-context-and-experiment-plan.md)，未修改 runtime、未启动 ARC/provider 或付费实验。A 的环境/RESET 边界、C 的证据到行动及父子总成本、D 的反证与未完成实验跨压缩连续性仍开放；字段存在、离线投影及计划落盘不构成自主采用或净收益证明。
 
 2026-09-20：后续 A/B/C/D 设计须对照 [单次生命在线 Self-Harness 模型与最小迁移规范](plans/2026-09-20-agent-native-single-life-harness.md)。固定前提为单条不可回退环境历史、main agent 独占逐步交互及结果上下文、child 仅请求预算内实验、Self-Harness 为非 LLM 的版本/组装/证据机制。上文曾列为候选的 child 控制权交接、自动执行 lease、跳过 parent 模型的中间结果路由，在当前范式下不采用。本文档链接表示设计约束落盘，不表示机制已实现或闭环验收通过；backlog 状态保持未完成。
 
@@ -356,3 +378,5 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 2026-10-09 level0只读诊断：78个动作后状态图案匹配，却0次匹配后到顶部入口；4次入口向上失败全部在不匹配状态。父#185明确匹配仍继续清条，analyst沿用条件缺失的入口反例，技能自动化局部计数而未推进正确实验。断点为关系识别→实验→反例修订；更多预算及183调用未证明收益，B/C/D继续开放。下一另行有界检查是匹配后返回同一入口的真实条件对照；本轮无新provider/动作/runtime修改，完整规则及五类闭环未验。见[同一P1记录](plans/2026-10-08-thin-arc-action-feedback.md#无上限样本-level-0-行为诊断2026-10-09)与其公共证据链接。
 
 同日反思/竞争假设补充：确认父#45反思、#132淘汰旧策略，亦有顶部/0/1/匹配等候选及analyst A–E比较。失败是持续竞争/条件化否证/实验分配，不是完全没有反思。启动匹配源码每决策丢弃旧对话，选择性memory混合状态/解释/计划；114memory拒绝及#257/#282未完成旧策略删除揭示真实修订摩擦。#223/#224已失败的匹配+条空条件在#309/#310重复。B/C/D仍开放；候选为简化逐state/删除义务、复用短竞争与反例摘要，其自主效果需有界对照。本轮未实施，见[唯一P1记录](plans/2026-10-08-thin-arc-action-feedback.md#无上限样本-level-0-行为诊断2026-10-09)及[详细诊断](../runs/pi-arc-thin-ls20-treatment-p1-uncapped-real-20261009/diagnostics/level0-diagnosis.md#补充为何反思与竞争假设没能持续纠偏)。
+
+2026-10-15 Claude CM0–CM6 复审（仅设计、暂不执行）：在[统一 r03b 计划](plans/2026-10-15-r03b-context-and-experiment-plan.md)补齐同一决策内模型工具循环与 Python env.act 循环的边界、预算实际送达、条件化反证/未完成实验的保留，以及近期窗口与有界事件视图的分阶段对照。后续结合用户提供的ls20/CH/Prime分析，增加memory省略目录、逐动作反馈与父模型可见性的区分、跨决策渲染差异审计及Refiner政策独立对照；纠正“MISS自动停Python”“旧帧无恢复”“Prime无自动refine”等判断。fork_from 已有真实 ls20 单动作重放先例，但任意长前缀、隐藏状态一致性、请求内预算止损及真实模型收益仍未验证。C/D 的质量项与 A/B 的相关边界保持开放；本次无 runtime 实施或新实验。
