@@ -126,7 +126,8 @@ if objects and 'UP' in valid_actions:
 else:
     print('need a closer look', len(objects), valid_actions)
 ```
-Return a compact summary without acting when the choice needs model judgment after seeing the observation.
+If the choice genuinely needs model judgment after a large or unfamiliar change, return at most ONE compact summary
+without acting, then act (or take a 1-step probe) on the next call — never chain repeated observation-only calls.
 1. Look first. Find the objects with the segmentation, check what changed after the last action, and read only small
    regions as text.
 2. Build a model: what each action does, what the goal seems to be, and which observations support each belief.
