@@ -36,6 +36,50 @@ async function session(extra: Partial<LayeredConfig> = {}) {
   return { bridge, python };
 }
 
+test("memory checks backtest and continue on actions", async () => {
+  const { python } = await session();
+  try {
+    await python.run("submit_actions('UP')");
+    const stats = await python.syncMemoryChecks([
+      { id: "current/up", expr: "t.action == 'UP'" },
+      { id: "current/bad", expr: "1 / 0" },
+      { id: "current/syntax", expr: "(" },
+    ]);
+    assert.equal(stats["current/up"].support, 1);
+    assert.match(stats["current/bad"].error!, /ZeroDivisionError/);
+    assert.match(stats["current/syntax"].error!, /SyntaxError/);
+    const next = await python.run("submit_actions('DOWN')");
+    assert.match(next.text, /verify\/current\/up failed/);
+    assert.equal(python.memoryCheckStats["current/up"].counter, 1);
+    assert.equal(python.memoryCheckStats["current/up"].by_level["1"].counter, 1);
+  } finally { python.close(); }
+});
+
+test("memory checks are replayed after a kernel timeout", async () => {
+  const { python } = await session({ timeoutMs: 200 });
+  try {
+    await python.run("submit_actions('UP')");
+    await python.syncMemoryChecks([{ id: "current/up", expr: "t.action == 'UP'" }]);
+    const timed = await python.run("while True: pass");
+    assert.equal(timed.kernelRestarted, true);
+    const resumed = await python.run("submit_actions('DOWN')");
+    assert.match(resumed.text, /verify\/current\/up failed/);
+    assert.equal(python.memoryCheckStats["current/up"].checked, 2);
+  } finally { python.close(); }
+});
+
+test("decorated tools carry imports and refreshed frame globals", async () => {
+  const { python } = await session();
+  try {
+    const created = await python.run("import collections\n@tool\ndef measure(args):\n    return collections.Counter([current_frame.step]) [current_frame.step] + len(history) + args['extra']");
+    assert.deepEqual(created.decoratedTools, ["measure"]);
+    assert.match((await python.run("measure.measure({'extra': 2})")).text, /^4/);
+    await python.run("submit_actions('UP')");
+    assert.match((await python.run("measure.measure({'extra': 2})")).text, /^5/);
+    assert.match((await python.run("@tool\ndef Invalid(a, b):\n    return 1")).text, /@tool Invalid:/);
+  } finally { python.close(); }
+});
+
 test("agent library module returns a value and reloads its revised source in the WASI kernel", async () => {
   const workDir = join(mkdtempSync(join(tmpdir(), "layered-bound-")), "work");
   mkdirSync(join(workDir, "lib"), { recursive: true });

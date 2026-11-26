@@ -75,6 +75,114 @@ test("harness profile reflects memory and injects its active version", async () 
   assert.match(textOf(next.message.content), /MEMORY current v1: H1: test next/);
 });
 
+test("memory verify sync is silent and appears with the live memory", async () => {
+  const { handlers, tools, python, rows } = setup({ harnessProfile: true });
+  python.syncMemoryChecks = async () => ({ "current/rule": { support: 2, counter: 1, checked: 3,
+    by_level: {}, witness: "L1 s3 UP", error: null } });
+  python.memoryCheckStats = await python.syncMemoryChecks();
+  await handlers.before_agent_start({});
+  const result = await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current",
+    body: "a rule", verify: { rule: "t.action == 'UP'" } });
+  assert.match(result.content[0].text, /verify: rule 2\/3 FAILED/);
+  assert.equal(python.runs, 0);
+  assert.equal(rows("memory_verify_sync").length, 1);
+  assert.match(textOf((await handlers.before_agent_start({})).message.content), /MEMORY current v1 \[verify: rule 2\/3 FAILED/);
+});
+
+test("saved memory checks synchronize when a session resumes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-verify-resume-"));
+  const first = setup({ root, harnessProfile: true });
+  await first.handlers.before_agent_start({});
+  await first.tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current",
+    body: "check", verify: { rule: "t.action == 'UP'" } });
+  const resumed = setup({ root, harnessProfile: true });
+  let received: any;
+  resumed.python.syncMemoryChecks = async (checks: any) => { received = checks; return {}; };
+  await resumed.handlers.before_agent_start({});
+  assert.deepEqual(received, [{ id: "current/rule", expr: "t.action == 'UP'" }]);
+  assert.equal(resumed.python.runs, 0);
+});
+
+test("layered level boundary shows objective task facts and capability inventory", async () => {
+  const { handlers, python, game, call, rows } = setup({ harnessProfile: true });
+  await handlers.before_agent_start({});
+  python.next = batch({ executed: 1, actions: ["UP"], level_changed: true });
+  python.run = async () => ({ text: "ok", truncated: false, acted: python.next, images: [], metrics: {},
+    steps: [{ step: 1, action: "UP", level: 1, changed: true, new: true, same: false, tries: 0,
+      death: false, level_up: true, changed_cells: 3, change_box: [0, 0, 2, 2], changed_symbols: [1, 2],
+      source: null, predict_off: null, claims_failed: [], claims_held: [] }] });
+  game.level = 2; game.levels_completed = 1; game.frame = [[1, 2, 3]];
+  await call();
+  const text = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(text, /Causal briefing: UP 1x\/3 cells bbox 0,0,2,2/);
+  assert.match(text, /unchanged symbols across actions: 3/);
+  assert.match(text, /Layer 2: Memory none; Prompt none; Skills none; Tools none; Subagents none/);
+  assert.equal(rows("dual_audit_shown").length, 1);
+});
+
+test("death review and consult retain the failed attempt until reset", async () => {
+  const { handlers, tools, python, game, call, rows } = setup({ harnessProfile: true });
+  await handlers.before_agent_start({});
+  let step = 0;
+  python.run = async () => {
+    step += 1;
+    if (step === 2) { game.state = "GAME_OVER"; game.step = 2; }
+    return { text: "ok", truncated: false, acted: batch({ executed: 1, actions: ["UP"],
+      game_over: step === 2, stop_reason: step === 2 ? "game_over" : "action" }), images: [], metrics: {},
+      steps: [{ step, action: "UP", level: 1, changed: true, new: step === 1, same: false, tries: 0,
+        death: step === 2, level_up: false, changed_cells: 1, changed_symbols: [1],
+        source: null, predict_off: null, claims_failed: [], claims_held: [] }] };
+  };
+  await call();
+  await handlers.before_agent_start({});
+  await call();
+  const review = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(review, /GAME_OVER review[\s\S]*Layer 1:[\s\S]*Layer 2:/);
+  assert.match(review, /s1 UP/);
+  assert.match(review, /s2 UP/);
+  assert.equal(rows("dual_audit_shown").filter(row => row.boundary === "GAME_OVER").length, 1);
+  const ctx: any = { model: { id: "same-model" }, modelRegistry: {
+    getApiKeyAndHeaders: async () => ({ apiKey: "test", headers: {} }),
+    streamSimple: (_model: any, input: any) => {
+      const briefing = input.messages[0].content[0].text;
+      assert.match(briefing, /s1 UP/);
+      assert.match(briefing, /s2 UP/);
+      assert.match(briefing, /Layer 2:/);
+      return { result: async () => ({ content: [], stopReason: "stop", usage: {} }) };
+    } } };
+  await tools.consult.execute("id", { name: "reframer", question: "What happened?" }, undefined, undefined, ctx);
+});
+
+test("long boundary facts retain the capability review within its budget", async () => {
+  const { handlers, python, game, call } = setup({ harnessProfile: true });
+  await handlers.before_agent_start({});
+  python.run = async () => ({ text: "ok", truncated: false, acted: batch({ executed: 1, actions: ["UP"], level_changed: true }),
+    images: [], metrics: {}, steps: Array.from({ length: 80 }, (_, i) => ({ step: i + 1,
+      action: `ACTION_${i}_${"X".repeat(100)}`, level: 1, changed: true, new: true, same: false,
+      tries: 0, death: false, level_up: i === 79, changed_cells: 1, changed_symbols: [1],
+      source: null, predict_off: null, claims_failed: [], claims_held: [] })) });
+  game.level = 2; game.levels_completed = 1;
+  await call();
+  const text = textOf((await handlers.before_agent_start({})).message.content);
+  const review = text.match(/LEVEL COMPLETE review[\s\S]*?decide what, if anything, to revise\./)?.[0];
+  assert.ok(review);
+  assert.ok(review.length <= 1800);
+  assert.match(review, /Layer 2:[\s\S]*Execution:[\s\S]*Editable capability space:/);
+});
+
+test("pre-action folding keeps component and consult results", () => {
+  const messages = [{ role: "assistant", content: ["python", "consult", "read_component", "reflect_component", "python"]
+    .map((name, index) => ({ type: "toolCall", id: String(index), name })) },
+  ...["static view", "consult advice", "skill body", "verify receipt", "[env] executed 1"].map((text, index) =>
+    ({ role: "toolResult", toolCallId: String(index), content: [{ type: "text", text }] }))];
+  const out = foldPreActionObservations(messages);
+  assert.equal(out.folded, 1);
+  assert.match(out.messages[1].content[0].text, /folded pre-action/);
+  assert.equal(out.messages[2].content[0].text, "consult advice");
+  assert.equal(out.messages[3].content[0].text, "skill body");
+  assert.equal(out.messages[4].content[0].text, "verify receipt");
+});
+
 test("context exposes current component revisions and skill index after an older state survives", async () => {
   const { handlers, tools, rows } = setup({ harnessProfile: true });
   await handlers.before_agent_start({});

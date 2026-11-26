@@ -281,6 +281,50 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         trace.close()
         _stop_bridge(bridge, bridge_stderr, closed)
 
+    # The RPC process is terminated by PiKernel.close(), which does not dispatch
+    # session_shutdown. Refresh the final replay from the persisted action facts.
+    if profile == "qwen27b-harness":
+        facts = _read_jsonl(harness / "decisions.jsonl")
+        if facts:
+            level = int(state.get("levels_completed", 0)) + 1
+            active = [fact for fact in facts if fact.get("level") == level]
+            if active:
+                replay = root / "work" / "replay" / f"level_{level}.md"
+                replay.parent.mkdir(parents=True, exist_ok=True)
+                lines = [f"# Level {level} review", "", f"Outcome: {state.get('state')}; actions used {(state.get('action_budget') or {}).get('total_used')}.",
+                         "", "## Compressed trajectory", ""]
+                lines.extend(f"- s{fact.get('step')} {fact.get('action')}"
+                             f"{' DEATH' if fact.get('death') else ''}"
+                             f"{' LEVEL_UP' if fact.get('level_up') else ''}"
+                             for fact in active)
+                lines.extend(["", "## Active capabilities"])
+                component_root = harness / "components"
+                heads = component_root / "HEAD.json"
+                rows_now = _read_jsonl(harness / "layered.jsonl")
+                for key, version in (json.loads(heads.read_text(encoding="utf-8")) if heads.exists() else {}).items():
+                    kind, name = key.split("/", 1)
+                    item = json.loads((component_root / kind / name / f"v{version}.json").read_text(encoding="utf-8"))
+                    checks = []
+                    for check in item.get("verify", {}):
+                        events = [row for row in rows_now
+                                  if row.get("kind") == "memory_verify_failure" and f"{name}/{check}" in row.get("checks", [])]
+                        sync = next((row for row in reversed(rows_now)
+                                     if row.get("kind") == "memory_verify_sync" and row.get("name") == name
+                                     and row.get("version") == version), None)
+                        stats = ((sync or {}).get("stats") or {}).get(f"{name}/{check}")
+                        result = (f"{stats['support']}/{stats['checked']} held, {stats['counter']} failed at sync"
+                                  if stats else "historical score unavailable")
+                        checks.append(f"{check} ({result}; {len(events)} live failures logged)" )
+                    lines.append(f"- {item['kind']}/{item['name']} v{item['version']}"
+                                 + (f" verify: {', '.join(checks)}" if checks else ""))
+                if lines[-1] == "## Active capabilities":
+                    lines.append("- none")
+                lines.extend(["", f"Consult attempts: {sum(row.get('kind') == 'consult' and row.get('attempted') is True and row.get('level') == level for row in rows_now)}.",
+                              f"Execution: py_calls {sum(row.get('kind') == 'python' and row.get('level') == level for row in rows_now)}, "
+                              f"py_errors {sum(row.get('kind') == 'python' and row.get('level') == level and bool(row.get('error')) for row in rows_now)}, "
+                              f"truncated {sum(row.get('kind') == 'python' and row.get('level') == level and bool(row.get('truncated')) for row in rows_now)}."])
+                replay.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     rows = _read_jsonl(harness / "layered.jsonl")
     calls = [row for row in rows if row.get("kind") == "python"]
     evictions = [row for row in rows if row.get("kind") == "evict"]
@@ -312,6 +356,12 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         "folds": sum(row["parts"] for row in rows if row.get("kind") == "fold"),
         "compactions": sum(1 for row in rows if row.get("kind") == "compact"),
         "evolution": {"changes": evolution_changes + changed, "syntax_errors": evolution_errors + len(parse_errors)},
+        "components": {
+            "memory_verify_syncs": sum(row.get("kind") == "memory_verify_sync" for row in rows),
+            "memory_verify_failures": sum(len(row.get("checks", [])) for row in rows if row.get("kind") == "memory_verify_failure"),
+            "at_tool_published": sum(row.get("kind") == "tool_decorated" for row in rows),
+            "dual_audits_shown": sum(row.get("kind") == "dual_audit_shown" for row in rows),
+        },
         "work_snapshot": _git_snapshot(root),
         "sessions": max(1, sum(1 for _ in root.glob("session*.jsonl"))),
         "context_overflows": sum(1 for row in rows if row.get("kind") == "context_overflow"),

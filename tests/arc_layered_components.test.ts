@@ -23,3 +23,12 @@ test("component versions persist and restore without changing old versions", () 
   assert.throws(() => reopened.read("memory", "current", 100));
   assert.equal(reopened.reflect("restore", "skill", "current", undefined, undefined, 2).summary, "one-line method");
 });
+
+test("memory checks are versioned and restore their exact earlier expressions", () => {
+  const store = new LayeredComponents(mkdtempSync(join(tmpdir(), "layered-verify-")));
+  const first = store.reflect("define", "memory", "current", "hypothesis", "", undefined, { moves: "t.action == 'UP'" });
+  assert.deepEqual(store.read("memory", "current", 1).verify, first.verify);
+  store.reflect("redefine", "memory", "current", "revised", "", undefined, { moves: "t.action == 'DOWN'" });
+  assert.deepEqual(store.reflect("restore", "memory", "current", undefined, "", 1).verify, first.verify);
+  assert.throws(() => store.reflect("define", "memory", "bad", "x", "", undefined, { "bad/name": "True" }), /verify/);
+});

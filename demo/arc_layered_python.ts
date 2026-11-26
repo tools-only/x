@@ -17,10 +17,13 @@ export type ActionBatch = { executed: number; actions: string[]; lines: string[]
 export type StepFact = { step: number; action: string; tries: number; same: boolean; last_try: number;
   new: boolean; level: number; changed: boolean; death: boolean; level_up: boolean;
   source: string | null; fatal: boolean; claims_failed: string[]; claims_held: string[];
-  predict_off: number | null; same_death: boolean };
+  predict_off: number | null; same_death: boolean; verify_failed?: string[]; region_tries?: number;
+  changed_cells?: number; change_box?: [number, number, number, number] | null; changed_symbols?: number[] };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
-  kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[] };
+  kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[]; decoratedTools?: string[] };
+export type MemoryCheckStats = Record<string, { support: number; counter: number; checked: number;
+  by_level: Record<string, { support: number; counter: number }>; witness: string | null; error: string | null }>;
 
 export const COLOR_LEGEND = "W=white, w=light gray, g=gray, G=dark gray, c=charcoal, B=black, M=magenta, P=pink, " +
   "R=red, b=blue, S=sky blue, Y=yellow, O=orange, r=dark red, N=light green, p=purple";
@@ -51,6 +54,7 @@ export class BridgeClient {
 export class LayeredPython {
   private kernel: PythonKernel;
   private history: Array<Record<string, unknown>> = [];
+  private transitionResults: Array<Record<string, unknown>> = [];
   private sent = 0;
   private raw: any;
   private lastResult: Record<string, unknown> = {};
@@ -80,6 +84,8 @@ export class LayeredPython {
   private sourceRepeats = new Map<string, number>();
   private levelStartBudgetLeft: number | undefined;
   private capabilityUsage: Record<string, { loaded: number; invoked: number; action_producing: number }> = {};
+  private memoryChecks: Array<{ id: string; expr: string }> = [];
+  memoryCheckStats: MemoryCheckStats = {};
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -192,6 +198,19 @@ export class LayeredPython {
     return existsSync(path) ? readFileSync(path, "utf8") : undefined;
   }
 
+  async syncMemoryChecks(checks: Array<{ id: string; expr: string }>): Promise<MemoryCheckStats> {
+    this.memoryChecks = checks;
+    if (!this.kernel.alive) this.sent = 0;
+    const request = { sync_only: true, code: "", memory_checks: checks, new_history: this.history.slice(this.sent),
+      reset_history: this.sent === 0, numeric_grid: this.config.numericGrid, valid_actions: this.state().valid_actions,
+      valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult, harness_state: this.harnessState(),
+      claims: this.scanClaims(), lib: this.scanLib(), transition_results: this.transitionResults };
+    const result = await this.kernel.run(request, async req => this.file(req));
+    this.sent = this.history.length;
+    this.memoryCheckStats = result.result.memory_checks ?? {};
+    return this.memoryCheckStats;
+  }
+
   private triage(steps: StepFact[]) {
     const rules = this.config.miniReview ?? {};
     const maxPerLevel = rules.maxPerLevel ?? 2, repeatTries = rules.repeatTries ?? 3;
@@ -230,6 +249,8 @@ export class LayeredPython {
     const label = raw === "ACTION6" ? `MOUSE(x=${call.x},y=${call.y})` : name;
     const entry = { ...this.entry(label, after), expect: request.expect ?? null };
     this.history.push(entry);
+    this.transitionResults.push({ changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
+      state: after.state, level_changed: after.levels_completed !== before.levels_completed });
     this.sent = this.history.length;
     const levelChanged = after.levels_completed !== before.levels_completed;
     this.stepsSinceLevel = levelChanged ? 0 : this.stepsSinceLevel + 1;
@@ -240,6 +261,7 @@ export class LayeredPython {
     const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
       levels_completed: after.levels_completed, state: after.state, level_changed: levelChanged,
       game_over: after.state === "GAME_OVER", win: after.state === "WIN", step: entry.step };
+    this.transitionResults[this.transitionResults.length - 1] = result;
     this.lastResult = result;
     const line = `${label}: ${result.changed_cells} cells changed, level ${entry.level}, ${after.state}`;
     this.recentLines.push(line);
@@ -279,7 +301,8 @@ export class LayeredPython {
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
       harness_state: this.harnessState(),
-      startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources, lib: this.scanLib() };
+      startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources, lib: this.scanLib(),
+      memory_checks: this.memoryChecks, transition_results: this.transitionResults };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
     let run: { result: Record<string, any>; metrics: Record<string, number> } | undefined;
@@ -289,6 +312,7 @@ export class LayeredPython {
       error = run.result.error ?? undefined;
       text = run.result.text + (error ? (run.result.text ? "\n" : "") + error : "");
       images = Array.isArray(run.result.images) ? run.result.images : [];
+      this.memoryCheckStats = run.result.memory_checks ?? {};
       if (run.result.last_result) this.lastResult = run.result.last_result;
       metrics = { ...run.metrics };
       const modelReport = (run.result as any).model;
@@ -348,7 +372,8 @@ export class LayeredPython {
     if (notes.length) acted.notes = notes;
     if (steps.length) acted.steps = steps;
     return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
-      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed }, notes, steps };
+      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed }, notes, steps,
+      decoratedTools: run?.result.decorated_tools ?? [] };
   }
 
   close() { this.kernel.close(); }

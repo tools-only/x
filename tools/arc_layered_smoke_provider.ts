@@ -8,7 +8,7 @@ import { scriptedProviderTransport } from "../tests/pi_scripted_provider_transpo
 
 const ACT = "a = [v for v in valid_actions if v not in ('RESET', 'MOUSE')] or [{'action': 'MOUSE', 'x': 10, 'y': 10}]\n" +
   "before = current_frame\nr = submit_actions(a[:2])\nprint(r['lines'], 'refreshed:', before is not current_frame)";
-const SCRIPT: Array<{ text?: string; code?: string; consult?: boolean; stop?: "length"; filler?: boolean }> = [
+const SCRIPT: Array<{ text?: string; code?: string; consult?: boolean; reflect?: boolean; bound?: string; stop?: "length"; filler?: boolean }> = [
   { code: "seg = current_frame.segmentation\nprint(len(seg['nodes']), valid_actions)" },
   { text: "World model: first guess\nPlan: try the first action", code: ACT },
   { text: "I will think about it." },
@@ -31,6 +31,13 @@ const CONSULT_SCRIPT: typeof SCRIPT = [
   { text: "Parent received the consultation.", code: "submit_actions('UP')" },
   { text: "done" },
 ];
+const EVOLVE_SCRIPT: typeof SCRIPT = [
+  { code: "submit_actions('UP')" },
+  { reflect: true },
+  { code: "import collections\n@tool\ndef frame_size(args):\n    return collections.Counter(current_frame.grid[0])[0]\nprint('published')" },
+  { bound: "frame_size" },
+  { code: "submit_actions('UP')" },
+];
 
 export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
   let step = 0;
@@ -41,7 +48,8 @@ export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
     streamSimple: scriptedProviderTransport((model, context) => {
       const stream = createAssistantMessageEventStream();
       const script = process.env.ARC_LAYERED_SMOKE_SCRIPT === "read-act" ? READ_ACT_SCRIPT
-        : process.env.ARC_LAYERED_SMOKE_SCRIPT === "consult" ? CONSULT_SCRIPT : SCRIPT;
+        : process.env.ARC_LAYERED_SMOKE_SCRIPT === "consult" ? CONSULT_SCRIPT
+        : process.env.ARC_LAYERED_SMOKE_SCRIPT === "evolve" ? EVOLVE_SCRIPT : SCRIPT;
       const messages: any[] = context.messages ?? [], system = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");
       const child = system.startsWith("Give two mutually exclusive explanations");
       const row = script[step] ?? { text: "done" };
@@ -57,13 +65,16 @@ export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
         results: talk.filter(m => m.role === "toolResult").map(m => m.toolCallId),
         last_user: users.length ? parts(users.at(-1)).map((p: any) => p.type === "text" ? p.text : "[image]").join("\n") : null }) + "\n");
       const output: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [],
-        stopReason: child ? "stop" : row.stop ?? (row.code || row.consult ? "toolUse" : "stop"), timestamp: Date.now(),
+        stopReason: child ? "stop" : row.stop ?? (row.code || row.consult || row.reflect || row.bound ? "toolUse" : "stop"), timestamp: Date.now(),
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
       stream.push({ type: "start", partial: output });
       if (child) output.content.push({ type: "text", text: "Two distinct explanations; probe with one action." });
       else if (row.text) output.content.push({ type: "text", text: row.text });
       if (!child && row.code) output.content.push({ type: "toolCall", id: `call-${step}`, name: "python", arguments: { code: row.code } });
       if (!child && row.consult) output.content.push({ type: "toolCall", id: `call-${step}`, name: "consult", arguments: { name: "reframer", question: "What might explain the current frame?" } });
+      if (!child && row.reflect) output.content.push({ type: "toolCall", id: `call-${step}`, name: "reflect_component", arguments: {
+        op: "define", kind: "memory", name: "current", body: "Probe the next transition", verify: { changed: "t.result['changed_cells'] > 0" } } });
+      if (!child && row.bound) output.content.push({ type: "toolCall", id: `call-${step}`, name: row.bound, arguments: { args: {} } });
       stream.push({ type: "done", reason: output.stopReason as any, message: output });
       stream.end();
       return stream;

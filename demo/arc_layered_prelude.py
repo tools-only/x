@@ -391,6 +391,11 @@ def _bind():
               history=history, transitions=transitions, last_transition=last,
               last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
               valid_actions=list(_S["valid"]), harness_state=harness)
+    for item in (_S.get("lib") or {}).values():
+        if item.get("module"):
+            item["module"].__dict__.update({key: ns[key] for key in (
+                "current_frame", "previous_frame", "history", "transitions", "last_transition",
+                "last_action", "last_action_result", "valid_actions", "harness_state")})
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
@@ -550,7 +555,15 @@ def _off(predicted, actual):
 def _observe(before, forecast, source):
     t, after = _T[-1], _H[-1]
     fact = _ledger(t)
+    previous, current = before["grids"][-1], after["grids"][-1]
+    changed = [(x, y) for y, row in enumerate(current) for x, value in enumerate(row)
+               if y >= len(previous) or x >= len(previous[y]) or previous[y][x] != value]
+    box = [min(x for x, _ in changed), min(y for _, y in changed),
+           max(x for x, _ in changed), max(y for _, y in changed)] if changed else None
+    touched = sorted({value for x, y in changed for value in
+                      (current[y][x], previous[y][x] if y < len(previous) and x < len(previous[y]) else current[y][x])})
     fact.update(level=before["raw"]["level"], changed=gameplay_changed(before["grids"][-1], after["grids"][-1]),
+                changed_cells=len(changed), change_box=box, changed_symbols=touched,
                 death=after["raw"]["state"] == "GAME_OVER" and before["raw"]["state"] != "GAME_OVER",
                 level_up=after["raw"]["levels_completed"] != before["raw"]["levels_completed"], source=source,
                 fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[],
@@ -582,6 +595,10 @@ def _observe(before, forecast, source):
             verdict = _judge_claim(name, claim, t)
             if verdict is not None:
                 fact["claims_held" if verdict else "claims_failed"].append(name)
+    for name, check in (_S.get("memory_checks") or {}).items():
+        verdict = _judge_memory(name, check, t)
+        if verdict is False:
+            fact.setdefault("verify_failed", []).append(name)
     _S.setdefault("steps", []).append(fact)
     return fact
 
@@ -604,6 +621,8 @@ def _echo(fact):
         out += "  [is_fatal flagged this action; it was not fatal]"
     for name in fact["claims_failed"]:
         out += "  [claims/%s failed]" % name
+    for name in fact.get("verify_failed", []):
+        out += "  [verify/%s failed: %s]" % (name, _S["memory_checks"][name]["stats"].get("witness"))
     return out
 
 
@@ -611,6 +630,10 @@ def _load(path, source):
     module = types.ModuleType(path[5:-3].replace("/", "."))
     module.__file__ = path
     module.__dict__.update(_API)
+    if path.startswith("work/lib/") and _S.get("ns"):
+        module.__dict__.update({key: _S["ns"][key] for key in (
+            "current_frame", "previous_frame", "history", "transitions", "last_transition",
+            "last_action", "last_action_result", "valid_actions", "harness_state")})
     exec(compile(source, path, "exec"), module.__dict__)
     return module
 
@@ -689,7 +712,47 @@ def _mkdir(path, *args, **kwargs):
 _os_makedirs, _os_mkdir = os.makedirs, os.mkdir
 os.makedirs, os.mkdir = _makedirs, _mkdir
 _API = dict(open=_open, submit_actions=submit_actions, diff=diff, ascii=ascii, frames_of=frames_of,
-            anim_summary=anim_summary, frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed)
+            anim_summary=anim_summary, frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed,
+            tool=lambda fn: fn)
+
+
+def _judge_memory(name, check, raw):
+    stats = check["stats"]
+    t = Transition(raw["action"], _frame(raw["before"]), _frame(raw["after"]), dict(raw["result"]))
+    try:
+        if check["fn"] is None:
+            return None
+        verdict = check["fn"](t)
+    except BaseException as exc:
+        stats["error"] = "%s: %s" % (type(exc).__name__, exc)
+        return None
+    stats["checked"] += 1
+    if verdict is True or verdict is False:
+        stats["support" if verdict else "counter"] += 1
+        level = t.after_frame.level
+        bucket = stats["by_level"].setdefault(str(level), {"support": 0, "counter": 0})
+        bucket["support" if verdict else "counter"] += 1
+        if not verdict:
+            stats["witness"] = "L%s s%s %s, %s cells changed" % (
+                level, t.after_frame.step, t.action, t.result.get("changed_cells", 0))
+    return verdict
+
+
+def _sync_memory(specs):
+    checks = {}
+    for spec in specs:
+        name, expr = spec["id"], spec["expr"]
+        stats = {"support": 0, "counter": 0, "checked": 0, "by_level": {}, "witness": None, "error": None}
+        try:
+            fn = eval(compile("lambda t: (" + expr + ")", "<verify>", "eval"), _API)
+            checks[name] = {"fn": fn, "stats": stats}
+            for raw in _T:
+                _judge_memory(name, checks[name], raw)
+        except BaseException as exc:
+            stats["error"] = "%s: %s" % (type(exc).__name__, exc)
+            checks[name] = {"fn": None, "stats": stats}
+    _S["memory_checks"] = checks
+    return {name: item["stats"] for name, item in checks.items()}
 
 
 def _cell(req):
@@ -702,17 +765,29 @@ def _cell(req):
         _T.clear()
     for raw in req["new_history"]:
         _append(raw, req["numeric_grid"])
+    # A restarted kernel receives history without the earlier per-action result.
+    for index, t in enumerate(_T):
+        if not t["result"]:
+            results = req.get("transition_results") or []
+            t["result"] = results[index] if index < len(results) else {
+                "changed_cells": diff(t["before"]["grids"][-1], t["after"]["grids"][-1])["count"]}
     fresh = _S["ns"] is None
     if fresh:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
                     "diff": diff, "ascii": ascii, "frames_of": frames_of, "anim_summary": anim_summary,
-                    "frame_diff": frame_diff}
+                    "frame_diff": frame_diff, "tool": _API["tool"]}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
             sys.meta_path.append(_WorkFinder())
     _bind()
+    specs = req.get("memory_checks") or []
+    if specs != _S.get("memory_specs") or req["reset_history"]:
+        _S["memory_specs"] = specs
+        _sync_memory(specs)
+    if req.get("sync_only"):
+        return {"text": "", "memory_checks": {name: item["stats"] for name, item in _S["memory_checks"].items()}}
     ns = _S["ns"]
     if fresh and req.get("startup_source"):
         try:
@@ -809,9 +884,32 @@ def _cell(req):
         out.write(startup_note + "\n")
     try:
         tree = ast.parse(req["code"], "<python>")
+        imports = [ast.get_source_segment(req["code"], node) for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        decorated = []
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not any(
+                    isinstance(dec, ast.Name) and dec.id == "tool" for dec in node.decorator_list):
+                continue
+            args = node.args
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", node.name) or isinstance(node, ast.AsyncFunctionDef) or \
+                    len(args.posonlyargs) or len(args.args) > 1 or args.vararg or args.kwarg or args.kwonlyargs or \
+                    len(node.decorator_list) != 1 or args.defaults or args.kw_defaults:
+                _note("@tool %s: use a lowercase name and def name(args) or def name()" % node.name)
+                node.decorator_list = [dec for dec in node.decorator_list if not (isinstance(dec, ast.Name) and dec.id == "tool")]
+                continue
+            source = ast.get_source_segment(req["code"], node)
+            source = "\n".join(line for line in source.splitlines() if line.strip() != "@tool")
+            decorated.append((node.name, "\n".join(imports + [source, ""])))
         last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
+        ast.fix_missing_locations(tree)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             exec(compile(tree, "<python>", "exec"), ns)
+            for name, source in decorated:
+                module = _load("work/lib/%s.py" % name, source)
+                _file("write", "work/lib/%s.py" % name, source)
+                _S.setdefault("lib", {})[name] = {"source": source, "module": module, "error": None, "doc": ""}
+                ns[name] = module
+                _note("@tool mounted: %s" % name)
             if last is not None:
                 value = eval(compile(ast.Expression(last.value), "<python>", "eval"), ns)
             if ns.get("result") is not None:
@@ -827,6 +925,8 @@ def _cell(req):
     text = text + ("\n" + "\n".join(_S.get("notes") or []) if _S.get("notes") else "")
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
             "last_result": dict(_S["last_result"]), "steps": _S.pop("steps", []), "notes": _S.pop("notes", []),
+            "memory_checks": {name: item["stats"] for name, item in _S["memory_checks"].items()},
+            "decorated_tools": [name for name, _ in decorated] if not error else [],
             "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors,
                        "docs": {name: c["doc"] for name, c in (_S.get("claims") or {}).items()}},
             "model": {"funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],

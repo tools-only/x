@@ -3,9 +3,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 
 export type Kind = "memory" | "skill" | "prompt" | "subagent" | "tool";
-export type Component = { kind: Kind; name: string; version: number; body: string; summary: string; hash: string };
+export type Component = { kind: Kind; name: string; version: number; body: string; summary: string; hash: string;
+  verify?: Record<string, string> };
 const LIMIT: Record<Kind, number> = { memory: 2400, skill: 4000, prompt: 600, subagent: 1500, tool: 10000 };
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
+const digest = (body: string, verify?: Record<string, string>) => createHash("sha256")
+  .update(body + (verify ? "\0" + JSON.stringify(Object.fromEntries(Object.entries(verify).sort(([a], [b]) => a.localeCompare(b)))) : ""))
+  .digest("hex");
 
 export class LayeredComponents {
   private heads = new Map<string, number>();
@@ -23,7 +27,7 @@ export class LayeredComponents {
   read(kind: Kind, name: string, version: number): Component {
     if (!NAME.test(name) || !Number.isInteger(version) || version < 1) throw Error("invalid component reference");
     const component = JSON.parse(readFileSync(this.path(kind, name, version), "utf8")) as Component;
-    const hash = createHash("sha256").update(component.body).digest("hex");
+    const hash = digest(component.body, component.verify);
     if (component.kind !== kind || component.name !== name || component.version !== version || component.hash !== hash)
       throw Error("component version failed integrity check");
     return component;
@@ -32,7 +36,8 @@ export class LayeredComponents {
     return [...this.heads].filter(([key]) => !kind || key.startsWith(kind + "/"))
       .map(([key, version]) => { const [k, name] = key.split("/"); return this.read(k as Kind, name, version); });
   }
-  reflect(op: "define" | "redefine" | "restore", kind: Kind, name: string, body?: string, summary = "", version?: number): Component {
+  reflect(op: "define" | "redefine" | "restore", kind: Kind, name: string, body?: string, summary = "", version?: number,
+    verify?: Record<string, string>): Component {
     if (!NAME.test(name)) throw Error("component name must be lowercase letters, digits or underscore");
     const current = this.current(kind, name);
     if (op === "define" && current) throw Error("component already exists; use redefine");
@@ -42,13 +47,17 @@ export class LayeredComponents {
       const prior = this.read(kind, name, version);
       body = prior.body;
       summary = prior.summary;
+      verify = prior.verify;
     }
+    if (verify !== undefined && (kind !== "memory" || Object.keys(verify).length > 6 ||
+        Object.entries(verify).some(([key, expr]) => !NAME.test(key) || typeof expr !== "string" || !expr.trim() || expr.length > 240)))
+      throw Error("memory verify requires up to six named expressions of 1–240 characters");
     if (!body?.trim() || body.length > LIMIT[kind]) throw Error(`${kind} body must have 1–${LIMIT[kind]} characters`);
     if (kind === "skill" && !summary.trim()) throw Error("skill needs a one-line summary");
     if (summary.includes("\n")) throw Error("summary must be one line");
     const next = (current?.version ?? 0) + 1;
     const component: Component = { kind, name, version: next, body,
-      summary: summary.slice(0, 120), hash: createHash("sha256").update(body).digest("hex") };
+      summary: summary.slice(0, 120), hash: digest(body, verify), ...(verify === undefined ? {} : { verify }) };
     const path = this.path(kind, name, next);
     mkdirSync(join(this.root, kind, name), { recursive: true });
     writeFileSync(path, JSON.stringify(component), "utf8");
