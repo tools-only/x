@@ -442,7 +442,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (stalled) {
         const ep = effortProgressSummary();
         if (ep) events.push(ep);
-        events.push(`STALL: ${state.stale_steps} steps without a new frame${regionStall ? " or repeated failure/clicks" : ""}; consult("reframer", ...) is available.`);
+        if (state.action_invariant) events.push(`INVARIANT: ${state.action_invariant} — do not mistake this drift for action-specific progress.`);
+        events.push(`STALL: ${state.stale_steps} steps without a new state${regionStall ? " or repeated failure/clicks" : ""}; consult("reframer", ...) is available.`);
       }
       if (batch?.level_changed) {
         const carried: string[] = [];
@@ -520,14 +521,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`BUDGET: ${state.budget_left} actions left.`);
     if (state.level_budget_left !== undefined && state.level_budget !== undefined
         && state.level_budget_left <= Math.max(3, 0.25 * state.level_budget))
-      events.push(`LEVEL BUDGET: ${state.level_budget_left} of ${state.level_budget} actions left on this level, and the run ` +
-        "ends when they are gone. If the level looks lost, stop re-trying routes: spend the rest on deliberate probes and bank " +
-        "what you learned as work/claims/ files - knowledge survives this level, unspent actions do not.");
+      events.push(options.harnessProfile
+        ? `LEVEL BUDGET: ${state.level_budget_left} of ${state.level_budget} actions left on this level. Stop repeating unverified routes: run discriminating probes with expect= and bank confirmed/falsified rules in Memory via reflect_component.`
+        : `LEVEL BUDGET: ${state.level_budget_left} of ${state.level_budget} actions left on this level, and the run ` +
+          "ends when they are gone. If the level looks lost, stop re-trying routes: spend the rest on deliberate probes and bank " +
+          "what you learned as work/claims/ files - knowledge survives this level, unspent actions do not.");
     if (options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter) {
       if (options.harnessProfile) {
         const ep = effortProgressSummary();
         if (ep && !events.includes(ep)) events.push(ep);
-        events.push(`STUCK: ${state.stale_steps} steps without a new state. Test 2 competing hypotheses in Memory (H1 vs H2) or use consult("reframer", ...) if blocked.`);
+        if (state.action_invariant && !events.some(e => e.startsWith("INVARIANT:")))
+          events.push(`INVARIANT: ${state.action_invariant} — do not mistake this drift for action-specific progress.`);
+        events.push(`STUCK: ${state.stale_steps} steps without a new state. Test 2 competing hypotheses in Memory (H1 vs H2) with expect= or use consult("reframer", ...) if blocked.`);
       } else {
         const rounds = Math.floor(state.stale_steps / options.stuckAfter);
         events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and review in full: name the ` +
@@ -545,8 +550,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         "wrong belief costs actions instead of becoming a signal.");
     }
     const miniReview = python.takeMiniReview();
-    if (miniReview) events.push(`MINI REVIEW: ${miniReview}. Name the failing attribution (memory/model/method/tool), ` +
-      "write the smallest executable fix or one-line decision rule into work/, then continue. Nothing is frozen.");
+    if (miniReview) events.push(options.harnessProfile
+      ? `MINI REVIEW: ${miniReview}. Update Memory (Confirmed / H1 vs H2 / Falsified / Next Probe) via reflect_component or add a helper in work/lib/, and test with expect=.`
+      : `MINI REVIEW: ${miniReview}. Name the failing attribution (memory/model/method/tool), ` +
+        "write the smallest executable fix or one-line decision rule into work/, then continue. Nothing is frozen.");
     if (batch?.steps?.some(fact => fact.claims_failed.length)) events.push(`Claims failed: ` +
       batch.steps.flatMap(fact => fact.claims_failed.map(name => {
         const stats = python.capabilitySnapshot?.().claims[name];
@@ -756,6 +763,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         const abort = () => controller.abort(); signal?.addEventListener("abort", abort, { once: true });
         const started = Date.now();
         let usageRecorded = false;
+        const consultMaxTokens = Number(process.env.ARC_LAYERED_CONSULT_OUTPUT_TOKENS ?? 1500);
         try {
           const frame = state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n");
           const memories = components.list("memory");
@@ -765,20 +773,22 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           });
           const falsified = (falsifiedParts.join("\n") || memories.map(item => `[${item.name}] ${item.body}`).join("\n")).slice(0, 800);
           const trajectory = params.include_trajectory === false ? "" : compressedTrajectory(levelSteps).slice(-900);
-          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified}\nTrajectory: ${trajectory}\nFrame:\n${frame}`.slice(0, 9000);
+          const causal = state.causal_briefing ? `Causal evidence:\n${state.causal_briefing}\n` : "";
+          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified}\n${causal}Trajectory: ${trajectory}\nFrame:\n${frame}`.slice(0, 9000);
           const reply: any = await ctx.modelRegistry.streamSimple(ctx.model, {
             systemPrompt: role, messages: [{ role: "user", content: [{ type: "text", text: briefing }], timestamp: Date.now() }], tools: [] } as any,
-            { signal: controller.signal, reasoning: "off", maxTokens: 1500 } as any).result();
-          const answer = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
-          const ok = reply.stopReason !== "error" && reply.stopReason !== "aborted";
+            { signal: controller.signal, maxTokens: consultMaxTokens } as any).result();
+          const answer = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").trim();
+          const ok = reply.stopReason !== "error" && reply.stopReason !== "aborted" && Boolean(answer);
           write("usage.jsonl", { decision, kind: "subagent", name: params.name, model: ctx.model.id,
             ...usageRecord(reply), ms: Date.now() - started, stop_reason: reply.stopReason });
           usageRecorded = true;
           components.recordInvocation("subagent", params.name, state.level, state.step,
-            { ok, witness: ok ? undefined : `L${state.level} s${state.step} consult(${params.name}): ${reply.errorMessage ?? reply.stopReason}` });
-          log("consult", { name: params.name, level: state.level, step: state.step, ok, ms: Date.now() - started });
-          if (!ok) throw Error(reply.errorMessage ?? reply.stopReason);
-          return { details: {}, content: [{ type: "text", text: answer.slice(0, 6000) }] };
+            { ok, witness: ok ? undefined : `L${state.level} s${state.step} consult(${params.name}): ${reply.errorMessage ?? (answer ? reply.stopReason : `empty output (${reply.stopReason})`)}` });
+          log("consult", { name: params.name, level: state.level, step: state.step, ok, ms: Date.now() - started, stop_reason: reply.stopReason });
+          if (!ok) throw Error(reply.errorMessage ?? (answer ? String(reply.stopReason) : `empty output at stopReason=${reply.stopReason}`));
+          const finalAnswer = reply.stopReason === "length" ? `${answer}\n[truncated at ${consultMaxTokens} tokens]` : answer;
+          return { details: {}, content: [{ type: "text", text: finalAnswer.slice(0, 6000) }] };
         } catch (error) {
           if (!usageRecorded) {
             write("usage.jsonl", { decision, kind: "subagent", name: params.name, model: ctx.model?.id ?? null,
@@ -879,9 +889,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
       tokens_removed: result.removed, estimate_before: result.before, cap: effectiveCap, target });
-    const folding = fold(result.messages, options.foldAfter);
+    const effectiveFoldAfter = options.harnessProfile && components && components.list("memory").length === 0 && options.foldAfter > 0
+      ? Math.max(options.foldAfter, 10)
+      : options.foldAfter;
+    const folding = fold(result.messages, effectiveFoldAfter);
     const preObs = foldPreActionObservations(folding.messages);
-    if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: options.foldAfter });
+    if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: effectiveFoldAfter });
     let messages = recoveryText ? [{ role: "user", content: [{ type: "text", text: recoveryText }] }, ...preObs.messages] : preObs.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;

@@ -10,7 +10,8 @@ export type LayeredConfig = { numericGrid: boolean; undo: boolean;
 export type LayeredState = { level: number; levels_completed: number; win_levels: number; state: string;
   step: number; actions_used: number; budget_left?: number; level_budget?: number; level_budget_left?: number;
   valid_actions: string[]; frame: number[][];
-  stale_steps: number; unchecked_batches: number; mini_review: string | null };
+  stale_steps: number; unchecked_batches: number; mini_review: string | null;
+  action_invariant?: string; causal_briefing?: string };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
   level_changed: boolean; game_over: boolean; win: boolean; reset?: boolean; surprise?: boolean; expect_hits?: string | null;
   steps?: StepFact[]; notes?: string[] };
@@ -59,6 +60,9 @@ export class LayeredPython {
   private heartbeat: string;
   private seenHashes = new Set<string>();
   private stale = 0;
+  private interiorStale = 0;
+  private actionInvariant = "";
+  private causalBriefing = "";
   private stepsSinceLevel = 0;
   private resets = 0;
   private gameOvers = 0;
@@ -119,8 +123,11 @@ export class LayeredPython {
       budget_left: budget.total_maximum == null ? undefined : budget.total_maximum - budget.total_used,
       level_budget: budget.maximum == null ? undefined : budget.maximum,
       level_budget_left: budget.maximum == null ? undefined : budget.maximum - (budget.used ?? 0),
-      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale,
-      unchecked_batches: this.unchecked, mini_review: this.miniReview };
+      valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1),
+      stale_steps: Math.max(this.stale, this.interiorStale),
+      unchecked_batches: this.unchecked, mini_review: this.miniReview,
+      ...(this.actionInvariant ? { action_invariant: this.actionInvariant } : {}),
+      ...(this.causalBriefing ? { causal_briefing: this.causalBriefing } : {}) };
   }
 
   takeMiniReview() {
@@ -248,6 +255,7 @@ export class LayeredPython {
     this.stepsSinceLevel = levelChanged ? 0 : this.stepsSinceLevel + 1;
     if (levelChanged) {
       this.levelStartBudgetLeft = this.state().budget_left;
+      this.interiorStale = 0; this.actionInvariant = ""; this.causalBriefing = "";
       this.keyTries.clear(); this.keyDeaths.clear(); this.sourceRepeats.clear(); this.miniReview = null; this.miniReviewsThisLevel = 0;
     }
     const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
@@ -379,7 +387,10 @@ export class LayeredPython {
       if (lastSummary.expect_hits) acted.expect_hits = lastSummary.expect_hits;
     }
     const notes = Array.isArray((run?.result as any)?.notes) ? (run?.result as any).notes.map(String) : [];
-    const steps = Array.isArray((run?.result as any)?.steps) ? (run?.result as any).steps : [];
+    const steps: StepFact[] = Array.isArray((run?.result as any)?.steps) ? (run?.result as any).steps : [];
+    if (typeof (run?.result as any)?.action_invariant === "string") this.actionInvariant = (run?.result as any).action_invariant;
+    if (typeof (run?.result as any)?.causal_briefing === "string") this.causalBriefing = (run?.result as any).causal_briefing;
+    for (const fact of steps) this.interiorStale = fact.new ? 0 : this.interiorStale + 1;
     if (steps.length) this.triage(steps);
     for (const fact of steps) if (fact.source) {
       const stats = this.capabilityUsage[fact.source] ??= { loaded: 1, invoked: 0, action_producing: 0 };

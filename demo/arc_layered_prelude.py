@@ -558,6 +558,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
     skipped, surprise = 0, False
+    consec_same_label, consec_same_no_new = None, 0
     for item in items:
         call = {"action": item} if isinstance(item, str) else dict(item)
         call["action"] = str(call["action"]).upper()
@@ -587,7 +588,8 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             if transient:
                 lines[-1] += "  [animation: %d transient cells across %d frames; call anim_summary(%d) once instead of dumping frames_of(%d)]" % (
                     transient, len(grids), len(_H) - 1, len(_H) - 1)
-        lines[-1] += _echo(_observe(before, forecast, source))
+        fact = _observe(before, forecast, source)
+        lines[-1] += _echo(fact)
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -606,6 +608,18 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
                 and not gameplay_changed(before["grids"][-1], after["grids"][-1]):
             lines[-1] += "  <- no interior change; batch stopped (stop_on_noop=False to continue)"
             reason = "noop"
+            break
+        if label == consec_same_label and not fact["new"]:
+            consec_same_no_new += 1
+        else:
+            consec_same_label = label
+            consec_same_no_new = 0 if fact["new"] else 1
+        if not force and expect is None and call["action"] != "RESET" and consec_same_no_new >= 4:
+            inv = _action_invariant_summary()
+            inv_note = (" | " + inv) if inv else ""
+            lines[-1] += "  <- %d identical actions without a new state or expect=; batch stopped (pass expect=... or force=True to override%s)" % (
+                consec_same_no_new, inv_note)
+            reason = "unchecked_repeat"
             break
         if stop_on == "change" and diff(before["grids"][-1], after["grids"][-1])["count"] or \
                 stop_on == "no_change" and not diff(before["grids"][-1], after["grids"][-1])["count"] or \
@@ -699,6 +713,62 @@ def _off(predicted, actual, before=None):
     except BaseException:
         _note("model.predict must return a grid or sparse changed-cell dict; got %s" % type(predicted).__name__)
         return None
+
+
+def _action_invariant_summary(limit=36):
+    if not _T or not _H:
+        return ""
+    level = _H[-1]["raw"]["level"]
+    by_kind = {}
+    total = 0
+    for t in _T[-limit:]:
+        if t["action"] == "RESET" or t["before"]["raw"]["level"] != level:
+            continue
+        before, after = t["before"]["grids"][-1], t["after"]["grids"][-1]
+        rows = {r for r in range(len(after)) for c in range(len(after[r])) if before[r][c] != after[r][c]}
+        if not rows:
+            continue
+        kind = t["action"].split("(")[0]
+        entry = by_kind.setdefault(kind, {"rows": set(), "n": 0})
+        entry["rows"].update(rows)
+        entry["n"] += 1
+        total += 1
+    if len(by_kind) < 2 or total < 3:
+        return ""
+    shared = sorted(set.intersection(*(d["rows"] for d in by_kind.values())))
+    if not shared or len(shared) > 6:
+        return ""
+    return "action-invariant rows %s changed across %d distinct action types (%s)" % (
+        shared, len(by_kind), ", ".join(sorted(by_kind)))
+
+
+def _causal_briefing(limit=36):
+    if not _T or not _H:
+        return ""
+    level = _H[-1]["raw"]["level"]
+    stats = {}
+    for t in _T[-limit:]:
+        if t["action"] == "RESET" or t["before"]["raw"]["level"] != level:
+            continue
+        before, after = t["before"]["grids"][-1], t["after"]["grids"][-1]
+        d = diff(before, after)
+        entry = stats.setdefault(t["action"], {"n": 0, "min_c": d["count"], "max_c": d["count"], "new": 0, "bboxes": set()})
+        entry["n"] += 1
+        entry["min_c"] = min(entry["min_c"], d["count"])
+        entry["max_c"] = max(entry["max_c"], d["count"])
+        if gameplay_changed(before, after):
+            entry["new"] += 1
+        if "bbox" in d and len(entry["bboxes"]) < 3:
+            entry["bboxes"].add(str(d["bbox"]))
+    lines = []
+    for action, e in list(stats.items())[-8:]:
+        span = "%d" % e["min_c"] if e["min_c"] == e["max_c"] else "%d-%d" % (e["min_c"], e["max_c"])
+        lines.append("%s x%d: %s cells, interior_changed=%d, bbox=%s" % (
+            action, e["n"], span, e["new"], ",".join(sorted(e["bboxes"])) or "none"))
+    inv = _action_invariant_summary(limit)
+    if inv:
+        lines.append("Invariant: " + inv)
+    return "\n".join(lines)[:900]
 
 
 def _observe(before, forecast, source):
@@ -938,7 +1008,9 @@ def _cell(req):
                       "tested": model.get("tested"), "correct": model.get("correct"),
                       "by_level": model.get("by_level", {}),
                       "error": model.get("error")} if model.get("source") else None,
-            "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()}}
+            "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()},
+            "action_invariant": _action_invariant_summary(),
+            "causal_briefing": _causal_briefing()}
 
 
 _req = input

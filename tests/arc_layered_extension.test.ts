@@ -603,3 +603,37 @@ test("stall includes effort/progress line and length truncation performs bounded
   handlers.agent_settled();
   assert.equal(rows("segment_end").at(-1).reason, "length_exhausted");
 });
+
+test("consult omits reasoning flag, includes causal_briefing, and rejects empty length output", async () => {
+  const { handlers, tools, game } = setup({ harnessProfile: true });
+  game.causal_briefing = "RIGHT x4: 2 cells\nInvariant: action-invariant rows [63]";
+  await handlers.before_agent_start({});
+  let seenOptions: any;
+  let seenBriefing = "";
+  const ctx: any = { model: { id: "same-model" }, modelRegistry: {
+    streamSimple: (_m: any, input: any, opts: any) => {
+      seenOptions = opts;
+      seenBriefing = input.messages[0].content[0].text;
+      return { result: async () => ({ content: [], stopReason: "length", usage: { input: 10, output: 1500, totalTokens: 1510 } }) };
+    } } };
+  const res = await tools.consult.execute("id", { name: "reframer", question: "Why no progress?" }, undefined, undefined, ctx);
+  assert.equal("reasoning" in seenOptions, false);
+  assert.match(seenBriefing, /Causal evidence:\nRIGHT x4/);
+  assert.equal(res.isError, true);
+  assert.match(textOf(res.content), /empty output at stopReason=length/);
+});
+
+test("memory-coupled adaptive folding relaxes foldAfter while memory is empty", async () => {
+  const { handlers, tools, rows } = setup({ harnessProfile: true, foldAfter: 4, contextCap: 1e9, contextTarget: 1e9 });
+  await handlers.before_agent_start({});
+  const msgs = Array.from({ length: 6 }, (_, i) => [
+    { role: "user", content: [{ type: "text", text: `u${i}` }] },
+    { role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "python", arguments: {} }] },
+    { role: "toolResult", toolCallId: `c${i}`, content: [{ type: "text", text: `noise ${i}\n[env] executed 1` }] },
+  ]).flat();
+  handlers.context({ messages: msgs }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").length, 0);
+  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "m", body: "Confirmed: x" });
+  handlers.context({ messages: msgs }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").at(-1).keep_blocks, 4);
+});

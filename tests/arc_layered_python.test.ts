@@ -678,3 +678,37 @@ test("python file operations block direct bypass writes into harness/components"
   python.close();
   assert.match(out.text, /BLOCKED direct writes to component storage are blocked.*reflect_component/);
 });
+
+test("unchecked_repeat stops identical no-progress bursts unless expect or force is supplied", async () => {
+  const { python } = await session();
+  const stopped = await python.run("r = submit_actions(['DOWN'] * 6, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  assert.match(stopped.text, /4 unchecked_repeat/);
+  const forced = await python.run("r = submit_actions(['DOWN'] * 5, stop_on_noop=False, force=True)\nprint(r['executed_count'], r['stop_reason'])");
+  assert.match(forced.text, /5 None/);
+  python.close();
+});
+
+test("interiorStale tracks stale_steps despite border counter ticks and detects action_invariant rows", async () => {
+  const bridge = new FakeBridge();
+  let tick = 1;
+  (bridge as any).frame = function () {
+    const g = Array.from({ length: 16 }, () => Array(16).fill(0));
+    g[15][tick % 16] = 7;
+    return { frames: [g], state: "NOT_FINISHED", levels_completed: 0, win_levels: 2,
+      agent_available_actions: ["RESET", "ACTION1", "ACTION2", "ACTION6"],
+      action_budget: { total_used: tick, total_maximum: 50, used: tick, maximum: 20 },
+      observation_delta: { changed_cells: 1 } };
+  };
+  (bridge as any).act = async function () {
+    tick += 1;
+    this.used += 1;
+    return this.frame();
+  };
+  const python = new LayeredPython(bridge as any, config());
+  await python.init();
+  await python.run("submit_actions(['UP', 'DOWN', {'action': 'MOUSE', 'x': 2, 'y': 2}], stop_on_noop=False)");
+  const st = python.state();
+  python.close();
+  assert.equal(st.stale_steps, 3);
+  assert.match(st.action_invariant ?? "", /rows \[15\] changed across 3 distinct action types/);
+});

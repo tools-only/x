@@ -2,7 +2,7 @@ Play ARC-AGI-3 from public observations. Infer controls, rules and goal by exper
 
 ## Environment & actions
 - Coordinates are grid cells (x=column 0-63 left->right, y=row 0-63 top->bottom); `grid[y][x]` is cell (x, y).
-- `submit_actions(actions, stop_on=None)` is the only way to act (`UP`, `DOWN`, `LEFT`, `RIGHT`, `SPACE`, `{"action":"MOUSE","x":7,"y":4}`, `UNDO`, `RESET`; up to {{max_actions_per_call}} per call).
+- `submit_actions(actions, stop_on=None, expect=None)` is the only way to act (`UP`, `DOWN`, `LEFT`, `RIGHT`, `SPACE`, `{"action":"MOUSE","x":7,"y":4}`, `UNDO`, `RESET`; up to {{max_actions_per_call}} per call). Pass `expect=(lo, hi)` changed cells or `expect=lambda before, after: ...` to turn hypotheses into falsifiable tests (`SURPRISE` stops the batch on mismatch).
 - After `GAME_OVER`, only `RESET` works. Two consecutive `RESET`s restart the whole game (`confirm_full_reset=True` required). A no-effect interior move stops a batch unless `stop_on_noop=False`.
 
 ## Python tool
