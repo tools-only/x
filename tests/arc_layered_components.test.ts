@@ -24,6 +24,32 @@ test("component versions persist and restore without changing old versions", () 
   assert.equal(reopened.reflect("restore", "skill", "current", undefined, undefined, 2).summary, "one-line method");
 });
 
+test("component lifecycle stats split by level, record witnesses, and persist across restarts", () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-stats-"));
+  const store = new LayeredComponents(root);
+  store.reflect("define", "tool", "scanner", "def scanner():\n  return 1", "scanner()");
+  store.recordChange("tool", "scanner", 1, 2);
+  store.recordInvocation("tool", "scanner", 1, 3, { ok: true, action_producing: true });
+  store.recordInvocation("tool", "scanner", 2, 10, { ok: false, witness: "L2 s10 scanner: ValueError" });
+  store.recordInvocation("tool", "scanner", 2, 11, { ok: false, witness: "L2 s11 scanner: KeyError" });
+  store.recordPublishFailure("broken_tool", 2, 12, "SyntaxError: invalid syntax");
+  store.reflect("define", "skill", "probe", "step1", "probe pattern");
+  store.recordChange("skill", "probe", 1, 1);
+  store.recordRead("skill", "probe", 1, 4);
+
+  const reopened = new LayeredComponents(root);
+  const st = reopened.stats("tool", "scanner")!;
+  assert.equal(st.defined_level, 1);
+  assert.equal(st.by_level["1"].ok, 1);
+  assert.equal(st.by_level["1"].action_producing, 1);
+  assert.equal(st.by_level["2"].failures, 2);
+  assert.equal(st.total.invocations, 3);
+  assert.equal(st.consecutive_failures, 2);
+  assert.equal(st.last_failure_witness, "L2 s11 scanner: KeyError");
+  assert.equal(reopened.stats("tool", "broken_tool")?.consecutive_publish_failures, 1);
+  assert.equal(reopened.stats("skill", "probe")?.total.reads, 1);
+});
+
 test("memory checks are versioned and restore their exact earlier expressions", () => {
   const store = new LayeredComponents(mkdtempSync(join(tmpdir(), "layered-verify-")));
   const first = store.reflect("define", "memory", "current", "hypothesis", "", undefined, { moves: "t.action == 'UP'" });

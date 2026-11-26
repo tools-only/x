@@ -174,6 +174,92 @@ test("os.makedirs under work/ is a no-op and nested writes work", async () => {
   assert.match(readFileSync(join(dir, "claims", "rule.py"), "utf8"), /return None/);
 });
 
+test("a work file is loaded before an action later in the same Python call", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "with open('work/claims/current.py', 'w') as f:",
+    "    f.write('def check(t):\\n    return t.action == \\\"UP\\\"\\n')",
+    "submit_actions('UP')",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /loaded claims\/current/);
+  assert.deepEqual(out.steps?.[0]?.claims_held, ["current"]);
+});
+
+test("an updated library module is used in the same call and attributed to the action", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "with open('work/lib/choice.py', 'w') as f: f.write('def pick():\\n    return \\\"UP\\\"\\n')",
+    "plan = choice.pick()",
+    "submit_actions(plan)",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /loaded lib\/choice/);
+  assert.equal(out.steps?.[0]?.source, "assisted_lib/choice");
+});
+
+test("sparse predictions score changed cells and report per-level evidence", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "with open('work/model.py', 'w') as f:",
+    "    f.write('def predict(frame, action):\\n    return {} if action == \"DOWN\" else {(4, 3): 2}\\n')",
+    "submit_actions(['UP', 'DOWN'], stop_on_noop=False)",
+  ].join("\n"));
+  const report = await python.run("print(harness_state['model']['by_level'])");
+  python.close();
+  assert.equal(out.steps?.[0]?.predict_off, 3);
+  assert.equal(out.steps?.[1]?.predict_off, 0);
+  assert.match(report.text, /'1': \{'tested': 2, 'correct': 1\}/);
+});
+
+test("a repeated unchanged action lists tried and untried discrete actions", async () => {
+  const { python } = await session();
+  await python.run("submit_actions('DOWN', stop_on_noop=False)");
+  await python.run("submit_actions('DOWN', stop_on_noop=False)");
+  const third = await python.run("print(submit_actions('DOWN', stop_on_noop=False)['lines'])");
+  python.close();
+  assert.match(third.text, /from this board: tried=.*DOWN.*untried valid=.*UP/);
+});
+
+test("editing a dependency updates an already imported library in the same call", async () => {
+  const { python } = await session();
+  const first = await python.run([
+    "with open('work/lib/base.py', 'w') as f: f.write('VALUE = 1\\n')",
+    "with open('work/lib/derived.py', 'w') as f: f.write('import base\\ndef read():\\n    return base.VALUE\\n')",
+    "print(derived.read())",
+  ].join("\n"));
+  const second = await python.run([
+    "with open('work/lib/base.py', 'w') as f: f.write('VALUE = 2\\n')",
+    "print(derived.read())",
+  ].join("\n"));
+  python.close();
+  assert.match(first.text, /^1/);
+  assert.match(second.text, /^2/);
+});
+
+test("a malformed claim reports the load error in its writing call and actions continue", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "with open('work/claims/bad.py', 'w') as f: f.write('def check(:\\n')",
+    "submit_actions('UP')",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /claims\/bad failed to load: SyntaxError/);
+  assert.equal(out.acted?.executed, 1);
+});
+
+test("three failed edits to one claim produce one cost note", async () => {
+  const { python } = await session();
+  const write = (n: number) => `with open('work/claims/bad.py', 'w') as f: f.write('def check(: # ${n}\\n')`;
+  await python.run(write(1));
+  await python.run(write(2));
+  const third = await python.run(write(3));
+  const next = await python.run("print('continue')");
+  python.close();
+  assert.match(third.text, /failed three consecutive edits/);
+  assert.doesNotMatch(next.text, /failed three consecutive edits/);
+});
+
 test("the host back-tests work/model.py and reports the hit rate", async () => {
   const { python } = await session();
   const out = await python.run([
@@ -578,4 +664,118 @@ test("anim_summary summarizes multi-frame animations without dumping all frames"
   python.close();
   assert.match(out.text, /call anim_summary\(1\) once instead of dumping frames_of\(1\)/);
   assert.match(out.text, /3 2 3 \(2, 2, 2, 4\) 2 2/);
+});
+
+test("mouse region repeat counts persist per board after visiting another board", async () => {
+  const { python } = await session();
+  await python.run("submit_actions({'action':'MOUSE','x':0,'y':0})");
+  await python.run("submit_actions('UP')");
+  await python.run("submit_actions('DOWN', stop_on_noop=False)");
+  const bridge2 = new FakeBridge();
+  (bridge2 as any).act = async function (payload: { action: string }) {
+    this.used += 1;
+    if (payload.action === "ACTION1") this.row -= 1;
+    if (payload.action === "ACTION2") this.row += 1;
+    return this.frame();
+  };
+  const p2 = new LayeredPython(bridge2 as any, config());
+  await p2.init();
+  await p2.run("submit_actions({'action':'MOUSE','x':0,'y':0})");
+  await p2.run("submit_actions(['UP', 'DOWN'])");
+  const back = await p2.run("submit_actions({'action':'MOUSE','x':1,'y':0})");
+  python.close();
+  p2.close();
+  assert.match(back.text, /ineffective clicks in this region: 2/);
+});
+
+test("segment() accurately finds nested children on complex frames", async () => {
+  const bridge = new FakeBridge();
+  (bridge as any).frame = function () {
+    const g = Array.from({ length: 16 }, () => Array(16).fill(0));
+    for (let r = 2; r <= 6; r += 1) for (let c = 2; c <= 6; c += 1) if (r === 2 || r === 6 || c === 2 || c === 6) g[r][c] = 1;
+    g[4][4] = 9;
+    return { frames: [g], state: "NOT_FINISHED", levels_completed: 0, win_levels: 2,
+      agent_available_actions: ["RESET", "ACTION1"],
+      action_budget: { total_used: 0, total_maximum: 50, used: 0, maximum: 20 },
+      observation_delta: { changed_cells: 0 } };
+  };
+  const python = new LayeredPython(bridge as any, config());
+  await python.init();
+  const out = await python.run([
+    "s1 = current_frame.segmentation",
+    "s2 = frame_diff()['changed_cells']",
+    "box = [n for n in s1['nodes'] if n['color'] == 'w'][0]",
+    "print(len(box['children']), s2)",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /^2 0/);
+});
+
+test("python file operations block direct bypass writes into harness/components", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "try:",
+    "    open('../harness/components/memory/x/v1.json', 'w').write('{}')",
+    "except PermissionError as exc:",
+    "    print('BLOCKED', exc)",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /BLOCKED direct writes to component storage are blocked.*reflect_component/);
+});
+
+test("unchecked_repeat stops identical no-progress bursts unless expect, force, or interior change occurs", async () => {
+  const { python } = await session();
+  const stopped = await python.run("r = submit_actions(['DOWN'] * 6, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  assert.match(stopped.text, /4 unchecked_repeat/);
+  const forced = await python.run("r = submit_actions(['DOWN'] * 5, stop_on_noop=False, force=True)\nprint(r['executed_count'], r['stop_reason'])");
+  assert.match(forced.text, /5 None/);
+  python.close();
+
+  const b2 = new FakeBridge();
+  (b2 as any).row = 10;
+  (b2 as any).frame = function () {
+    const g = Array.from({ length: 16 }, () => Array(16).fill(0));
+    g[this.row][8] = 2;
+    return { frames: [g], state: "NOT_FINISHED", levels_completed: 0, win_levels: 2,
+      agent_available_actions: ["RESET", "ACTION1", "ACTION2"],
+      action_budget: { total_used: this.used, total_maximum: 50, used: this.used, maximum: 30 },
+      observation_delta: { changed_cells: 2 } };
+  };
+  (b2 as any).act = async function (p: { action: string }) {
+    this.used += 1;
+    if (p.action === "ACTION1") this.row -= 1;
+    if (p.action === "ACTION2") this.row += 1;
+    return this.frame();
+  };
+  const p2 = new LayeredPython(b2 as any, config());
+  await p2.init();
+  await p2.run("submit_actions(['UP'] * 5)");
+  const backtrack = await p2.run("r = submit_actions(['DOWN'] * 5, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  p2.close();
+  assert.match(backtrack.text, /5 None/);
+});
+
+test("interiorStale tracks stale_steps despite border counter ticks and detects action_invariant 4x4 regions", async () => {
+  const bridge = new FakeBridge();
+  let tick = 1;
+  (bridge as any).frame = function () {
+    const g = Array.from({ length: 16 }, () => Array(16).fill(0));
+    g[15][tick % 4] = 7;
+    return { frames: [g], state: "NOT_FINISHED", levels_completed: 0, win_levels: 2,
+      agent_available_actions: ["RESET", "ACTION1", "ACTION2", "ACTION6"],
+      action_budget: { total_used: tick, total_maximum: 50, used: tick, maximum: 20 },
+      observation_delta: { changed_cells: 1 } };
+  };
+  (bridge as any).act = async function () {
+    tick += 1;
+    this.used += 1;
+    return this.frame();
+  };
+  const python = new LayeredPython(bridge as any, config());
+  await python.init();
+  await python.run("submit_actions(['UP', 'DOWN', {'action': 'MOUSE', 'x': 2, 'y': 2}], stop_on_noop=False)");
+  const st = python.state();
+  python.close();
+  assert.equal(st.stale_steps, 3);
+  assert.match(st.action_invariant ?? "", /action-invariant regions \[\(12\.\.15,0\.\.3\)\] changed across 3 distinct actions/);
 });

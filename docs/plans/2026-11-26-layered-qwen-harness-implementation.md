@@ -36,27 +36,44 @@ Agent 自行调用 `reflect_component` 定义/修订/恢复 Memory、Skill、Pro
 
 关联 backlog：`docs/deferred-research-todos.md` 的 A（adapter 边界）、B/C（子研究目的及父子通信）、D（压缩后认知连续性）保持开放；本轮仅证明无动作子请求与 context hook 可达，未证明研究质量、主动实验或跨压缩后的认知保持。
 
-## 2026-11-27 双层闭环增量（桌面方案）
+## 2026-11-26 审计合入与缺陷修复
 
-问题与窄命题：真实 Qwen 运行材料在用户桌面方案 §1 中：死亡后 consult 丢失完整尝试、活体 Memory 与旧 claims 复盘脱节，Agent 常写文本却没有低摩擦可执行检查。本增量仅改 `qwen27b-harness` 所用的 layered 入口；在死亡、停滞、切关处交付客观任务事实与五组件/执行盘点，允许 Agent 自主选择 `Memory.verify` 或 `@tool`，检验随后行为是否改变。简单关卡 ≤20 步完成时合理不使用。连续三次普通运行不采用，或重试仍复读并使任务与总成本退化，推翻收益主张。
+- **基线合入与单因素对齐**：将 `codex/arc-evo-middle-layer`（`a791d63`）合入 `codex/qwen27b-cognitive-harness`，使 `qwen27b` 与 `qwen27b-harness` 共用同一套滞回 `evict()`、Qwen 27B 紧凑默认参数（`contextCap=40960`、`contextTarget=20480`、`foldAfter=4`、`outputTokens=4096`、`diffImage=false`）及 `work/` 热加载底座，支持干净的同分支对照；同步更新 `qwen27b-harness` 的裁剪 `recoveryText` 携带组件 `Memory`/`Prompt`/`Skills`/`Tools`。
+- **`Tools` 发布兼容修复**：`publishTools()` 改为优先检测 `python3` 并回退 `python`，支持 `def <name>(args)` / `def run(args)`（含类型注解/默认值）及无参 `def <name>()` / `def run()`。
+- **Prompt 与 `consult` 修复**：将 `demo/prompts/arc_layered_system_harness.md` 扩充至 2,579 字节，补回 `.grid`/`.ascii`、`{{color_legend}}`、`MOUSE` 与 `RESET` 规则、`anim_summary()`、2 次纯观察上限、`work/lib/<name>.py` 发布签名和 `consult("reframer", ...)` 入口；`consult` 改为聚合所有活跃 `memory` 组件中的 `Falsified` 段落（不再硬编码 `"current"`），并在 `MOUSE` 同区重复 ≥ 4 或重复死亡时触发 `STALL` 提示。
+- **增量 `NO_IMAGE` 与点击去重修复**：`ARC_LAYERED_NO_IMAGE=1` 仅在首帧、换关或 `RESET` 后发送完整十六进制网格，常规增量步只发送 `Changed cells` 与 `Touched components`；`mouse_tries` 改为按 `(board_key, region)` 独立计数（仅在 `RESET` 或换关时清空全部，不再因单次有变化动作清空其他盘面的无效点击计数）。
+- **Layer 0 `segment()` 性能优化**：将 `children` 孔洞判定由每个块全图 64×64 flood-fill 优化为外扩 1 格局部 `bbox` flood-fill，并增加按帧内容缓存；在 193 个连通块（129 个嵌套子块）的 64×64 稠密测试帧上，结果与 `a791d63` 逐字段完全一致，冷耗时由 640.67 ms 降至 31.95 ms（20.1×），缓存命中 0.78 ms。
+- **本轮验证范围**：`tests/arc_layered_python.test.ts` 定向 12/12 通过、`tests/arc_layered_components.test.ts` 1/1 通过、`tests/test_arc_layered_evolution.py` 2/2 通过、`py_compile` 与 `git diff --check` 通过。本机环境未安装 `node_modules`（缺少 `typebox` 与本地 Pi 依赖），因此修改后的 `tests/arc_layered_extension.test.ts` 与带 Pi 的 scripted smoke 尚未在本机复跑；需在已安装依赖的环境中补跑 `tests/arc_layered_extension.test.ts` 后再启动真实 Qwen 3.8 27B 对照。
 
-设计与成本：Memory 的可选命名表达式随组件版本校验、恢复，在静默 kernel 同步时对已有 transition 回测，后续动作续评并给 witness；同步不计 Python 观察调用，kernel 重启重传。`@tool` 在 Python cell 中提取函数和顶层 import，写 `work/lib/`，同轮发布为绑定工具；模块在每次动作后刷新当前帧等全局量。失败尝试快照保留至 RESET，consult 使用该轨迹。边界包上限 1800 字符，平常步无新增审查；新增每步变化格数、bbox 与触及符号作为事实，策略归因仍由 Agent 决定。组件有版本及源码哈希，工具经真实绑定调用才算使用；verify 被 redefine/restore 清除即停止评分。提示增加三项静态契约，无新 worker 或硬门禁。runner 在 Pi RPC 强制关闭后从持久 action facts 刷新最后一关复盘，因为该关闭不派发 `session_shutdown`。
+## 2026-11-26 对齐设计指南补齐四底座与组件生命周期闭环
 
-实验协议：方案 §6 的 `9fcc652` 比较器、Qwen 3.8 27B、2–3 次重复及至少一留出游戏、父子总 token/动作 ≤1.15×、普通无引导运行仍待预算授权。付费实验未启动。负例包含无 verify 的旧版本哈希、错误表达式/签名、kernel timeout 后恢复、简单关卡不使用组件。指标须从 `layered.jsonl`、`decisions.jsonl`、真实 provider 请求与 `summary.json` 联合核对 shown/acted/changed、任务结果、父子计算和管理轮；仅有装载计数不能推断收益。
+依据独立设计指南（`meta_harness_self_evolution_guide.md`）对本分支尚未闭环的底座与组件机制完成补齐：
 
-实现与验证：改动限于 `demo/arc_layered_components.ts`、`arc_layered_prelude.py`、`arc_layered_python.ts`、`arc_layered_extension.ts`、harness prompt、layered runner 与对应测试。`memory_verify_sync`、`memory_verify_failure`、`tool_decorated`、`dual_audit_shown` 事件及 summary 计数已接线。定向 Node 6/6、Python 2/2、py_compile、`git diff --check` 通过；完整旧 Node 72 项 58 通过、14 失败，集中在已有 review/claims/expect 等断言，未在 HEAD 基线逐项归因。没有 TypeScript compiler 的类型检查结果。
+1. **底座 2（组件生命周期分桶、见证与过时标记）**：
+   - 在 `demo/arc_layered_components.ts` 新增持久化 `stats.json`，按关卡 `by_level` 与 `total` 记录 `invocations` / `ok` / `action_producing` / `reads` / `failures`、来源关号 `defined_level` / `updated_level`、连续失败次数与 1 行客观见证（`last_failure_witness`）及语法/发布连续失败计数。
+   - 在 `demo/arc_layered_extension.ts` 将 `reflect_component`、`read_component`、`publishTools()`、bound `tool` 调用、Python `direct_lib`/`assisted_lib` 调用与 `consult` 全部接入上述统计；切关时在 `harnessProfile` 中显式报告 `Carried from earlier levels (unverified on L<N>)`，对连续 3 次发布/执行失败或当关 0 使用达 12 步的 `tool`/`skill` 发送一次性中性 `COMPONENT NOTICE`；工具调用失败响应附加 1 行具体见证。
+2. **底座 3（同轮挂载回显、旁路拒写与四类天然边界统一供给）**：
+   - `publishTools()` 改为在同一个 `python` 工具返回中回显 `[tool mounted: ...]` 或 `[tool publish failed: ...]`，闭合“写代码 → 验证 → 挂载 → 回显”。
+   - 在 `demo/arc_layered_prelude.py` 的 `_open()` 与 `demo/arc_layered_python.ts` 的 `file()` 中拦截绕过 `reflect_component` 读写 `harness/components/` 的尝试（包括未使用 `with` 块直接 `open().write()` 的情况），给出明确指导错误。
+   - `LEVEL COMPLETE` 与 `GAME_OVER` 在 `harnessProfile` 下直接内联紧凑全关轨迹/组件战绩摘要与死前致败步/重复死亡事实，分别指向沉淀 `Skills`/`Tools` 与记录 `Memory.Falsified`。
+3. **底座 1 & 4（裁剪预算校准、投入-进展比、对称防空转与 `length` 有界恢复）**：
+   - `context` hook 将 `recoveryText` 自身 token 估算纳入 `evict` 上限预留（`effectiveCap = cap - recoveryReserve`），并刷新 `recoveryText` 使动态 `Memory`/`Prompt`/`Skills` 只注入决策 head 而不与旧版重复。
+   - `STALL` 与 `STUCK` 在 `harnessProfile` 模式下附加最近 12 步窗口的客观 `EFFORT/PROGRESS` 行（`new_states` / `same_repeats` / `repeat_mouse_regions` / `tool_uses` / `py_errors` / `truncated`）。
+   - `src/autoresearch_pi/arc_layered_e2e.py` 新增 `_classify_segment_activity()`：通过 `layered.jsonl` 增量游标识别 `component_change` / `read_component` / `consult(ok)` / `tool_published` / 合法 `work/` 改动，连续最多 2 次建设性无动作 segment 不计入 `idle_segments`，防止误杀组件整理与问询回合；`summary.json` 汇总 `components`、`subagents` 与 `length_truncations`，CLI 新增 `--no-image` 快捷参数。
+   - 补齐 `length` 截断有界恢复：连续 `length` 在第 1 次恢复注入 `LENGTH RECOVERY` 简短行动提示并在 `before_provider_request` 中关闭思考开关/适度放宽单次输出上限（`<= 8192`），达到上限次数后以 `segment_end.reason = "length_exhausted"` 通知 runner 终止为 `stop_reason = "length_truncation"`，避免无限重发或退化为 `idle`。
+- **最新验证（本次提交前）**：`git diff --check`、`py_compile`、`tests/test_arc_layered_evolution.py`（3/3）、`tests/arc_layered_components.test.ts`（2/2）、`tests/arc_layered_python.test.ts` 定向（13/13，含绕过写拦截负例）以及 Node 22 `stripTypeScriptTypes` 对全量修改 `.ts` 文件的语法转换均通过；`tests/arc_layered_extension.test.ts`、scripted Pi smoke 与真实 Qwen 3.8 27B 运行仍受本机缺少 `node_modules` 与未授权预算限制保持未验证。
 
-本地链路：`runs/layered-dual-final2-20261127/` 用实际 runner/bridge/Pi/WASI、mock ARC SDK、scripted provider、consult off、文本帧；10 动作后 budget_exhausted，`summary.json` 中 `dual_audits_shown=1`，provider request 展示切关审查含轨迹、变化 bbox、符号盘点与五组件，终盘 `work/replay/level_2.md` 实际落盘。这只证明切关与终盘接线；死亡审查、同轮 `@tool` 和 verify 的完整 scripted provider 链路尚未单独跑通。旧 `runs/layered-dual-smoke-20261127/` 普通路径 10 动作、0 provider error，不是采用证据。
+## 2026-11-27 在目标分支最新提交上整合双层闭环
 
-| 证据层级 | 状态 | Provider / 环境 | 产物与局限 |
-| --- | --- | --- | --- |
-| 功能正确 | 定向通过，完整旧套件未通过 | Node/WASI FakeBridge、pytest | `tests/arc_layered_*`、`tests/test_arc_layered_evolution.py`；旧失败未归因 |
-| 全链路可达 | 切关审查和终盘复盘通过；完整闭环未验证 | scripted provider、mock ARC SDK，实际 runner/bridge/Pi/WASI | `runs/layered-dual-final2-20261127/`；脚本选择动作，不证明模型能力 |
-| 自主采用 | 未验证 | 真实 Qwen 未运行 | shown、工具调用和行为改变待核对 |
-| 净收益 | 未验证 | 无独立对照 | 父子总成本与任务成绩待授权实验 |
+以 `codex/qwen27b-cognitive-harness` 的 `9fcc6522` 为增量基线，保留其组件生命周期统计、board inventory、consult 的模型思考和图像配置、长度恢复、lib 热加载与 runner 活动分类。仅在 layered harness 档位增补桌面方案的自然边界双层审查、失败尝试保留、`Memory.verify` 历史回测与后续动作评分、Python `@tool` 同轮发布，以及终盘 replay 和事件统计。审查包展示任务轨迹和五类活跃组件、执行错误等事实，Agent 自主决定是否修订；无新硬门禁。普通 Python 状态和旧 claims 的原有接线继续保留。后台 RPC 关闭不派发 `session_shutdown`，因此 runner 从持久动作与组件事件重建最后一关的复盘；历史 verify 分数标明“at sync”，不冒充终盘完整评分。
 
-决定：保持实验档位；下一可证伪检查是预算内普通 Qwen 运行，先核对真实失败后是否自主写入 verify/@tool、成功调用及 Attempt 2 路线，再按预定比较器重复对照。A 的 adapter 边界、B/C 的子研究与通信、D 的跨压缩认知连续性仍开放；本轮只增加了自然边界事实，未替这些待办下结论。
+目标命题和推翻条件沿用桌面方案 §1：死亡后 Attempt 2 是否根据客观反馈改变行动，真实 Qwen 是否自主使用 verify 或工具，同时父子总成本及任务进展不退化。简单关卡合理不使用。预定比较器为 `9fcc6522`；付费真实 provider 运行未获预算授权，本次没有启动。A 的 adapter、B/C 的咨询与通信、D 的压缩连续性仍为 `docs/deferred-research-todos.md` 的开放项。
 
-补充验收（2026-11-27）：死亡审查与 consult 完整失败尝试的定向测试通过；长轨迹测试确认 1800 字符内保留 Layer 2 与可编辑能力提示。`memory_verify_sync` 事件保存同步时的完整分关统计，runner 在 RPC 关闭后用它重建终盘复盘；复盘中的 live failure 数来自实际事件，历史分数明确标为同步时快照，不冒充终盘实时分数。`reflect_component` 若版本写入后 kernel 同步失败，错误回执明确提示检查活跃版本再重试。`syncMemoryChecks` 的 transition 索引按 `_T`（跳过初始 history 帧）对应每次动作结果，timeout 恢复测试覆盖两动作；跨关的真实脚本路径亦仍需扩充断言。
+| 层级 | 状态 | 证据与局限 |
+| --- | --- | --- |
+| 功能正确 | 定向通过；旧完整套件未全绿 | Node 的 Memory verify、kernel 恢复、decorated tool、组件版本与扩展双层边界测试；Python `tests/test_arc_layered_evolution.py` 3/3。旧 review/claims/expect 等断言与当前目标分支的行为不一致，尚未逐项基线归因。 |
+| 全链路可达 | 脚本指定的 verify 与工具路径通过 | `runs/layered-dual-merge-20261127/`：真实 runner/bridge/Pi/WASI、mock ARC SDK、scripted provider；一次 verify 同步回测 1/1、一次 `@tool` 挂载及一次成功 bound invocation、后续动作、终盘 replay。21 次伪计量请求、2 动作、0 provider error；不证明普通模型会自主选择。 |
+| 自主采用 | 未验证 | 未启动真实 Qwen。需记录 shown、acted、changed 及合理不使用。 |
+| 净收益 | 未验证 | 无独立匹配预算对照；父子 token、管理轮、任务结果需一起比较。 |
 
-新增免费全链路 `runs/layered-dual-evolve-20261127/`：真实 runner/bridge/Pi/WASI + mock ARC SDK + scripted provider；脚本明确指定 Memory.verify、Python `@tool` 与绑定工具调用，`memory_verify_sync` 对既有一动作回测为 1/1，`tool_decorated` 与成功 `bound_invocation` 各一次；下一真实动作发生，终盘 `work/replay/level_1.md` 列出活跃 Memory/Tool 与同步时回测分数。21 次请求、2 个动作、0 provider error、最终 idle；请求记录显示第 4 次请求起挂载 `frame_size`。脚本引导不能作为自主采用或净收益证据。完整 Node 76 项 62 通过、14 失败（旧 review/claims/expect 等断言，仍未基线归因）；定向新增测试通过、Python 2/2、py_compile 和 diff 检查通过。死亡审查在 Fake Python 扩展测试到达，真实 runner 死亡边界仍未单独跑通。上述免费证据只扩展“接线可达”的范围；真实 Qwen 与独立对照仍待授权预算。
+整合决策：保留为独立实验 profile。下一检查是授权预算内普通运行，先检查死亡后的真实后续决策和有效使用，再按桌面方案固定的对照与退化阈值评估。脚本提供者的明确工具调用只能作为接线证据。

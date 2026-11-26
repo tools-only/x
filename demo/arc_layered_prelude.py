@@ -64,6 +64,118 @@ class Transition:
         return "Transition(action=%r, after=%r)" % (self.action, self.after_frame)
 
 
+def _wrap_lib_module(lib_name, module):
+    path = "work/lib/%s.py" % lib_name
+    for attr, obj in list(module.__dict__.items()):
+        if attr.startswith("_") or not isinstance(obj, types.FunctionType):
+            continue
+        if getattr(getattr(obj, "__code__", None), "co_filename", None) != path:
+            continue
+        def _make_wrapper(fn, name):
+            def _wrapped(*args, **kwargs):
+                _S["called_lib"] = name
+                return fn(*args, **kwargs)
+            _wrapped.__name__ = fn.__name__
+            _wrapped.__doc__ = fn.__doc__
+            _wrapped.__module__ = fn.__module__
+            return _wrapped
+        module.__dict__[attr] = _make_wrapper(obj, lib_name)
+    return module
+
+
+def _sync_work(req, rebuild=False):
+    ns = _S["ns"]
+    libs = _S.setdefault("lib", {})
+    sources = {item["name"]: item["source"] for item in req.get("lib") or []}
+    libs_changed = sources != {name: item["source"] for name, item in libs.items()}
+    if libs_changed:
+        for name, module in list(sys.modules.items()):
+            if str(getattr(module, "__file__", "")).startswith("work/lib/"):
+                sys.modules.pop(name)
+        for name, item in libs.items():
+            if ns.get(name) is item["module"]:
+                ns.pop(name, None)
+        libs.clear()
+        for item in req.get("lib") or []:
+            name = item["name"]
+            entry = {"source": item["source"], "module": None, "error": None, "doc": ""}
+            try:
+                entry["module"] = ns[name] = _wrap_lib_module(name, _load("work/lib/%s.py" % name, item["source"]))
+                entry["doc"] = _doc(entry["module"].__doc__)
+                _note("loaded lib/%s as `%s`%s" % (name, name, ": " + entry["doc"] if entry["doc"] else ""))
+            except BaseException as exc:
+                entry["error"] = "%s: %s" % (type(exc).__name__, exc)
+                _note("lib/%s failed to load: %s" % (name, entry["error"]))
+            libs[name] = entry
+    store = _S.setdefault("claims", {})
+    for claim in req.get("claims") or []:
+        cur = store.get(claim["name"])
+        if cur is not None and cur["source"] == claim["source"] and not libs_changed:
+            continue
+        fresh_claim = cur is None or cur.get("source") != claim["source"] or libs_changed
+        if cur is not None and fresh_claim:
+            _S.setdefault("claim_reset", set()).add(claim["name"])
+        name, entry = claim["name"], {"source": claim["source"], "fn": None, "error": None, "doc": ""}
+        try:
+            mod = _load("work/claims/%s.py" % name, claim["source"])
+            if callable(getattr(mod, "check", None)):
+                entry.update(fn=mod.check, doc=_doc(mod.__doc__ or mod.check.__doc__))
+            else:
+                entry["error"] = "defines no callable check(transition)"
+        except BaseException as exc:
+            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
+        store[name] = entry
+        if entry["error"]:
+            _note("claims/%s failed to load: %s" % (name, entry["error"]))
+        elif fresh_claim:
+            verdicts = [_judge_claim(name, entry, t) for t in _T]
+            _note("loaded claims/%s (back-test on %d transitions: applied %d, held %d, failed %d)" % (
+                name, len(verdicts), sum(v is not None for v in verdicts), verdicts.count(True), verdicts.count(False)))
+    supplied = {claim["name"] for claim in req.get("claims") or []}
+    for name in list(store):
+        if name not in supplied:
+            del store[name]
+    model = _S.setdefault("model", {"source": None})
+    model_source = req.get("model_source")
+    if model_source != model["source"] or libs_changed:
+        _S["model"] = model = {"source": model_source}
+        rebuild = True
+        if model_source:
+            try:
+                _S["model_module"] = mod = _load("work/model.py", model_source)
+                model.update({name: getattr(mod, name) for name in ("state_key", "predict", "is_fatal")
+                              if callable(getattr(mod, name, None))})
+                tested = correct = 0
+                by_level = {}
+                if "predict" in model:
+                    for transition in _T:
+                        forecast = _forecast(transition["before"], transition["action"])
+                        if "predict" not in forecast:
+                            continue
+                        off = _off(forecast["predict"], transition["after"]["grids"][-1], transition["before"]["grids"][-1])
+                        if off is not None:
+                            tested += 1
+                            correct += off == 0
+                            level = str(transition["before"]["raw"]["level"])
+                            row = by_level.setdefault(level, {"tested": 0, "correct": 0})
+                            row["tested"] += 1
+                            row["correct"] += off == 0
+                    model["tested"], model["correct"], model["by_level"] = tested, correct, by_level
+                _note("loaded model.py (%s)%s" % (", ".join(name for name in ("state_key", "predict", "is_fatal") if name in model)
+                     or "defines none of state_key, predict, is_fatal",
+                     "; back-test on %d transitions: %d accurate" % (tested, correct) if "predict" in model else ""))
+            except BaseException as exc:
+                model["error"] = "%s: %s" % (type(exc).__name__, exc)
+                _note("model.py failed to load: %s" % model["error"])
+    if model.get("source") and not model.get("error"):
+        ns["model"] = _S["model_module"]
+    else:
+        ns.pop("model", None)
+    if rebuild:
+        _rebuild()
+
+
+
 def _cells(value):
     return value._grids[-1] if isinstance(value, Frame) else value
 
@@ -198,8 +310,17 @@ def frame_diff(a=None, b=None):
             "appeared": appeared[:16], "disappeared": disappeared[:16]}
 
 
+_SEG_CACHE = {}
+
+
 def segment(grid):
-    grid = _cells(grid)
+    raw_cells = _cells(grid)
+    key = tuple(tuple(int(v) for v in row) for row in raw_cells)
+    cached = _SEG_CACHE.get(key)
+    if cached is not None:
+        return {"nodes": [dict(n) for n in cached["nodes"]],
+                "adjacency_list": [list(p) for p in cached["adjacency_list"]]}
+    grid = key
     h, w = len(grid), len(grid[0]) if grid else 0
     label, comps = [[-1] * w for _ in range(h)], []
     for r in range(h):
@@ -224,7 +345,8 @@ def segment(grid):
                     adjacency.add(tuple(sorted((label[r][c], label[ny][nx]))))
     for i, (color, cells) in enumerate(comps):
         own = set(cells)
-        top, left = min(y for y, _ in cells), min(x for _, x in cells)
+        ys, xs = [y for y, _ in cells], [x for _, x in cells]
+        top, bottom, left, right = min(ys), max(ys), min(xs), max(xs)
         edges = {}
         for y, x in cells:
             for inside, a, b in (((y - 1, x) in own, (y, x), (y, x + 1)), ((y, x + 1) in own, (y, x + 1), (y + 1, x + 1)),
@@ -239,21 +361,41 @@ def segment(grid):
         boundary = [list(p) for k, p in enumerate(path)
                     if (p[0] - path[k - 1][0], p[1] - path[k - 1][1]) != (path[(k + 1) % len(path)][0] - p[0], path[(k + 1) % len(path)][1] - p[1])]
         children = []
-        ys, xs = [y for y, _ in cells], [x for _, x in cells]
-        if max(ys) - top >= 2 and max(xs) - left >= 2:
-            seen = [[False] * w for _ in range(h)]
-            stack = [(y, x) for y in (h - 1, 0) for x in range(w)] + [(y, x) for x in (w - 1, 0) for y in range(h)]
+        if bottom - top >= 2 and right - left >= 2:
+            r0, r1 = max(0, top - 1), min(h - 1, bottom + 1)
+            c0, c1 = max(0, left - 1), min(w - 1, right + 1)
+            bh, bw = r1 - r0 + 1, c1 - c0 + 1
+            seen = bytearray(bh * bw)
+            stack = []
+            for x in range(c0, c1 + 1):
+                for y in (r0, r1):
+                    if label[y][x] != i and not seen[(y - r0) * bw + (x - c0)]:
+                        seen[(y - r0) * bw + (x - c0)] = 1
+                        stack.append((y, x))
+            for y in range(r0 + 1, r1):
+                for x in (c0, c1):
+                    if label[y][x] != i and not seen[(y - r0) * bw + (x - c0)]:
+                        seen[(y - r0) * bw + (x - c0)] = 1
+                        stack.append((y, x))
             while stack:
                 y, x = stack.pop()
-                if 0 <= y < h and 0 <= x < w and not seen[y][x] and (y, x) not in own:
-                    seen[y][x] = True
-                    stack.extend(((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)))
-            inner = {label[y][x] for y in range(h) for x in range(w) if not seen[y][x] and (y, x) not in own}
+                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                    if r0 <= ny <= r1 and c0 <= nx <= c1 and label[ny][nx] != i:
+                        idx = (ny - r0) * bw + (nx - c0)
+                        if not seen[idx]:
+                            seen[idx] = 1
+                            stack.append((ny, nx))
+            inner = {label[y][x] for y in range(top, bottom + 1) for x in range(left, right + 1)
+                     if label[y][x] != i and not seen[(y - r0) * bw + (x - c0)]}
             children = sorted(inner)
         shape = tuple(sorted((y - top, x - left) for y, x in cells))
         nodes.append({"id": i, "color": CHARS[color], "hash": "%08x" % (hash((color, shape)) & 0xffffffff),
                       "pixels": len(cells), "boundary": boundary, "children": children})
-    return {"nodes": nodes, "adjacency_list": [list(p) for p in sorted(adjacency)]}
+    res = {"nodes": nodes, "adjacency_list": [list(p) for p in sorted(adjacency)]}
+    if len(_SEG_CACHE) >= 32:
+        _SEG_CACHE.clear()
+    _SEG_CACHE[key] = res
+    return {"nodes": [dict(n) for n in nodes], "adjacency_list": [list(p) for p in res["adjacency_list"]]}
 
 
 def frames_of(step):
@@ -413,10 +555,15 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         if first_name != "RESET":
             raise RuntimeError("the game is over: only RESET works now. Retrying other actions in a loop can never "
                                "succeed; submit_actions('RESET') first")
-    source = next((f.filename[9:-3] for f in traceback.extract_stack() if f.filename.startswith("work/lib/")), None)
+    source = next(("direct_lib/" + f.filename[9:-3] for f in traceback.extract_stack()
+                   if f.filename.startswith("work/lib/")), None)
+    if source is None and _S.get("called_lib"):
+        source = "assisted_lib/" + _S["called_lib"]
+    _S["called_lib"] = None
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
     skipped, surprise = 0, False
+    consec_same_label, consec_same_no_new = None, 0
     for item in items:
         call = {"action": item} if isinstance(item, str) else dict(item)
         call["action"] = str(call["action"]).upper()
@@ -446,7 +593,8 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             if transient:
                 lines[-1] += "  [animation: %d transient cells across %d frames; call anim_summary(%d) once instead of dumping frames_of(%d)]" % (
                     transient, len(grids), len(_H) - 1, len(_H) - 1)
-        lines[-1] += _echo(_observe(before, forecast, source))
+        fact = _observe(before, forecast, source)
+        lines[-1] += _echo(fact)
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -465,6 +613,18 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
                 and not gameplay_changed(before["grids"][-1], after["grids"][-1]):
             lines[-1] += "  <- no interior change; batch stopped (stop_on_noop=False to continue)"
             reason = "noop"
+            break
+        if label == consec_same_label and not fact["changed"]:
+            consec_same_no_new += 1
+        else:
+            consec_same_label = label
+            consec_same_no_new = 0 if fact["changed"] else 1
+        if not force and expect is None and call["action"] != "RESET" and consec_same_no_new >= 4:
+            inv = _action_invariant_summary()
+            inv_note = (" | " + inv) if inv else ""
+            lines[-1] += "  <- %d identical actions without interior change or expect=; batch stopped (pass expect=... or force=True to override%s)" % (
+                consec_same_no_new, inv_note)
+            reason = "unchecked_repeat"
             break
         if stop_on == "change" and diff(before["grids"][-1], after["grids"][-1])["count"] or \
                 stop_on == "no_change" and not diff(before["grids"][-1], after["grids"][-1])["count"] or \
@@ -543,13 +703,79 @@ def _forecast(entry, label):
     return out
 
 
-def _off(predicted, actual):
+def _off(predicted, actual, before=None):
     try:
+        if isinstance(predicted, dict):
+            if before is None:
+                raise ValueError("sparse prediction needs previous frame")
+            changed = {(r, c) for r, row in enumerate(actual) for c, value in enumerate(row) if value != before[r][c]}
+            for (r, c), value in predicted.items():
+                if not (0 <= r < len(actual) and 0 <= c < len(actual[r]) and isinstance(value, int)):
+                    raise ValueError("invalid sparse prediction cell")
+            return sum(actual[r][c] != predicted[r, c] for r, c in predicted) + len(changed - predicted.keys())
         cells = _cells(predicted)
         return sum(1 for r, row in enumerate(actual) for c, value in enumerate(row) if cells[r][c] != -1 and cells[r][c] != value)
     except BaseException:
-        _note("model.predict must return a grid (rows of ints, -1 = don't care); got %s" % type(predicted).__name__)
+        _note("model.predict must return a grid or sparse changed-cell dict; got %s" % type(predicted).__name__)
         return None
+
+
+def _action_invariant_summary(limit=36):
+    if not _T or not _H:
+        return ""
+    level = _H[-1]["raw"]["level"]
+    by_kind, by_label = {}, {}
+    total = 0
+    for t in _T[-limit:]:
+        if t["action"] == "RESET" or t["before"]["raw"]["level"] != level:
+            continue
+        before, after = t["before"]["grids"][-1], t["after"]["grids"][-1]
+        tiles = {(r // 4, c // 4) for r in range(len(after)) for c in range(len(after[r])) if before[r][c] != after[r][c]}
+        if not tiles:
+            continue
+        kind = t["action"].split("(")[0]
+        for store, key in ((by_kind, kind), (by_label, t["action"])):
+            store.setdefault(key, set()).update(tiles)
+        total += 1
+    groups = by_kind if len(by_kind) >= 2 else by_label
+    if len(groups) < 2 or total < 3:
+        return ""
+    shared = sorted(set.intersection(*groups.values()))
+    if not shared or len(shared) > 8:
+        return ""
+    boxes = ["(%d..%d,%d..%d)" % (tr * 4, tr * 4 + 3, tc * 4, tc * 4 + 3) for tr, tc in shared[:4]]
+    more = " (+%d)" % (len(shared) - 4) if len(shared) > 4 else ""
+    return "action-invariant regions [%s]%s changed across %d distinct actions" % (
+        ", ".join(boxes), more, len(groups))
+
+
+def _causal_briefing(limit=36):
+    if not _T or not _H:
+        return ""
+    level = _H[-1]["raw"]["level"]
+    stats = {}
+    for t in _T[-limit:]:
+        if t["action"] == "RESET" or t["before"]["raw"]["level"] != level:
+            continue
+        before, after = t["before"]["grids"][-1], t["after"]["grids"][-1]
+        d = diff(before, after)
+        entry = stats.setdefault(t["action"], {"n": 0, "min_c": d["count"], "max_c": d["count"], "new": 0, "bboxes": set()})
+        entry["n"] += 1
+        entry["min_c"] = min(entry["min_c"], d["count"])
+        entry["max_c"] = max(entry["max_c"], d["count"])
+        if gameplay_changed(before, after):
+            entry["new"] += 1
+        if "bbox" in d and len(entry["bboxes"]) < 3:
+            entry["bboxes"].add(str(d["bbox"]))
+    lines = []
+    for action, e in list(stats.items())[-8:]:
+        span = "%d" % e["min_c"] if e["min_c"] == e["max_c"] else "%d-%d" % (e["min_c"], e["max_c"])
+        lines.append("%s x%d: %s cells, interior_changed=%d, bbox=%s" % (
+            action, e["n"], span, e["new"], ",".join(sorted(e["bboxes"])) or "none"))
+    inv = _action_invariant_summary(limit)
+    if inv:
+        lines.append("Invariant: " + inv)
+    return "\n".join(lines)[:900]
 
 
 def _observe(before, forecast, source):
@@ -567,8 +793,10 @@ def _observe(before, forecast, source):
                 death=after["raw"]["state"] == "GAME_OVER" and before["raw"]["state"] != "GAME_OVER",
                 level_up=after["raw"]["levels_completed"] != before["raw"]["levels_completed"], source=source,
                 fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[],
-                predict_off=_off(forecast["predict"], after["grids"][-1]) if "predict" in forecast else None)
-    if t["action"].startswith("MOUSE(x="):
+                predict_off=_off(forecast["predict"], after["grids"][-1], before["grids"][-1]) if "predict" in forecast else None)
+    if t["action"] == "RESET" or fact["level_up"]:
+        _S.setdefault("mouse_tries", {}).clear()
+    elif t["action"].startswith("MOUSE(x="):
         match = re.match(r"MOUSE\(x=(\d+),y=(\d+)\)", t["action"])
         if match:
             x, y = map(int, match.groups())
@@ -582,22 +810,30 @@ def _observe(before, forecast, source):
                             cells.add((ny, nx))
                             todo.append((ny, nx))
                 region = (color, tuple(sorted(cells))) if len(cells) <= 256 else ("block", x // 4, y // 4)
-                key = (_key(before), region)
+                board = _key(before)
+                key = (board, region)
                 tries = _S.setdefault("mouse_tries", {})
-                fact["region_tries"] = tries.get(key, 0) + 1
                 if fact["changed"] or fact["new"]:
-                    tries.clear()
+                    tries.pop(key, None)
+                    fact["region_tries"] = 0
                 else:
+                    fact["region_tries"] = tries.get(key, 0) + 1
                     tries[key] = fact["region_tries"]
-                fact["untouched_regions"] = len({item[1] for item in tries})
+                fact["ineffective_regions"] = len({r for b, r in tries if b == board})
+    if fact["predict_off"] is not None:
+        model = _S["model"]
+        model["tested"] = model.get("tested", 0) + 1
+        model["correct"] = model.get("correct", 0) + (fact["predict_off"] == 0)
+        row = model.setdefault("by_level", {}).setdefault(str(fact["level"]), {"tested": 0, "correct": 0})
+        row["tested"] += 1
+        row["correct"] += fact["predict_off"] == 0
     for name, claim in sorted((_S.get("claims") or {}).items()):
         if claim.get("fn"):
             verdict = _judge_claim(name, claim, t)
             if verdict is not None:
                 fact["claims_held" if verdict else "claims_failed"].append(name)
     for name, check in (_S.get("memory_checks") or {}).items():
-        verdict = _judge_memory(name, check, t)
-        if verdict is False:
+        if _judge_memory(name, check, t) is False:
             fact.setdefault("verify_failed", []).append(name)
     _S.setdefault("steps", []).append(fact)
     return fact
@@ -609,8 +845,13 @@ def _echo(fact):
         out += "  [tried %d time%s before from this board%s]" % (
             fact["tries"], "s" if fact["tries"] > 1 else "", ", same result each time" if fact["same"] else "")
     if fact.get("region_tries", 0) >= 2:
-        out += "  [ineffective clicks in this region: %d; ineffective regions tried: %d]" % (
-            fact["region_tries"], fact["untouched_regions"])
+        out += "  [ineffective clicks in this region: %d; ineffective regions on this board: %d]" % (
+            fact["region_tries"], fact.get("ineffective_regions", 1))
+    if fact["tries"] >= 2 and fact["same"]:
+        board = _key(_T[-1]["before"])
+        tried = sorted({action for key, action in _S["tries"] if key == board})
+        untried = sorted(action for action in _S["valid"] if action not in tried and action != "MOUSE")
+        out += "  [from this board: tried=%s; untried valid=%s]" % (tried, untried)
     if fact["predict_off"]:
         out += "  [predict: %d cells off]" % fact["predict_off"]
     if fact["death"]:
@@ -620,7 +861,8 @@ def _echo(fact):
     elif fact["fatal"]:
         out += "  [is_fatal flagged this action; it was not fatal]"
     for name in fact["claims_failed"]:
-        out += "  [claims/%s failed]" % name
+        witness = (_S.get("claim_outbox") or {}).get(name, {}).get("witness")
+        out += "  [claims/%s failed%s]" % (name, ": " + witness if witness else "")
     for name in fact.get("verify_failed", []):
         out += "  [verify/%s failed: %s]" % (name, _S["memory_checks"][name]["stats"].get("witness"))
     return out
@@ -656,12 +898,20 @@ class _WorkFile(io.StringIO):
         if not self.closed:
             data = self.getvalue()
             super().close()
-            _file("write", self._path, data)
+            updated = _file("write", self._path, data)
+            if updated is not None:
+                _sync_work(updated)
 
 
 def _open(path, mode="r", *args, **kwargs):
     if "b" in mode:
         raise ValueError("work/ supports text files only")
+    clean = str(path).replace("\\", "/").lstrip("./")
+    if "components/" in clean or clean.endswith("/components") or clean == "components":
+        import posixpath
+        norm = posixpath.normpath(clean)
+        if not (norm == "work" or norm.startswith("work/")) or "harness/components" in norm:
+            raise PermissionError("direct writes to component storage are blocked (%s); use reflect_component(op, kind, name, ...)" % path)
     if "r" in mode and "+" not in mode:
         return io.StringIO(_file("read", path))
     initial = ""
@@ -686,13 +936,18 @@ def _judge_claim(claim_name, claim, t):
     box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "checked": 0,
                                                                      "levels": [], "last_fail": None})
     box["checked"] += 1
+    level = t["before"]["raw"]["level"]
+    per_level = box.setdefault("by_level", {}).setdefault(str(level), {"support": 0, "counter": 0, "checked": 0})
+    per_level["checked"] += 1
     if verdict is True or verdict is False:
         box["support" if verdict else "counter"] += 1
-        level = t["after"]["raw"]["level"]
+        per_level["support" if verdict else "counter"] += 1
         if verdict and level not in box["levels"]:
             box["levels"].append(level)
         if not verdict:
             box["last_fail"] = t["after"]["raw"]["step"]
+            box["witness"] = "L%s step %s %s, %s cells changed" % (level, t["after"]["raw"]["step"],
+                t["action"], t["result"].get("changed_cells", "?"))
         return bool(verdict)
     return None
 
@@ -765,7 +1020,6 @@ def _cell(req):
         _T.clear()
     for raw in req["new_history"]:
         _append(raw, req["numeric_grid"])
-    # A restarted kernel receives history without the earlier per-action result.
     for index, t in enumerate(_T):
         if not t["result"]:
             results = req.get("transition_results") or []
@@ -794,94 +1048,14 @@ def _cell(req):
             exec(compile(req["startup_source"], "work/startup.py", "exec"), ns)
         except BaseException as exc:
             _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
-    store = _S.setdefault("claims", {})
-    for claim in req.get("claims") or []:
-        cur = store.get(claim["name"])
-        if cur is not None and cur["source"] == claim["source"]:
-            continue
-        fresh_claim = cur is None or cur.get("source") != claim["source"]
-        name, entry = claim["name"], {"source": claim["source"], "fn": None, "error": None, "doc": ""}
-        try:
-            mod = _load("work/claims/%s.py" % name, claim["source"])
-            if callable(getattr(mod, "check", None)):
-                entry.update(fn=mod.check, doc=_doc(mod.__doc__ or mod.check.__doc__))
-            else:
-                entry["error"] = "defines no callable check(transition)"
-        except BaseException as exc:
-            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
-        store[name] = entry
-        if entry["error"]:
-            _note("claims/%s failed to load: %s" % (name, entry["error"]))
-        elif fresh_claim:
-            verdicts = [_judge_claim(name, entry, t) for t in _T]
-            _note("loaded claims/%s (back-test on %d transitions: applied %d, held %d, failed %d)" % (
-                name, len(verdicts), sum(v is not None for v in verdicts), verdicts.count(True), verdicts.count(False)))
-    supplied = {claim["name"] for claim in req.get("claims") or []}
-    for name in list(store):
-        if name not in supplied:
-            del store[name]
-    libs = _S.get("lib") or {}
-    for name, item in libs.items():
-        if item.get("module"):
-            ns[name] = item["module"]
-    model = _S.setdefault("model", {"source": None})
-    model_source = req.get("model_source")
-    rebuild = bool(req["new_history"])
-    if model_source != model["source"]:
-        _S["model"] = model = {"source": model_source}
-        rebuild = True
-        if model_source:
-            try:
-                _S["model_module"] = mod = _load("work/model.py", model_source)
-                model.update({name: getattr(mod, name) for name in ("state_key", "predict", "is_fatal")
-                              if callable(getattr(mod, name, None))})
-                tested = correct = 0
-                if "predict" in model:
-                    for transition in _T:
-                        forecast = _forecast(transition["before"], transition["action"])
-                        if "predict" not in forecast:
-                            continue
-                        off = _off(forecast["predict"], transition["after"]["grids"][-1])
-                        if off is not None:
-                            tested += 1
-                            correct += off == 0
-                    model["tested"], model["correct"] = tested, correct
-                _note("loaded model.py (%s)%s" % (", ".join(name for name in ("state_key", "predict", "is_fatal") if name in model)
-                     or "defines none of state_key, predict, is_fatal",
-                     "; back-test on %d transitions: %d accurate" % (tested, correct) if "predict" in model else ""))
-            except BaseException as exc:
-                model["error"] = "%s: %s" % (type(exc).__name__, exc)
-                _note("model.py failed to load: %s" % model["error"])
-    if model.get("source"):
-        ns["model"] = _S["model_module"]
-    if rebuild:
-        _rebuild()
-    libs = _S.setdefault("lib", {})
-    for item in req.get("lib") or []:
-        name, cur = item["name"], libs.get(item["name"])
-        if cur is not None and cur["source"] == item["source"]:
-            if fresh and cur["module"]:
-                ns[name] = cur["module"]
-            continue
-        entry = {"source": item["source"], "module": None, "error": None, "doc": ""}
-        try:
-            entry["module"] = ns[name] = _load("work/lib/%s.py" % name, item["source"])
-            entry["doc"] = _doc(entry["module"].__doc__)
-            _note("loaded lib/%s as `%s`%s" % (name, name, ": " + entry["doc"] if entry["doc"] else ""))
-        except BaseException as exc:
-            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
-            _note("lib/%s failed to load: %s" % (name, entry["error"]))
-        libs[name] = entry
-    for name in [name for name in libs if name not in {item["name"] for item in req.get("lib") or []}]:
-        if ns.get(name) is libs[name]["module"]:
-            ns.pop(name)
-        del libs[name]
+    _sync_work(req, bool(req["new_history"]))
     _bind()
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
     if startup_note:
         out.write(startup_note + "\n")
+    _S["called_lib"] = None
     try:
         tree = ast.parse(req["code"], "<python>")
         imports = [ast.get_source_segment(req["code"], node) for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
@@ -905,10 +1079,13 @@ def _cell(req):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             exec(compile(tree, "<python>", "exec"), ns)
             for name, source in decorated:
-                module = _load("work/lib/%s.py" % name, source)
+                _load("work/lib/%s.py" % name, source)
                 _file("write", "work/lib/%s.py" % name, source)
-                _S.setdefault("lib", {})[name] = {"source": source, "module": module, "error": None, "doc": ""}
-                ns[name] = module
+                libs = {item["name"]: item for item in req.get("lib") or []}
+                libs[name] = {"name": name, "source": source}
+                req["lib"] = list(libs.values())
+                _sync_work(req)
+                _bind()
                 _note("@tool mounted: %s" % name)
             if last is not None:
                 value = eval(compile(ast.Expression(last.value), "<python>", "eval"), ns)
@@ -921,18 +1098,22 @@ def _cell(req):
     if value is not None:
         shown = value if isinstance(value, str) else repr(value)
         text += ("" if not text or text.endswith("\n") else "\n") + shown
+    model, libs = _S["model"], _S["lib"]
     claim_errors = {name: c["error"] for name, c in (_S.get("claims") or {}).items() if c.get("error")}
     text = text + ("\n" + "\n".join(_S.get("notes") or []) if _S.get("notes") else "")
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
             "last_result": dict(_S["last_result"]), "steps": _S.pop("steps", []), "notes": _S.pop("notes", []),
             "memory_checks": {name: item["stats"] for name, item in _S["memory_checks"].items()},
             "decorated_tools": [name for name, _ in decorated] if not error else [],
-            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors,
+            "claims": {"counts": _S.pop("claim_outbox", {}), "reset": sorted(_S.pop("claim_reset", set())), "errors": claim_errors,
                        "docs": {name: c["doc"] for name, c in (_S.get("claims") or {}).items()}},
             "model": {"funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],
                       "tested": model.get("tested"), "correct": model.get("correct"),
+                      "by_level": model.get("by_level", {}),
                       "error": model.get("error")} if model.get("source") else None,
-            "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()}}
+            "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()},
+            "action_invariant": _action_invariant_summary(),
+            "causal_briefing": _causal_briefing()}
 
 
 _req = input

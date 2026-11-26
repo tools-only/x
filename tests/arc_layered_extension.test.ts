@@ -14,7 +14,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     appendEntry: (type: string, data: any) => entries.push({ type, data }) };
   const game: any = { level: 1, levels_completed: 0, win_levels: 3, state: "NOT_FINISHED", step: 0, actions_used: 0, budget_left: 40,
     valid_actions: ["UP", "RESET"], frame: grid, stale_steps: 0 };
-  const python: any = { next: null, runs: 0, init: async () => game, state: () => game, close() {},
+  const python: any = { next: null, runs: 0, init: async () => game, state: () => game, takeMiniReview: () => { const review = game.mini_review; game.mini_review = null; return review; }, close() {},
     async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {},
       ...(this.reviews ? { reviews: this.reviews } : {}) }; } };
   const root = (overrides.root as string) ?? mkdtempSync(join(tmpdir(), "layered-"));
@@ -36,6 +36,7 @@ test("the run opens with the replaced system prompt and a state message with an 
   const { handlers, tool } = setup();
   const opened = await handlers.before_agent_start({});
   assert.match(opened.systemPrompt, /submit_actions/);
+  assert.ok(opened.systemPrompt.length <= 5500);
   assert.doesNotMatch(opened.systemPrompt, /\{\{/);
   assert.equal(opened.message.customType, STATE_TYPE);
   assert.match(textOf(opened.message.content), /Level 1 of 3 \| NOT_FINISHED \| step 0 \| actions used 0 \| run budget left 40/);
@@ -45,7 +46,7 @@ test("the run opens with the replaced system prompt and a state message with an 
   assert.deepEqual(handlers.session_before_compact(), { cancel: true });
 });
 
-test("text observation mode sends a complete frame and no PNG", async () => {
+test("text observation mode sends a complete frame initially and delta-only on subsequent steps", async () => {
   const { handlers, game, python, call } = setup({ noImage: true });
   game.frame[0][0] = 3;
   const opened = await handlers.before_agent_start({});
@@ -58,6 +59,7 @@ test("text observation mode sends a complete frame and no PNG", async () => {
   const next = await handlers.before_agent_start({});
   assert.equal(next.message.content.length, 1);
   assert.match(textOf(next.message.content), /Changed cells \(1\): 0,0:3→4/);
+  assert.doesNotMatch(textOf(next.message.content), /Frame 64x64:/);
 });
 
 test("harness profile reflects memory and injects its active version", async () => {
@@ -201,14 +203,19 @@ test("a conforming work library function is published and bound", async () => {
   const root = mkdtempSync(join(tmpdir(), "layered-tool-"));
   mkdirSync(join(root, "work", "lib"), { recursive: true });
   writeFileSync(join(root, "work", "lib", "count.py"), "def count(args):\n    return len(args)\n");
+  writeFileSync(join(root, "work", "lib", "ping.py"), "def ping():\n    return 'pong'\n");
   const { handlers, tools, python, rows } = setup({ root, harnessProfile: true });
   await handlers.before_agent_start({});
   assert.ok(tools.count);
+  assert.ok(tools.ping);
   assert.match(readFileSync(join(root, "harness", "components", "tool", "count", "v1.json"), "utf8"), /def count/);
   const invoked = await tools.count.execute("id", { args: { a: 1 } });
+  const pinged = await tools.ping.execute("id", {});
   assert.match(textOf(invoked.content), /ok/);
-  assert.equal(python.runs, 1);
+  assert.match(textOf(pinged.content), /ok/);
+  assert.equal(python.runs, 2);
   assert.equal(rows("bound_invocation")[0].ok, true);
+  assert.equal(rows("bound_invocation")[1].ok, true);
   const failed = setup({ root: mkdtempSync(join(tmpdir(), "layered-failed-tool-")), harnessProfile: true });
   mkdirSync(join(failed.root, "work", "lib"), { recursive: true });
   writeFileSync(join(failed.root, "work", "lib", "broken.py"), "def broken(args):\n    raise ValueError('bad input')\n");
@@ -219,8 +226,9 @@ test("a conforming work library function is published and bound", async () => {
 });
 
 test("consult uses the parent model once without action tools and enforces the level limit", async () => {
-  const { handlers, tools, rows } = setup({ harnessProfile: true });
+  const { handlers, tools, rows } = setup({ harnessProfile: true, outputTokens: 4096 });
   await handlers.before_agent_start({});
+  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "notes", body: "Confirmed: x\nFalsified: UP does nothing" });
   const model = { id: "same-model" };
   let calls = 0;
   const ctx: any = { model, modelRegistry: {
@@ -229,7 +237,10 @@ test("consult uses the parent model once without action tools and enforces the l
       calls += 1;
       assert.equal(selected, model);
       assert.deepEqual(input.tools, []);
-      assert.equal(options.maxTokens, 1500);
+      assert.equal(options.maxTokens, 4096);
+      assert.equal(input.messages[0].content.some((p: any) => p.type === "image"), true);
+      assert.match(input.messages[0].content[0].text, /Valid actions \(propose ONLY from this set\): UP RESET/);
+      assert.match(input.messages[0].content[0].text, /Falsified: \[notes\] Falsified: UP does nothing/);
       return { result: async () => ({ content: [{ type: "text", text: "two explanations" }], stopReason: "stop",
         usage: { input: 30, output: 10, totalTokens: 40 } }) };
     } } };
@@ -391,10 +402,22 @@ test("a context overflow error makes the next request drop one more block", asyn
   const messages = ["1", "2"].map(text => ({ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text }] }));
   assert.equal(handlers.context({ messages }, {}).messages.length, 2);
   handlers.message_end(say("", { stopReason: "error", errorMessage: "maximum context length exceeded" }));
-  assert.equal(handlers.context({ messages }, {}).messages.length, 1);
+  const recovered = handlers.context({ messages }, {}).messages;
+  assert.equal(recovered.length, 2);
+  assert.match(recovered[0].content[0].text, /Earlier context was trimmed/);
+  assert.equal(handlers.context({ messages }, {}).messages.length, 2);
   assert.equal(rows("evict").length, 1);
   handlers.agent_settled();
   assert.equal(rows("segment_end")[0].reason, "context_overflow");
+});
+
+test("eviction keeps its cut until the retained window exceeds the cap", () => {
+  const messages = Array.from({ length: 12 }, (_, index) => ({ role: "user", content: `block ${index} ${"x".repeat(80)}` }));
+  const first = evict(messages.slice(0, 8), 70, 30, 0);
+  const stable = evict(messages.slice(0, 9), 70, 30, 0, first.cut);
+  assert.equal(stable.cut, first.cut);
+  const moved = evict(messages, 70, 30, 0, stable.cut);
+  assert.ok(moved.cut >= stable.cut);
 });
 
 test("segment_end flags an oversized raw session relative to the model cap", async () => {
@@ -602,4 +625,157 @@ test("foldPreActionObservations collapses pure-observe results before an acting 
   assert.match(out[1].content[0].text, /^\[folded pre-action observe: 13 chars\]$/);
   assert.equal(out[3].content[0].text, "ok\n[env] executed 1 (UP)");
   assert.equal(out[5].content[0].text, "latest observe");
+});
+
+test("same-turn tool mount feedback, failure notices, stale notice, and carried unverified list work in harnessProfile", async () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-m2-"));
+  const { handlers, tools, python, game, call } = setup({ root, harnessProfile: true });
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  python.run = async () => {
+    mkdirSync(join(root, "work", "lib"), { recursive: true });
+    writeFileSync(join(root, "work", "lib", "scan.py"), "def scan():\n    return 1\n");
+    writeFileSync(join(root, "work", "lib", "bad.py"), "def bad(:\n");
+    return { text: "wrote libs", truncated: false, acted: null, images: [], metrics: {} };
+  };
+  const mounted = textOf((await call()).content);
+  assert.match(mounted, /\[tool mounted: scan v1/);
+  assert.match(mounted, /\[tool publish failed: work\/lib\/bad\.py/);
+
+  await tools.reflect_component.execute("id", { op: "define", kind: "skill", name: "unused_sk", body: "steps", summary: "unused summary" });
+  python.run = async () => ({ text: "ValueError: boom", error: "ValueError: boom", acted: null, images: [], metrics: {}, truncated: false });
+  writeFileSync(join(root, "work", "lib", "flaky.py"), "def flaky():\n    raise ValueError('boom')\n");
+  await handlers.before_agent_start({});
+  for (let i = 0; i < 3; i += 1) {
+    handlers.turn_start();
+    const errRes = await tools.flaky.execute("id", {});
+    assert.equal(errRes.isError, true);
+  }
+  game.actions_used = 15;
+  python.run = async () => ({ text: "ok", truncated: false, acted: batch({ executed: 1, actions: ["UP"], level_changed: true, steps: [{
+    step: 1, action: "UP", tries: 0, same: false, last_try: null, new: true, level: 1, changed: true, death: false, level_up: true,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false }] }), images: [], metrics: {} });
+  handlers.turn_start();
+  await call();
+  game.level = 2; game.levels_completed = 1;
+  const lvl2Text = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(lvl2Text, /Carried from earlier levels \(unverified on L2\)/);
+  assert.match(lvl2Text, /COMPONENT NOTICE: tool\/flaky v1 failed 3 consecutive times/);
+  assert.match(lvl2Text, /LEVEL COMPLETE: 1 of 3/);
+  assert.match(lvl2Text, /Consolidate reusable patterns into Skill/);
+  const staleRes = textOf((await handlers.before_agent_start({})).message.content);
+  assert.doesNotMatch(staleRes, /unused_sk.*has 0 reads/);
+  await tools.reflect_component.execute("id", { op: "define", kind: "skill", name: "l2_unused", body: "steps", summary: "l2 unused" });
+  game.actions_used = 30;
+  const onceStale = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(onceStale, /COMPONENT NOTICE: skill\/l2_unused v1 has 0 reads across 15 actions/);
+  const twiceStale = textOf((await handlers.before_agent_start({})).message.content);
+  assert.doesNotMatch(twiceStale, /l2_unused v1 has 0 reads/);
+
+  game.state = "GAME_OVER";
+  python.run = async () => ({ text: "dead", truncated: false, acted: batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 31, action: "DOWN", tries: 0, same: false, last_try: null, new: false, level: 2, changed: false, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: 12 }] }), images: [], metrics: {} });
+  handlers.turn_start();
+  await call();
+  const deathText = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(deathText, /Fatal transition: step 31, action DOWN \(REPEATS death at step 12\)/);
+  assert.match(deathText, /Memory's Falsified section via reflect_component/);
+});
+
+test("stall includes effort/progress line and length truncation performs bounded recovery", async () => {
+  const { handlers, game, python, rows, call } = setup({ harnessProfile: true, outputTokens: 4096, maxLengthRecoveries: 2 });
+  await handlers.before_agent_start({});
+  game.stale_steps = 12;
+  python.run = async () => ({ text: "ok", truncated: true, acted: batch({ executed: 1, actions: ["MOUSE(x=0,y=0)"], steps: [{
+    step: 1, action: "MOUSE(x=0,y=0)", tries: 1, same: true, last_try: 0, new: false, level: 1, changed: false, death: false,
+    level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, region_tries: 4 }] }),
+    images: [], metrics: {} });
+  handlers.turn_start();
+  await call();
+  const stallText = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(stallText, /EFFORT\/PROGRESS \(last 1 actions\): new_states=0, same_repeats=1, repeat_mouse_regions=1/);
+  assert.match(stallText, /STALL: 12 steps/);
+
+  handlers.message_end(say("thinking too long", { stopReason: "length" }));
+  assert.equal(handlers.agent_before_settle(settle), undefined);
+  handlers.agent_settled();
+  assert.equal(rows("segment_end").at(-1).reason, "length");
+
+  const opened = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(opened, /LENGTH RECOVERY \(1\/2\)/);
+  const adapted = handlers.before_provider_request({ payload: { enable_thinking: true, reasoning_effort: "high", max_tokens: 4096 } }, { model: { maxTokens: 16384 } });
+  assert.equal(adapted.enable_thinking, false);
+  assert.equal(adapted.reasoning_effort, "none");
+  assert.equal(adapted.max_tokens, 8192);
+
+  handlers.message_end(say("still cut off", { stopReason: "length" }));
+  handlers.agent_settled();
+  assert.equal(rows("segment_end").at(-1).reason, "length_exhausted");
+});
+
+test("consult inherits noImage modality, includes causal_briefing, and rejects empty length output", async () => {
+  const { handlers, tools, game } = setup({ harnessProfile: true, noImage: true });
+  game.causal_briefing = "RIGHT x4: 2 cells\nInvariant: action-invariant rows [63]";
+  await handlers.before_agent_start({});
+  let seenOptions: any;
+  let seenContent: any[] = [];
+  const ctx: any = { model: { id: "same-model", maxTokens: 8192 }, modelRegistry: {
+    streamSimple: (_m: any, input: any, opts: any) => {
+      seenOptions = opts;
+      seenContent = input.messages[0].content;
+      return { result: async () => ({ content: [], stopReason: "length", usage: { input: 10, output: 1500, totalTokens: 1510 } }) };
+    } } };
+  const res = await tools.consult.execute("id", { name: "reframer", question: "Why no progress?" }, undefined, undefined, ctx);
+  assert.equal("reasoning" in seenOptions, false);
+  assert.equal(seenOptions.maxTokens, 8192);
+  assert.equal(seenContent.some((p: any) => p.type === "image"), false);
+  assert.match(seenContent[0].text, /Causal evidence:\nRIGHT x4[\s\S]*Frame:/);
+  assert.equal(res.isError, true);
+  assert.match(textOf(res.content), /empty output at stopReason=length/);
+});
+
+test("memory-coupled adaptive folding relaxes foldAfter while memory is empty", async () => {
+  const { handlers, tools, rows } = setup({ harnessProfile: true, foldAfter: 4, contextCap: 1e9, contextTarget: 1e9 });
+  await handlers.before_agent_start({});
+  const msgs = Array.from({ length: 6 }, (_, i) => [
+    { role: "user", content: [{ type: "text", text: `u${i}` }] },
+    { role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "python", arguments: {} }] },
+    { role: "toolResult", toolCallId: `c${i}`, content: [{ type: "text", text: `noise ${i}\n[env] executed 1` }] },
+  ]).flat();
+  handlers.context({ messages: msgs }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").length, 0);
+  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "m", body: "Confirmed: x" });
+  handlers.context({ messages: msgs }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").at(-1).keep_blocks, 4);
+});
+
+test("boardInventory appears on fresh board and consult in harnessProfile and can be disabled", async () => {
+  const { handlers, tools, game, python, call } = setup({ harnessProfile: true });
+  game.frame = Array.from({ length: 16 }, () => Array(16).fill(0));
+  game.frame[4][5] = 7;
+  game.frame[2][2] = 8;
+  const first = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(first, /Board inventory.*P=1\/1@\(5,4\)-\(5,4\).*R=1\/1@\(2,2\)-\(2,2\)/);
+
+  const nextFrame = game.frame.map((r: number[]) => [...r]);
+  nextFrame[2][2] = 0; nextFrame[2][3] = 8;
+  game.frame = nextFrame;
+  python.next = batch({ executed: 1, actions: ["UP"] });
+  await call();
+  const second = textOf((await handlers.before_agent_start({})).message.content);
+  assert.doesNotMatch(second, /Board inventory/);
+
+  let briefing = "";
+  const ctx: any = { model: { id: "same-model" }, modelRegistry: {
+    streamSimple: (_m: any, input: any) => {
+      briefing = input.messages[0].content[0].text;
+      return { result: async () => ({ content: [{ type: "text", text: "ok" }], stopReason: "stop", usage: { input: 10, output: 5, totalTokens: 15 } }) };
+    } } };
+  await tools.consult.execute("id", { name: "reframer", question: "What is untested?" }, undefined, undefined, ctx);
+  assert.match(briefing, /Board inventory.*P=1\/1@\(5,4\)-\(5,4\)/);
+  assert.match(briefing, /Unchanged symbols since attempt start: P/);
+
+  const off = setup({ harnessProfile: true, boardInventory: false });
+  assert.doesNotMatch(textOf((await off.handlers.before_agent_start({})).message.content), /Board inventory/);
 });

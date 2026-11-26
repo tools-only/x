@@ -2,6 +2,8 @@
 
 # 延后待办：ARC 边界与 Auto-Research 模式
 
+2026-11-26 layered/Qwen 27B 在线自进化切片已作本地实现与 scripted 接线检查。同轮写入 claim 后实际动作命中、驱逐滞回定向检查和过关复盘关号已留证；真实 provider 的跨压缩假设/反证保留、自主采用与净收益未测。A/C/D 保持开放，见[本轮变更记录](plans/2026-11-26-arc-qwen27b-online-self-evolution.md)。
+
 2026-11-18 通用 SelfRoot/runtime 同步到 ARC：从 evo-loop worktree 迁入共享 SelfRoot 编排编辑接口、META 执行回合、验证窗口语义，以及 Pi compaction/continuation/memory 原语与定向 fixture。ARC adapter 的 task_runtime 镜像与 action grant 保留；Python session 函数现在可经 reflect_component(session_ref, description) 导出为版本化工具；Pi runtime 原语尚未成为 ARC session owner 或唯一 memory 真值。详情见[迁移设计记录](plans/2026-11-18-evo-loop-design-migration.md)与[ARC 变更记录](plans/2026-11-18-arc-selfroot-migration.md)。跨压缩认知连续性、自主采用和净收益仍开放。
 
 2026-11-18 Codex/Claude Code 设计迁移：新增 `pi_runtime_layer.ts` 作为通用 Pi adapter 安装入口；Continuation adapter 可从 session entries 在 `before_agent_start` 注入，版本化 Memory 可通过宿主 API 读写到 Pi session entries。它们仍是可复用 adapter，不是统一 production session owner；Memory 仅 session 持久，未接管 SelfRoot，也未提供跨 session 检索。下一步先确定共同 session owner 和唯一持久层，再接管既有 Memory writer；通用子会话协议、幂等 loop 生命周期、跨压缩语义连续性、自主采用/成本收益仍开放。Auto-Research 历史条目不属于本次迁移目标。细节与下一步见[迁移记录](plans/2026-11-18-evo-loop-design-migration.md#本次实现记录)。

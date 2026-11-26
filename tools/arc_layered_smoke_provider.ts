@@ -31,6 +31,10 @@ const CONSULT_SCRIPT: typeof SCRIPT = [
   { text: "Parent received the consultation.", code: "submit_actions('UP')" },
   { text: "done" },
 ];
+const EVO_WRITE_SCRIPT: typeof SCRIPT = [
+  { code: "with open('work/claims/action_seen.py', 'w') as f: f.write('def check(t):\\n    return True if t.action == \\\"UP\\\" else None\\n')\nprint(submit_actions('UP')['lines'])" },
+  { code: "print('CLAIM_AFTER_ACTION', harness_state['claims']['action_seen']['support'])\nsubmit_actions('UP')" },
+];
 const EVOLVE_SCRIPT: typeof SCRIPT = [
   { code: "submit_actions('UP')" },
   { reflect: true },
@@ -47,7 +51,8 @@ export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple: scriptedProviderTransport((model, context) => {
       const stream = createAssistantMessageEventStream();
-      const script = process.env.ARC_LAYERED_SMOKE_SCRIPT === "read-act" ? READ_ACT_SCRIPT
+      const script = process.env.ARC_LAYERED_SMOKE_SCRIPT === "evo-write" ? EVO_WRITE_SCRIPT
+        : process.env.ARC_LAYERED_SMOKE_SCRIPT === "read-act" ? READ_ACT_SCRIPT
         : process.env.ARC_LAYERED_SMOKE_SCRIPT === "consult" ? CONSULT_SCRIPT
         : process.env.ARC_LAYERED_SMOKE_SCRIPT === "evolve" ? EVOLVE_SCRIPT : SCRIPT;
       const messages: any[] = context.messages ?? [], system = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");

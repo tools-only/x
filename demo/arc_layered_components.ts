@@ -5,21 +5,98 @@ import { join } from "node:path";
 export type Kind = "memory" | "skill" | "prompt" | "subagent" | "tool";
 export type Component = { kind: Kind; name: string; version: number; body: string; summary: string; hash: string;
   verify?: Record<string, string> };
+export type StatsBucket = { invocations: number; ok: number; action_producing: number; reads: number; failures: number };
+export type ComponentStats = {
+  defined_level: number; updated_level: number; defined_step: number; updated_step: number;
+  last_used_level?: number; last_used_step?: number;
+  by_level: Record<string, StatsBucket>; total: StatsBucket;
+  consecutive_failures: number; last_failure_witness?: string;
+  consecutive_publish_failures: number; last_publish_error?: string;
+};
 const LIMIT: Record<Kind, number> = { memory: 2400, skill: 4000, prompt: 600, subagent: 1500, tool: 10000 };
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
 const digest = (body: string, verify?: Record<string, string>) => createHash("sha256")
   .update(body + (verify ? "\0" + JSON.stringify(Object.fromEntries(Object.entries(verify).sort(([a], [b]) => a.localeCompare(b)))) : ""))
   .digest("hex");
+const emptyBucket = (): StatsBucket => ({ invocations: 0, ok: 0, action_producing: 0, reads: 0, failures: 0 });
 
 export class LayeredComponents {
   private heads = new Map<string, number>();
+  private metrics = new Map<string, ComponentStats>();
   constructor(private root: string) {
     mkdirSync(root, { recursive: true });
     const path = join(root, "HEAD.json");
     if (existsSync(path)) this.heads = new Map(Object.entries(JSON.parse(readFileSync(path, "utf8"))));
+    const statsPath = join(root, "stats.json");
+    if (existsSync(statsPath)) this.metrics = new Map(Object.entries(JSON.parse(readFileSync(statsPath, "utf8"))));
   }
   private key(kind: Kind, name: string) { return `${kind}/${name}`; }
   private path(kind: Kind, name: string, version: number) { return join(this.root, kind, name, `v${version}.json`); }
+  private saveStats() {
+    const file = join(this.root, "stats.json"), temp = `${file}.tmp`;
+    writeFileSync(temp, JSON.stringify(Object.fromEntries(this.metrics)), "utf8");
+    renameSync(temp, file);
+  }
+  private ensureStats(kind: Kind, name: string, level: number, step: number): ComponentStats {
+    const key = this.key(kind, name);
+    let entry = this.metrics.get(key);
+    if (!entry) {
+      entry = { defined_level: level, updated_level: level, defined_step: step, updated_step: step,
+        by_level: {}, total: emptyBucket(), consecutive_failures: 0, consecutive_publish_failures: 0 };
+      this.metrics.set(key, entry);
+    }
+    return entry;
+  }
+  stats(kind: Kind, name: string): ComponentStats | undefined { return this.metrics.get(this.key(kind, name)); }
+  allStats(): Record<string, ComponentStats> { return Object.fromEntries(this.metrics); }
+  recordChange(kind: Kind, name: string, level: number, step: number) {
+    const entry = this.ensureStats(kind, name, level, step);
+    entry.updated_level = level;
+    entry.updated_step = step;
+    entry.consecutive_failures = 0;
+    entry.consecutive_publish_failures = 0;
+    entry.last_publish_error = undefined;
+    this.saveStats();
+  }
+  recordRead(kind: Kind, name: string, level: number, step: number) {
+    const entry = this.ensureStats(kind, name, level, step);
+    const bucket = entry.by_level[String(level)] ??= emptyBucket();
+    bucket.reads += 1;
+    entry.total.reads += 1;
+    entry.last_used_level = level;
+    entry.last_used_step = step;
+    this.saveStats();
+  }
+  recordInvocation(kind: Kind, name: string, level: number, step: number, outcome: { ok: boolean; action_producing?: boolean; witness?: string }) {
+    const entry = this.ensureStats(kind, name, level, step);
+    const bucket = entry.by_level[String(level)] ??= emptyBucket();
+    for (const b of [bucket, entry.total]) {
+      b.invocations += 1;
+      if (outcome.ok) {
+        b.ok += 1;
+        if (outcome.action_producing) b.action_producing += 1;
+      } else {
+        b.failures += 1;
+      }
+    }
+    entry.last_used_level = level;
+    entry.last_used_step = step;
+    if (outcome.ok) {
+      entry.consecutive_failures = 0;
+    } else {
+      entry.consecutive_failures += 1;
+      if (outcome.witness) entry.last_failure_witness = outcome.witness.replace(/\s+/g, " ").trim().slice(0, 160);
+    }
+    this.saveStats();
+    return entry;
+  }
+  recordPublishFailure(name: string, level: number, step: number, error: string) {
+    const entry = this.ensureStats("tool", name, level, step);
+    entry.consecutive_publish_failures += 1;
+    entry.last_publish_error = error.replace(/\s+/g, " ").trim().slice(0, 160);
+    this.saveStats();
+    return entry;
+  }
   current(kind: Kind, name: string): Component | undefined {
     const version = this.heads.get(this.key(kind, name));
     return version ? this.read(kind, name, version) : undefined;

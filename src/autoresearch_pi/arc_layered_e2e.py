@@ -87,18 +87,40 @@ def _layered_evidence(root: Path) -> dict[str, Any]:
     }
 
 
+def _classify_segment_activity(end: dict[str, Any], segment_rows: list[dict[str, Any]],
+                               work_changed: int, work_errors: int) -> str:
+    """Distinguish productive cognitive/component progress from genuinely idle segments."""
+    if end.get("actions"):
+        return "acted"
+    if end.get("reason") in ("length", "length_exhausted"):
+        return str(end.get("reason"))
+    constructive_kinds = {"component_change", "tool_published", "read_component"}
+    has_constructive = (work_changed > 0 and not work_errors) or any(
+        row.get("kind") in constructive_kinds
+        or (row.get("kind") == "consult" and row.get("ok") is True)
+        for row in segment_rows
+    )
+    if has_constructive:
+        return "constructive"
+    if any(row.get("kind") == "observe_limit" for row in segment_rows):
+        return "observe_limit"
+    return "idle"
+
+
 def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: str, pi_model: str, config: str = "api-research",
                         profile: str = "qwen27b",
                         provider_extension: Path | None = None, agent_dir: Path | None = None, thinking: str | None = None,
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
                         segment_seconds: float = 1_000_000.0, segment_tokens: int = 100_000_000, idle_continuations: int = 3,
-                        idle_timeout: float = 300.0, max_output_tokens: int = 12000, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
+                        idle_timeout: float = 300.0, max_output_tokens: int | None = None, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
                         fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel,
                         bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = ()) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {PROFILES}")
+    if max_output_tokens is None:
+        max_output_tokens = 4096 if profile in ("qwen27b", "qwen27b-harness") else 12000
     root = root.resolve()
     harness = root / "harness"
     harness.mkdir(parents=True, exist_ok=True)
@@ -155,8 +177,9 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
             "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
             "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
-            "consult_enabled": profile == "qwen27b-harness" and (extension_env or {}).get("ARC_LAYERED_CONSULT") != "0",
-            "no_image": (extension_env or {}).get("ARC_LAYERED_NO_IMAGE") == "1",
+            "consult_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_CONSULT") != "0",
+            "board_inventory_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_BOARD_INVENTORY") != "0",
+            "no_image": pi_env.get("ARC_LAYERED_NO_IMAGE") == "1",
             "fresh_level_session": fresh_level_session, "command": command,
             "pi_version": _pi_cli_version(Path(cli)),
         }, indent=2) + "\n", encoding="utf-8")
@@ -184,7 +207,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                          "context_window": (pi_state.get("model") or {}).get("contextWindow")}
 
         prompt, overflow_retried, idle_segments, stalls = "Play the game.", False, 0, 0
-        idle_change_credit = False
+        consecutive_constructive, consecutive_length, layered_cursor = 0, 0, 0
+        max_length_recoveries = int(pi_env.get("ARC_LAYERED_MAX_LENGTH_RECOVERIES", "2"))
         while True:
             if time.monotonic() >= deadline:
                 summary["stop_reason"] = "deadline"
@@ -221,7 +245,10 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                 prompt = "Continue playing."
                 continue
             summary["segments"] += 1
-            end = ([row for row in _read_jsonl(harness / "layered.jsonl") if row.get("kind") == "segment_end"] or [{}])[-1]
+            all_layered = _read_jsonl(harness / "layered.jsonl")
+            segment_rows = all_layered[layered_cursor:]
+            layered_cursor = len(all_layered)
+            end = ([row for row in all_layered if row.get("kind") == "segment_end"] or [{}])[-1]
             reason = end.get("reason")
             summary["segment_reasons"].append(reason)
             state = _bridge_state(bridge_url) or state
@@ -244,22 +271,34 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             elif reason == "aborted":
                 summary["stop_reason"] = (_provider_admission_stop(harness) or {}).get("stop_reason", "aborted")
                 break
+            elif reason == "length_exhausted":
+                summary["stop_reason"] = "length_truncation"
+                break
             changed, parse_errors = _scan_work(root, harness, summary["segments"], work_hashes)
             evolution_changes += changed
             evolution_errors += len(parse_errors)
-            if end.get("actions"):
+            activity = _classify_segment_activity(end, segment_rows, changed, len(parse_errors))
+            if activity == "acted":
                 idle_segments = 0
-                idle_change_credit = False
-            elif changed > 0 and not parse_errors and not idle_change_credit:
-                idle_segments = max(0, idle_segments - 1)
-                idle_change_credit = True
+                consecutive_constructive = 0
+                consecutive_length = 0
+            elif activity == "length":
+                consecutive_length += 1
+                if consecutive_length >= max_length_recoveries:
+                    summary["stop_reason"] = "length_truncation"
+                    break
+            elif activity == "constructive" and consecutive_constructive < 2:
+                consecutive_constructive += 1
+                consecutive_length = 0
             else:
+                consecutive_length = 0
                 idle_segments += 1
             if idle_segments >= MAX_IDLE_SEGMENTS:
                 summary["stop_reason"] = "idle"
                 break
-            prompt = "Continue playing."
-            if idle_segments == MAX_IDLE_SEGMENTS - 1:
+            prompt = ("Your previous reply hit max output tokens before acting. Call python or reflect_component concisely now."
+                      if activity == "length" else "Continue playing.")
+            if activity != "length" and idle_segments == MAX_IDLE_SEGMENTS - 1:
                 prompt += "\nThis is the last idle segment before the run stops. Take an environment action if one is warranted."
             if parse_errors:
                 prompt += "\nThese files under work/ do not parse:\n" + "\n".join(parse_errors)
@@ -342,6 +381,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         requests["known_tokens_lower_bound"] += child_known
         requests["unknown_cost_attempts"] += sum(row.get("cost_status") != "reported" for row in child_usage)
         requests["complete_cost_known"] = requests["unknown_cost_attempts"] == 0
+    comp_stats_path = harness / "components" / "stats.json"
+    comp_stats = json.loads(comp_stats_path.read_text(encoding="utf-8")) if comp_stats_path.is_file() else {}
     summary.update({
         "actions": budget.get("total_used"), "levels_completed": state.get("levels_completed"), "win_levels": state.get("win_levels"),
         "final_state": state.get("state"), "wall_seconds": round(time.monotonic() - started, 1),
@@ -352,6 +393,20 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                    "errors": sum(1 for row in calls if row["error"]), "kernel_restarts": sum(1 for row in calls if row["kernel_restarted"]),
                    "stop_reasons": dict(Counter(row["stop_reason"] for row in calls if row["stop_reason"])),
                    "mean_ms": round(sum(row["ms"] for row in calls) / len(calls)) if calls else None},
+        "components": {
+            "changes": sum(1 for r in rows if r.get("kind") == "component_change"),
+            "reads": sum(1 for r in rows if r.get("kind") == "read_component"),
+            "tools_published": sum(1 for r in rows if r.get("kind") == "tool_published"),
+            "tool_publish_failed": sum(1 for r in rows if r.get("kind") == "tool_publish_failed"),
+            "bound_invocations": sum(1 for r in rows if r.get("kind") == "bound_invocation"),
+            "bound_ok": sum(1 for r in rows if r.get("kind") == "bound_invocation" and r.get("ok") is True),
+            "live_injected": sum(1 for r in rows if r.get("kind") == "live_injected"),
+            "stats": comp_stats,
+        },
+        "subagents": {"consult_ok": sum(1 for r in rows if r.get("kind") == "consult" and r.get("ok") is True),
+                      "consult_failed": sum(1 for r in rows if r.get("kind") == "consult" and r.get("ok") is False),
+                      "child_tokens_lower_bound": child_known},
+        "length_truncations": sum(1 for r in rows if r.get("kind") == "length_truncation"),
         "evictions": {"count": len(evictions), "tokens_removed": sum(row["tokens_removed"] for row in evictions)},
         "folds": sum(row["parts"] for row in rows if row.get("kind") == "fold"),
         "compactions": sum(1 for row in rows if row.get("kind") == "compact"),
@@ -384,18 +439,22 @@ def main() -> None:
     parser.add_argument("--provider-extension", type=Path)
     parser.add_argument("--agent-dir", type=Path)
     parser.add_argument("--thinking")
+    parser.add_argument("--max-output-tokens", type=int)
     parser.add_argument("--max-actions", type=int)
     parser.add_argument("--max-reported-tokens", type=int)
     parser.add_argument("--wall-seconds", type=float, default=3600.0)
     parser.add_argument("--segment-seconds", type=float, default=1200.0)
+    parser.add_argument("--no-image", action="store_true")
     parser.add_argument("--fresh-level-session", action="store_true")
     parser.add_argument("--dotenv-root", type=Path, default=PROJECT_ROOT)
     args = parser.parse_args()
+    extension_env = {"ARC_LAYERED_NO_IMAGE": "1"} if args.no_image else None
     path = run_arc_layered_e2e(args.root, game=args.game, arc_root=args.arc_root, pi_provider=args.provider, pi_model=args.model,
                                config=args.config, profile=args.profile, provider_extension=args.provider_extension, agent_dir=args.agent_dir,
                                thinking=args.thinking, max_actions=args.max_actions, max_reported_tokens=args.max_reported_tokens,
-                               wall_seconds=args.wall_seconds, segment_seconds=args.segment_seconds,
-                               fresh_level_session=args.fresh_level_session, dotenv_root=args.dotenv_root)
+                               wall_seconds=args.wall_seconds, segment_seconds=args.segment_seconds, extension_env=extension_env,
+                               fresh_level_session=args.fresh_level_session, dotenv_root=args.dotenv_root,
+                               max_output_tokens=args.max_output_tokens)
     summary = json.loads(path.read_text(encoding="utf-8"))
     print(json.dumps({key: summary.get(key) for key in ("stop_reason", "segments", "actions", "levels_completed", "requests",
                                                          "reported_tokens", "evolution", "sessions", "error")}, ensure_ascii=False))
