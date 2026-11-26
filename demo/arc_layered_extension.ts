@@ -754,16 +754,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         consecutiveLengthStops = 0;
         const state = python.state(), used = consultsByLevel.get(state.level) ?? 0;
         if (used >= 2) return { details: {}, isError: true, content: [{ type: "text", text: "consult limit: two per level" }] };
-        const role = params.name === "reframer" ? "Give two mutually exclusive explanations and one discriminating next probe. Cite observed facts."
+        const role = params.name === "reframer"
+          ? "Give two mutually exclusive explanations and one discriminating next probe. Cite observed facts. Keep reasoning brief and answer in <= 200 words."
           : components.current("subagent", params.name)?.body;
         if (!role || !ctx.model) return { details: {}, isError: true, content: [{ type: "text", text: "unknown subagent or no model selected" }] };
         consultsByLevel.set(state.level, used + 1);
         log("consult", { name: params.name, level: state.level, step: state.step, attempted: true });
-        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 30000);
+        const consultTimeoutMs = Number(process.env.ARC_LAYERED_CONSULT_TIMEOUT_MS ?? 90000);
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), consultTimeoutMs);
         const abort = () => controller.abort(); signal?.addEventListener("abort", abort, { once: true });
         const started = Date.now();
         let usageRecorded = false;
-        const consultMaxTokens = Number(process.env.ARC_LAYERED_CONSULT_OUTPUT_TOKENS ?? 1500);
+        const consultMaxTokens = Number(process.env.ARC_LAYERED_CONSULT_OUTPUT_TOKENS ?? Math.max(options.outputTokens || 4096, 4096));
         try {
           const frame = state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n");
           const memories = components.list("memory");
@@ -779,13 +781,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             systemPrompt: role, messages: [{ role: "user", content: [{ type: "text", text: briefing }], timestamp: Date.now() }], tools: [] } as any,
             { signal: controller.signal, maxTokens: consultMaxTokens } as any).result();
           const answer = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").trim();
+          const thinkingChars = (reply.content ?? []).filter((part: any) => part.type === "thinking").map((part: any) => String(part.thinking ?? part.text ?? "")).join("").length;
           const ok = reply.stopReason !== "error" && reply.stopReason !== "aborted" && Boolean(answer);
           write("usage.jsonl", { decision, kind: "subagent", name: params.name, model: ctx.model.id,
             ...usageRecord(reply), ms: Date.now() - started, stop_reason: reply.stopReason });
           usageRecorded = true;
           components.recordInvocation("subagent", params.name, state.level, state.step,
             { ok, witness: ok ? undefined : `L${state.level} s${state.step} consult(${params.name}): ${reply.errorMessage ?? (answer ? reply.stopReason : `empty output (${reply.stopReason})`)}` });
-          log("consult", { name: params.name, level: state.level, step: state.step, ok, ms: Date.now() - started, stop_reason: reply.stopReason });
+          log("consult", { name: params.name, level: state.level, step: state.step, ok, ms: Date.now() - started,
+            stop_reason: reply.stopReason, text_chars: answer.length, thinking_chars: thinkingChars, max_tokens: consultMaxTokens });
           if (!ok) throw Error(reply.errorMessage ?? (answer ? String(reply.stopReason) : `empty output at stopReason=${reply.stopReason}`));
           const finalAnswer = reply.stopReason === "length" ? `${answer}\n[truncated at ${consultMaxTokens} tokens]` : answer;
           return { details: {}, content: [{ type: "text", text: finalAnswer.slice(0, 6000) }] };
