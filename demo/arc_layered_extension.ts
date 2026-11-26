@@ -760,14 +760,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         if (!role || !ctx.model) return { details: {}, isError: true, content: [{ type: "text", text: "unknown subagent or no model selected" }] };
         consultsByLevel.set(state.level, used + 1);
         log("consult", { name: params.name, level: state.level, step: state.step, attempted: true });
-        const consultTimeoutMs = Number(process.env.ARC_LAYERED_CONSULT_TIMEOUT_MS ?? 90000);
+        const consultTimeoutMs = Number(process.env.ARC_LAYERED_CONSULT_TIMEOUT_MS ?? 120000);
         const controller = new AbortController(), timer = setTimeout(() => controller.abort(), consultTimeoutMs);
         const abort = () => controller.abort(); signal?.addEventListener("abort", abort, { once: true });
         const started = Date.now();
         let usageRecorded = false;
-        const consultMaxTokens = Number(process.env.ARC_LAYERED_CONSULT_OUTPUT_TOKENS ?? Math.max(options.outputTokens || 4096, 4096));
+        const parentThinking = typeof (pi as any).getThinkingLevel === "function" ? (pi as any).getThinkingLevel() : undefined;
+        const consultMaxTokens = process.env.ARC_LAYERED_CONSULT_OUTPUT_TOKENS
+          ? Number(process.env.ARC_LAYERED_CONSULT_OUTPUT_TOKENS)
+          : (options.outputTokens || (ctx.model as any).maxTokens || undefined);
         try {
-          const frame = state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n");
           const memories = components.list("memory");
           const falsifiedParts = memories.flatMap(item => {
             const match = /(?:^|\n)(?:#+\s*)?Falsified[^\n]*(?:\n(?!(?:#+\s*)?(?:Confirmed|Competing|Next)\b)[^\n]*)*/i.exec(item.body);
@@ -776,10 +778,21 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           const falsified = (falsifiedParts.join("\n") || memories.map(item => `[${item.name}] ${item.body}`).join("\n")).slice(0, 800);
           const trajectory = params.include_trajectory === false ? "" : compressedTrajectory(levelSteps).slice(-900);
           const causal = state.causal_briefing ? `Causal evidence:\n${state.causal_briefing}\n` : "";
-          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified}\n${causal}Trajectory: ${trajectory}\nFrame:\n${frame}`.slice(0, 9000);
+          const useImage = !options.noImage && Array.isArray(state.frame) && state.frame.length > 0 && Array.isArray(state.frame[0]) && state.frame[0].length > 0;
+          const textFrame = useImage ? "" : `Frame:\n${state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n")}`;
+          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified}\n${causal}Trajectory: ${trajectory}${textFrame ? `\n${textFrame}` : "\nThe attached image shows the current frame."}`.slice(0, 9000);
+          const userContent: Content = [{ type: "text", text: briefing }, ...(useImage ? [{
+            type: "image" as const, mimeType: "image/png",
+            data: framePng(state.frame, options.scale, options.gridLines).toString("base64"),
+          }] : [])];
+          const streamOpts: Record<string, unknown> = {
+            signal: controller.signal,
+            ...(consultMaxTokens ? { maxTokens: consultMaxTokens } : {}),
+            ...(parentThinking && parentThinking !== "off" ? { reasoning: parentThinking } : {}),
+          };
           const reply: any = await ctx.modelRegistry.streamSimple(ctx.model, {
-            systemPrompt: role, messages: [{ role: "user", content: [{ type: "text", text: briefing }], timestamp: Date.now() }], tools: [] } as any,
-            { signal: controller.signal, maxTokens: consultMaxTokens } as any).result();
+            systemPrompt: role, messages: [{ role: "user", content: userContent, timestamp: Date.now() }], tools: [] } as any,
+            streamOpts as any).result();
           const answer = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").trim();
           const thinkingChars = (reply.content ?? []).filter((part: any) => part.type === "thinking").map((part: any) => String(part.thinking ?? part.text ?? "")).join("").length;
           const ok = reply.stopReason !== "error" && reply.stopReason !== "aborted" && Boolean(answer);
@@ -789,9 +802,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           components.recordInvocation("subagent", params.name, state.level, state.step,
             { ok, witness: ok ? undefined : `L${state.level} s${state.step} consult(${params.name}): ${reply.errorMessage ?? (answer ? reply.stopReason : `empty output (${reply.stopReason})`)}` });
           log("consult", { name: params.name, level: state.level, step: state.step, ok, ms: Date.now() - started,
-            stop_reason: reply.stopReason, text_chars: answer.length, thinking_chars: thinkingChars, max_tokens: consultMaxTokens });
+            stop_reason: reply.stopReason, text_chars: answer.length, thinking_chars: thinkingChars,
+            max_tokens: consultMaxTokens ?? null, thinking: parentThinking ?? null, image: useImage });
           if (!ok) throw Error(reply.errorMessage ?? (answer ? String(reply.stopReason) : `empty output at stopReason=${reply.stopReason}`));
-          const finalAnswer = reply.stopReason === "length" ? `${answer}\n[truncated at ${consultMaxTokens} tokens]` : answer;
+          const finalAnswer = reply.stopReason === "length" ? `${answer}\n[truncated at ${consultMaxTokens ?? "model"} tokens]` : answer;
           return { details: {}, content: [{ type: "text", text: finalAnswer.slice(0, 6000) }] };
         } catch (error) {
           if (!usageRecorded) {

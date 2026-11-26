@@ -118,7 +118,7 @@ test("a conforming work library function is published and bound", async () => {
 });
 
 test("consult uses the parent model once without action tools and enforces the level limit", async () => {
-  const { handlers, tools, rows } = setup({ harnessProfile: true });
+  const { handlers, tools, rows } = setup({ harnessProfile: true, outputTokens: 4096 });
   await handlers.before_agent_start({});
   await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "notes", body: "Confirmed: x\nFalsified: UP does nothing" });
   const model = { id: "same-model" };
@@ -130,6 +130,7 @@ test("consult uses the parent model once without action tools and enforces the l
       assert.equal(selected, model);
       assert.deepEqual(input.tools, []);
       assert.equal(options.maxTokens, 4096);
+      assert.equal(input.messages[0].content.some((p: any) => p.type === "image"), true);
       assert.match(input.messages[0].content[0].text, /Falsified: \[notes\] Falsified: UP does nothing/);
       return { result: async () => ({ content: [{ type: "text", text: "two explanations" }], stopReason: "stop",
         usage: { input: 30, output: 10, totalTokens: 40 } }) };
@@ -604,21 +605,23 @@ test("stall includes effort/progress line and length truncation performs bounded
   assert.equal(rows("segment_end").at(-1).reason, "length_exhausted");
 });
 
-test("consult omits reasoning flag, includes causal_briefing, and rejects empty length output", async () => {
-  const { handlers, tools, game } = setup({ harnessProfile: true });
+test("consult inherits noImage modality, includes causal_briefing, and rejects empty length output", async () => {
+  const { handlers, tools, game } = setup({ harnessProfile: true, noImage: true });
   game.causal_briefing = "RIGHT x4: 2 cells\nInvariant: action-invariant rows [63]";
   await handlers.before_agent_start({});
   let seenOptions: any;
-  let seenBriefing = "";
-  const ctx: any = { model: { id: "same-model" }, modelRegistry: {
+  let seenContent: any[] = [];
+  const ctx: any = { model: { id: "same-model", maxTokens: 8192 }, modelRegistry: {
     streamSimple: (_m: any, input: any, opts: any) => {
       seenOptions = opts;
-      seenBriefing = input.messages[0].content[0].text;
+      seenContent = input.messages[0].content;
       return { result: async () => ({ content: [], stopReason: "length", usage: { input: 10, output: 1500, totalTokens: 1510 } }) };
     } } };
   const res = await tools.consult.execute("id", { name: "reframer", question: "Why no progress?" }, undefined, undefined, ctx);
   assert.equal("reasoning" in seenOptions, false);
-  assert.match(seenBriefing, /Causal evidence:\nRIGHT x4/);
+  assert.equal(seenOptions.maxTokens, 8192);
+  assert.equal(seenContent.some((p: any) => p.type === "image"), false);
+  assert.match(seenContent[0].text, /Causal evidence:\nRIGHT x4[\s\S]*Frame:/);
   assert.equal(res.isError, true);
   assert.match(textOf(res.content), /empty output at stopReason=length/);
 });
