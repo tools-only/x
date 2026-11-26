@@ -4,6 +4,8 @@
 
 ## layer 路径纠正（本分支主方案）
 
+2026-11-26 用户选择：只保留 layer 及其相关机制；Python namespace 固定跨调用持久。已移除 `ARC_LAYERED_NAMESPACE_RESET` 分支及对应 guest 参数。清理其余 ARC 入口前需先拆出 layer runner 正在从 `arc_thin_e2e.py` 和 `arc_agi_3_e2e.py` 导入的 bridge、Pi 与预算公共函数；`arc_layered_extension.ts` 还直接使用 `arc_thin_ch_view.ts` 和 `arc_thin_requests.ts`。这些是当前依赖，不表示要保留 thin 的 Agent 路线。
+
 此前记录和交付结论针对 `arc_thin_extension.ts` / SelfRoot，不能代表主方案 `arc_layered_extension.ts`。主方案已通过 `arc_layered_prelude.py` 把 `current_frame`、`history`、`valid_actions` 等变量绑定在常驻 CPython namespace；`submit_actions` 在同一个 Python cell 中经 bridge 行动并刷新变量。Pi 模型仍在 Python 进程之外；需要执行任意 Python 读取或计算时仍有一次 `python` 工具调用，这与 Duck 的模型/沙箱边界一致。消息中直接附带状态概览和图像，可不调用工具读取这些已呈现内容；不能把“模型直接读进程变量”作为已实现能力。
 
 实际缺口是行动后的决策生命周期：layer 原先在普通行动后 `steer` 新状态到同一 Pi turn，直到关卡变化或软限制才结束。现在每个有行动的 Python cell 都 `terminate` 当前 turn，runner 在同一 Pi session 中开启下一决策，把上一批行动和最新状态送入下一条消息。零行动 cell 保持在当前决策内；cell 内多步 `submit_actions` 与即时变量刷新保持可用。

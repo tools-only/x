@@ -3,7 +3,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { TASK_PYTHON_FORMAT, taskPythonLimits, taskPythonRuntimeIdentity } from "./pi_task_python.ts";
 import { PythonKernel, type KernelRequest } from "./pi_task_python_kernel.ts";
 
-export type LayeredConfig = { numericGrid: boolean; namespaceResetPerCall: boolean; undo: boolean;
+export type LayeredConfig = { numericGrid: boolean; undo: boolean;
   timeoutMs: number; outputChars: number; maxActionsPerCall: number; workDir: string; competition: boolean;
   skipNoops?: boolean; expect?: boolean; graph?: boolean; miniReview?: { maxPerLevel?: number; repeatTries?: number;
     repeatDeaths?: number } };
@@ -275,7 +275,7 @@ export class LayeredPython {
     this.batchHadExpect = false;
     const claimSources = this.scanClaims();
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
-      reset_namespace: this.config.namespaceResetPerCall, numeric_grid: this.config.numericGrid,
+      numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
       harness_state: this.harnessState(),

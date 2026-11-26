@@ -25,7 +25,7 @@ class FakeBridge {
   }
 }
 
-const config = (extra: Partial<LayeredConfig> = {}): LayeredConfig => ({ numericGrid: true, namespaceResetPerCall: false, undo: false,
+const config = (extra: Partial<LayeredConfig> = {}): LayeredConfig => ({ numericGrid: true, undo: false,
   timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(mkdtempSync(join(tmpdir(), "layered-")), "work"),
   competition: false, expect: true, graph: true, ...extra });
 
@@ -123,17 +123,17 @@ test("the host back-tests work/model.py and reports the hit rate", async () => {
   assert.match(next.text, /^2 True/);
 });
 
-test("namespace persists by default and resets per call when configured", async () => {
+test("namespace persists across calls and actions", async () => {
   const kept = await session();
   await kept.python.run("x = 41");
   const persisted = await kept.python.run("x + 1");
   kept.python.close();
   assert.match(persisted.text, /^42/);
-  const fresh = await session({ namespaceResetPerCall: true, numericGrid: false });
-  await fresh.python.run("x = 41; submit_actions('UP')");
-  const reset = await fresh.python.run("print('x' in globals(), len(history), len(transitions))\ntry:\n    current_frame.grid\nexcept AttributeError:\n    print('no grid')");
-  fresh.python.close();
-  assert.match(reset.text, /^False 2 1\nno grid/);
+  const acted = await session({ numericGrid: false });
+  await acted.python.run("x = 41; submit_actions('UP')");
+  const next = await acted.python.run("print(x, len(history), len(transitions))\ntry:\n    current_frame.grid\nexcept AttributeError:\n    print('no grid')");
+  acted.python.close();
+  assert.match(next.text, /^41 2 1\nno grid/);
 });
 
 test("segmentation, diff and frames_of", async () => {

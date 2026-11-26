@@ -22,7 +22,7 @@ const ready = await new Promise<any>(done => createInterface({ input: bridge.std
   .on("line", line => { if (line.startsWith("{")) done(JSON.parse(line)); }));
 if (ready.status !== "ready") throw new Error(JSON.stringify(ready));
 const base = `http://127.0.0.1:${ready.port}`;
-const python = new LayeredPython(new BridgeClient(base, token), { numericGrid: true, namespaceResetPerCall: false, undo: false,
+const python = new LayeredPython(new BridgeClient(base, token), { numericGrid: true, undo: false,
   timeoutMs: 30000, outputChars: 4096, maxActionsPerCall: 16, workDir: join(out, "work"), competition: false,
   expect: true, graph: true, review: true, reviewStuckSteps: 32 });
 const log: unknown[] = [{ init: await python.init() }];

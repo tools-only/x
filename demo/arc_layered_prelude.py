@@ -633,7 +633,7 @@ def _cell(req):
         _T.clear()
     for raw in req["new_history"]:
         _append(raw, req["numeric_grid"])
-    fresh = _S["ns"] is None or req["reset_namespace"]
+    fresh = _S["ns"] is None
     if fresh:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
