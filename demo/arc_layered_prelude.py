@@ -609,15 +609,15 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             lines[-1] += "  <- no interior change; batch stopped (stop_on_noop=False to continue)"
             reason = "noop"
             break
-        if label == consec_same_label and not fact["new"]:
+        if label == consec_same_label and not fact["changed"]:
             consec_same_no_new += 1
         else:
             consec_same_label = label
-            consec_same_no_new = 0 if fact["new"] else 1
+            consec_same_no_new = 0 if fact["changed"] else 1
         if not force and expect is None and call["action"] != "RESET" and consec_same_no_new >= 4:
             inv = _action_invariant_summary()
             inv_note = (" | " + inv) if inv else ""
-            lines[-1] += "  <- %d identical actions without a new state or expect=; batch stopped (pass expect=... or force=True to override%s)" % (
+            lines[-1] += "  <- %d identical actions without interior change or expect=; batch stopped (pass expect=... or force=True to override%s)" % (
                 consec_same_no_new, inv_note)
             reason = "unchecked_repeat"
             break
@@ -719,27 +719,29 @@ def _action_invariant_summary(limit=36):
     if not _T or not _H:
         return ""
     level = _H[-1]["raw"]["level"]
-    by_kind = {}
+    by_kind, by_label = {}, {}
     total = 0
     for t in _T[-limit:]:
         if t["action"] == "RESET" or t["before"]["raw"]["level"] != level:
             continue
         before, after = t["before"]["grids"][-1], t["after"]["grids"][-1]
-        rows = {r for r in range(len(after)) for c in range(len(after[r])) if before[r][c] != after[r][c]}
-        if not rows:
+        tiles = {(r // 4, c // 4) for r in range(len(after)) for c in range(len(after[r])) if before[r][c] != after[r][c]}
+        if not tiles:
             continue
         kind = t["action"].split("(")[0]
-        entry = by_kind.setdefault(kind, {"rows": set(), "n": 0})
-        entry["rows"].update(rows)
-        entry["n"] += 1
+        for store, key in ((by_kind, kind), (by_label, t["action"])):
+            store.setdefault(key, set()).update(tiles)
         total += 1
-    if len(by_kind) < 2 or total < 3:
+    groups = by_kind if len(by_kind) >= 2 else by_label
+    if len(groups) < 2 or total < 3:
         return ""
-    shared = sorted(set.intersection(*(d["rows"] for d in by_kind.values())))
-    if not shared or len(shared) > 6:
+    shared = sorted(set.intersection(*groups.values()))
+    if not shared or len(shared) > 8:
         return ""
-    return "action-invariant rows %s changed across %d distinct action types (%s)" % (
-        shared, len(by_kind), ", ".join(sorted(by_kind)))
+    boxes = ["(%d..%d,%d..%d)" % (tr * 4, tr * 4 + 3, tc * 4, tc * 4 + 3) for tr, tc in shared[:4]]
+    more = " (+%d)" % (len(shared) - 4) if len(shared) > 4 else ""
+    return "action-invariant regions [%s]%s changed across %d distinct actions" % (
+        ", ".join(boxes), more, len(groups))
 
 
 def _causal_briefing(limit=36):
