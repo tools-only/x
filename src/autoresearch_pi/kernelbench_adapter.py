@@ -51,7 +51,7 @@ def prepare_kernelbench_task(root: Path, *, task: str, dream_root: Path) -> Path
 
 def evaluate_kernelbench_candidate(
     root: Path, *, server_url: str = "http://127.0.0.1:8010", timeout: float = 3000.0,
-    backend: str = "cuda",
+    backend: str = "cuda", mode: str = "benchmark", include_reference_timing: bool = False,
 ) -> Path:
     """Submit one candidate; keep transport failure distinct from a wrong kernel."""
     root = root.resolve()
@@ -64,6 +64,8 @@ def evaluate_kernelbench_candidate(
             raise ValueError(f"KernelBench task source changed: {filename}")
     if backend not in {"cuda", "triton"}:
         raise ValueError("backend must be cuda or triton")
+    if mode not in {"check", "benchmark"}:
+        raise ValueError("mode must be check or benchmark")
     candidate = root / "candidate.py"
     source = candidate.read_text(encoding="utf-8")
     if not source.strip():
@@ -83,12 +85,13 @@ def evaluate_kernelbench_candidate(
         "backend": backend,
         "precision": "fp32",
         "timing_method": "cuda_event",
-        "num_correct_trials": 5,
-        "num_perf_trials": 100,
+        "num_correct_trials": 1 if mode == "check" else 5,
+        "num_perf_trials": 1 if mode == "check" else 100,
         "seed_num": 42,
         "gpu_id": 0,
         "verbose": False,
-        "include_reference_timing": False,
+        "measure_performance": mode == "benchmark",
+        "include_reference_timing": include_reference_timing and mode == "benchmark",
         "ref_num_trials": 100,
     }
     request = urllib.request.Request(url, json.dumps(request_data).encode("utf-8"), {"Content-Type": "application/json"})
@@ -121,4 +124,22 @@ def evaluate_kernelbench_candidate(
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     with (root / "evaluations.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(summary, ensure_ascii=False) + "\n")
+    if mode == "benchmark" and summary["evaluation_status"] == "completed":
+        evaluation = summary["benchmark_evaluation"]
+        metadata = evaluation.get("metadata", {})
+        latency = metadata.get("latency_ms")
+        if evaluation.get("compiled") and evaluation.get("correctness") and isinstance(latency, (int, float)) and latency > 0:
+            best_path = root / "best.json"
+            best = json.loads(best_path.read_text(encoding="utf-8")) if best_path.is_file() else None
+            comparable = best and best.get("protocol", {}).get("backend") == backend
+            if not comparable or latency < best["latency_ms"]:
+                best_path.write_text(json.dumps({
+                    "task": task,
+                    "candidate_sha256": candidate_hash,
+                    "candidate_snapshot": str(snapshot.relative_to(root)),
+                    "latency_ms": latency,
+                    "speedup_vs_reference": metadata.get("speedup_vs_reference"),
+                    "protocol": {"backend": backend, "precision": "fp32", "timing_method": "cuda_event"},
+                    "evaluation": "evaluation.json",
+                }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return output

@@ -325,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
     kernel_eval.add_argument("--server-url", default="http://127.0.0.1:8010")
     kernel_eval.add_argument("--timeout", type=float, default=3000.0)
     kernel_eval.add_argument("--backend", choices=("cuda", "triton"), default="cuda")
+    kernel_eval.add_argument("--mode", choices=("check", "benchmark"), default="benchmark")
+    kernel_eval.add_argument("--reference-timing", action="store_true", help="also measure the PyTorch Eager reference")
     args = parser.parse_args(argv)
     if args.jev_routing is not None:
         os.environ[JEV_ROUTING_ENV] = args.jev_routing
@@ -612,7 +614,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "kernelbench-eval":
         if args.timeout <= 0:
             parser.error("--timeout must be positive")
-        path = evaluate_kernelbench_candidate(args.root, server_url=args.server_url, timeout=args.timeout, backend=args.backend)
+        path = evaluate_kernelbench_candidate(
+            args.root, server_url=args.server_url, timeout=args.timeout, backend=args.backend,
+            mode=args.mode, include_reference_timing=args.reference_timing,
+        )
         value = json.loads(path.read_text(encoding="utf-8"))
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return 2 if value["evaluation_status"] == "infrastructure_error" else 0
