@@ -341,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     ale_pi.add_argument("--model", default="qwen3.8-27b")
     ale_pi.add_argument("--full", action="store_true")
     ale_pi.add_argument("--max-public", type=int, default=8)
+    ale_pi.add_argument("--max-case", type=int, default=32)
+    ale_pi.add_argument("--harness-profile", choices=("A", "B1", "B2"), default="A")
     ale_pi.add_argument("--max-output-tokens", type=int, default=12000)
     ale_pi.add_argument("--wall-seconds", type=float, default=1800.0)
     args = parser.parse_args(argv)
@@ -654,8 +656,8 @@ def main(argv: list[str] | None = None) -> int:
         root = (args.root or paths.runs_dir / f"ale-bench-pi-{args.problem_id}").resolve()
         artifact = run_ale_bench_pi_e2e(
             root, problem_id=args.problem_id, prompt=args.prompt, provider=args.provider,
-            model=args.model, lite_version=not args.full, max_public=args.max_public,
-            max_output_tokens=args.max_output_tokens, wall_seconds=args.wall_seconds,
+            model=args.model, lite_version=not args.full, max_public=args.max_public, max_case=args.max_case,
+            max_output_tokens=args.max_output_tokens, wall_seconds=args.wall_seconds, harness_profile=args.harness_profile,
         )
         print(artifact.read_text(encoding="utf-8"), end="")
         return 0

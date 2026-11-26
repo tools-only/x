@@ -19,14 +19,14 @@ from .project import load_project_dotenv
 
 def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: str = "yibu",
                          model: str = "qwen3.8-27b", lite_version: bool = True,
-                         max_public: int = 8, max_output_tokens: int = 12000,
-                         wall_seconds: float = 1800.0) -> Path:
+                         max_public: int = 8, max_case: int = 32, max_output_tokens: int = 12000,
+                         wall_seconds: float = 1800.0, harness_profile: str = "A") -> Path:
     root = root.resolve()
     if root.exists() and any(root.iterdir()):
         raise ValueError("ALE-Bench Pi run root must be empty")
     root.mkdir(parents=True, exist_ok=True)
     env = load_project_dotenv(Path(__file__).resolve().parents[2])
-    bridge_command = [str(Path(os.sys.executable)), "-m", "autoresearch_pi.ale_bench_bridge_server", "--root", str(root), "--problem-id", problem_id, "--max-public", str(max_public)]
+    bridge_command = [str(Path(os.sys.executable)), "-m", "autoresearch_pi.ale_bench_bridge_server", "--root", str(root), "--problem-id", problem_id, "--max-public", str(max_public), "--max-case", str(max_case)]
     if not lite_version:
         bridge_command.append("--full")
     bridge = subprocess.Popen(bridge_command, cwd=str(root), env={**env, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}, stdout=subprocess.DEVNULL, stderr=(root / "bridge-stderr.log").open("w", encoding="utf-8"), text=True)
@@ -45,7 +45,7 @@ def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: 
         node, cli = _resolve_pi_cli()
         pi_env = {**env, "PI_CODING_AGENT_DIR": str(agent_dir), "ALE_RUN_ROOT": str(root),
                   "ALE_BRIDGE_URL": f"http://127.0.0.1:{ready['port']}", "ALE_BRIDGE_TOKEN": ready["token"],
-                  "ALE_PROBLEM_ID": problem_id, "ALE_MAX_OUTPUT_TOKENS": str(max_output_tokens)}
+                  "ALE_PROBLEM_ID": problem_id, "ALE_MAX_OUTPUT_TOKENS": str(max_output_tokens), "ALE_HARNESS_PROFILE": harness_profile}
         extension = Path(__file__).resolve().parents[2] / "demo" / "ale_bench_pi_extension.ts"
         command = [node, cli, "--mode", "rpc", "--provider", provider, "--model", model,
                    "--session", str(root / "session.jsonl"), "--no-extensions", "--no-skills", "--no-prompt-templates",

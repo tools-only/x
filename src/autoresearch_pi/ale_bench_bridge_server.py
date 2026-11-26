@@ -18,10 +18,12 @@ from .ale_bench_bridge import AleBenchBridge, write_artifact
 
 
 class _State:
-    def __init__(self, root: Path, problem_id: str, lite_version: bool, max_public: int) -> None:
-        self.root, self.problem_id, self.lite_version, self.max_public = root, problem_id, lite_version, max_public
+    def __init__(self, root: Path, problem_id: str, lite_version: bool, max_public: int, max_case: int) -> None:
+        self.root, self.problem_id, self.lite_version = root, problem_id, lite_version
+        self.max_public, self.max_case = max_public, max_case
         self.bridge = AleBenchBridge.start(problem_id, lite_version=lite_version)
         self.public_results: list[dict[str, Any]] = []
+        self.case_count = 0
         self.private_result: dict[str, Any] | None = None
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Lock()
@@ -32,13 +34,24 @@ class _State:
                 return {"problem_id": self.problem_id, "lite_version": self.lite_version,
                         "public_count": len(self.public_results), "max_public": self.max_public,
                         "private_evaluated": self.private_result is not None}
+            if path == "/problem":
+                problem = getattr(self.bridge.session, "problem", None)
+                metadata = getattr(problem, "metadata", None)
+                constraints = getattr(problem, "constraints", None)
+                return {"problem_id": self.problem_id,
+                        "statement": str(getattr(problem, "statement", "")),
+                        "metadata": {name: getattr(metadata, name) for name in ("title", "problem_type", "score_type") if hasattr(metadata, name)},
+                        "constraints": {name: getattr(constraints, name) for name in ("time_limit", "memory_limit") if hasattr(constraints, name)}}
             if path in {"/public_eval", "/case_eval"}:
-                if len(self.public_results) >= self.max_public:
+                if path == "/public_eval" and len(self.public_results) >= self.max_public:
                     raise RuntimeError("public evaluation budget exhausted")
+                if path == "/case_eval" and self.case_count >= self.max_case:
+                    raise RuntimeError("case evaluation budget exhausted")
                 code = str(body.get("code", ""))
                 language = str(body.get("code_language", "cpp23"))
                 result = self.bridge.public_eval(code, language) if path == "/public_eval" else self.bridge.case_eval(str(body.get("input_str", "")), code, language)
-                self.public_results.append(result)
+                if path == "/case_eval": self.case_count += 1
+                else: self.public_results.append(result)
                 return result
             if path == "/private_eval":
                 if self.private_result is not None:
@@ -54,8 +67,8 @@ class _State:
             raise ValueError(f"unknown bridge path: {path}")
 
 
-def serve(root: Path, problem_id: str, lite_version: bool, max_public: int) -> None:
-    state = _State(root, problem_id, lite_version, max_public)
+def serve(root: Path, problem_id: str, lite_version: bool, max_public: int, max_case: int) -> None:
+    state = _State(root, problem_id, lite_version, max_public, max_case)
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
@@ -104,9 +117,10 @@ def main() -> int:
     parser.add_argument("--problem-id", required=True)
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--max-public", type=int, default=8)
+    parser.add_argument("--max-case", type=int, default=32)
     args = parser.parse_args()
     args.root.mkdir(parents=True, exist_ok=True)
-    serve(args.root, args.problem_id, not args.full, args.max_public)
+    serve(args.root, args.problem_id, not args.full, args.max_public, args.max_case)
     return 0
 
 

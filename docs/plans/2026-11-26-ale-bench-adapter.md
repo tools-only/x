@@ -38,6 +38,6 @@
 
 ## 交付决定
 
-- 已支持：Lite 十题校验、公开评测、case_eval 诊断、单次终态私有评测、脱敏 artifact、CLI，以及 Agent 回调驱动的有限公共评测演化、attempt 谱系和最佳源码选择。`cognitive_components.ts` 提供从 Qwen harness 抽出的版本化组件存储核。
-- 未支持：真实 Docker/HF 评测验证、上下文 evict/fold、consult、动态 `work/lib` 挂载、跨任务批处理和 leaderboard 访问。Pi 原生 extension coding loop 已接入，但尚未在真实 ALE-Bench 环境运行。`ale-bench-evolve` 的候选文件模式是接线诊断，不是自主模型实验。
+- 已支持：Lite 十题校验、公开评测、case_eval 诊断、单次终态私有评测、脱敏 artifact、CLI，以及 Agent 回调驱动的有限公共评测演化、attempt 谱系和最佳源码选择。`cognitive_components.ts` 提供版本化组件存储核、生命周期统计和失败见证。Pi extension 已接入组件读写、公开题面查询、独立 case 预算、attempt/best 记录、restore 原语和 A/B1/B2 profile 参数。
+- 未支持：真实 Docker/HF 评测验证、上下文 evict/fold、多 segment continuation、consult、动态 `work/lib` 自动发布、跨任务批处理和 leaderboard 访问。Pi 原生 extension coding loop 与组件存储接入已完成，但尚未在真实 ALE-Bench 环境运行。`ale-bench-evolve` 的候选文件模式是接线诊断，不是自主模型实验。
 - 剩余验证：在具备上游 Docker 与数据缓存的环境运行一个 Lite problem 的 Pi runner、public_eval 和 private_eval，确认版本兼容与资源限制。当前环境未提供 `ale_bench`、Docker 镜像或 Hugging Face 数据缓存，因此真实上游链路未验证。A 的 adapter/runtime 边界和 D 的 public/private context 连续性仍属于开放待办，本次只落实字段隔离和单一 Session artifact。
