@@ -25,7 +25,23 @@ def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: 
     if root.exists() and any(root.iterdir()):
         raise ValueError("ALE-Bench Pi run root must be empty")
     root.mkdir(parents=True, exist_ok=True)
-    env = load_project_dotenv(Path(__file__).resolve().parents[2])
+    project_root = Path(__file__).resolve().parents[2]
+    env_file = os.environ.get("ALE_ENV_FILE")
+    if env_file:
+        env_path = Path(env_file).expanduser().resolve()
+        env = load_project_dotenv(env_path.parent)
+    else:
+        env_path = project_root / ".env"
+        alternate = Path(r"D:\autoresearch_pi_project\.env")
+        if alternate.is_file():
+            env_path = alternate
+        env = load_project_dotenv(env_path.parent)
+    if env_path.is_file():
+        for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw_line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                env[key.strip()] = value.strip().strip("\"'")
     bridge_command = [str(Path(os.sys.executable)), "-m", "autoresearch_pi.ale_bench_bridge_server", "--root", str(root), "--problem-id", problem_id, "--max-public", str(max_public), "--max-case", str(max_case)]
     if not lite_version:
         bridge_command.append("--full")
@@ -49,6 +65,7 @@ def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: 
                   "ALE_PROBLEM_ID": problem_id, "ALE_MAX_OUTPUT_TOKENS": str(max_output_tokens), "ALE_HARNESS_PROFILE": harness_profile}
         extension = Path(__file__).resolve().parents[2] / "demo" / "ale_bench_pi_extension.ts"
         command = [node, cli, "--mode", "rpc", "--provider", provider, "--model", model,
+                   "--thinking", "low",
                    "--session", str(root / "session.jsonl"), "--no-extensions", "--no-skills", "--no-prompt-templates",
                    "--no-context-files", "--no-builtin-tools", "--extension", str(extension)]
         kernel = PiKernel(command, cwd=str(root), env=pi_env, timeout=120.0, deadline=time.monotonic() + wall_seconds).start()
