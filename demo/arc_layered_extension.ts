@@ -780,7 +780,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           const causal = state.causal_briefing ? `Causal evidence:\n${state.causal_briefing}\n` : "";
           const useImage = !options.noImage && Array.isArray(state.frame) && state.frame.length > 0 && Array.isArray(state.frame[0]) && state.frame[0].length > 0;
           const textFrame = useImage ? "" : `Frame:\n${state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n")}`;
-          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified}\n${causal}Trajectory: ${trajectory}${textFrame ? `\n${textFrame}` : "\nThe attached image shows the current frame."}`.slice(0, 9000);
+          const valid = (state.valid_actions ?? []).join(" ");
+          const budget = [
+            state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "",
+            state.budget_left !== undefined ? `run budget ${state.budget_left}` : "",
+          ].filter(Boolean).join(", ");
+          const stateLine = `State: level ${state.level}/${state.win_levels}, step ${state.step}, ${state.state}${budget ? `, ${budget}` : ""}\nValid actions (propose ONLY from this set): ${valid}`;
+          const briefing = `Question: ${params.question.slice(0, 500)}\n${stateLine}\nFalsified: ${falsified}\n${causal}Trajectory: ${trajectory}${textFrame ? `\n${textFrame}` : "\nThe attached image shows the current frame."}`.slice(0, 9000);
           const userContent: Content = [{ type: "text", text: briefing }, ...(useImage ? [{
             type: "image" as const, mimeType: "image/png",
             data: framePng(state.frame, options.scale, options.gridLines).toString("base64"),

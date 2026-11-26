@@ -131,6 +131,7 @@ test("consult uses the parent model once without action tools and enforces the l
       assert.deepEqual(input.tools, []);
       assert.equal(options.maxTokens, 4096);
       assert.equal(input.messages[0].content.some((p: any) => p.type === "image"), true);
+      assert.match(input.messages[0].content[0].text, /Valid actions \(propose ONLY from this set\): UP RESET/);
       assert.match(input.messages[0].content[0].text, /Falsified: \[notes\] Falsified: UP does nothing/);
       return { result: async () => ({ content: [{ type: "text", text: "two explanations" }], stopReason: "stop",
         usage: { input: 30, output: 10, totalTokens: 40 } }) };
