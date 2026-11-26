@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compactHistory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
+import { compactHistory, compressedTrajectory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
 
 const grid = Array.from({ length: 64 }, () => Array(64).fill(0));
 
@@ -43,6 +43,142 @@ test("the run opens with the replaced system prompt and a state message with an 
   assert.equal(opened.message.content[1].type, "image");
   assert.deepEqual(Object.keys(tool().parameters.properties), ["code"]);
   assert.deepEqual(handlers.session_before_compact(), { cancel: true });
+});
+
+test("text observation mode sends a complete frame and no PNG", async () => {
+  const { handlers, game, python, call } = setup({ noImage: true });
+  game.frame[0][0] = 3;
+  const opened = await handlers.before_agent_start({});
+  assert.equal(opened.message.content.length, 1);
+  assert.match(textOf(opened.message.content), /Frame 64x64:\n3/);
+  python.next = batch({ executed: 1, actions: ["UP"] });
+  game.frame = game.frame.map((row: number[]) => [...row]);
+  game.frame[0][0] = 4;
+  await call();
+  const next = await handlers.before_agent_start({});
+  assert.equal(next.message.content.length, 1);
+  assert.match(textOf(next.message.content), /Changed cells \(1\): 0,0:3→4/);
+});
+
+test("harness profile reflects memory and injects its active version", async () => {
+  const { handlers, tools } = setup({ harnessProfile: true });
+  assert.ok(tools.reflect_component);
+  assert.ok(tools.read_component);
+  assert.ok(tools.consult);
+  const first = await handlers.before_agent_start({});
+  assert.match(first.systemPrompt, /Five harness components/);
+  const saved = await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current", body: "H1: test next" });
+  assert.match(saved.content[0].text, /memory\/current v1/);
+  const read = await tools.read_component.execute("id", { kind: "memory", name: "current" });
+  assert.match(read.content[0].text, /H1: test next/);
+  const next = await handlers.before_agent_start({});
+  assert.match(textOf(next.message.content), /MEMORY current v1: H1: test next/);
+});
+
+test("context exposes current component revisions and skill index after an older state survives", async () => {
+  const { handlers, tools, rows } = setup({ harnessProfile: true });
+  await handlers.before_agent_start({});
+  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current", body: "first" });
+  await tools.reflect_component.execute("id", { op: "define", kind: "skill", name: "probe", body: "inspect once", summary: "single inspection" });
+  const old = (await handlers.before_agent_start({})).message;
+  await tools.reflect_component.execute("id", { op: "redefine", kind: "memory", name: "current", body: "revised" });
+  await tools.reflect_component.execute("id", { op: "redefine", kind: "skill", name: "probe", body: "inspect then act", summary: "act after inspection" });
+  const out = handlers.context({ messages: [old] }, { model: { contextWindow: 128000 } }).messages;
+  assert.match(textOf(out[0].content), /MEMORY current v2: revised/);
+  assert.match(textOf(out[0].content), /SKILLS: probe — act after inspection \(v2\)/);
+  assert.equal(rows("live_injected").filter(row => row.component_kind === "memory").at(-1).version, 2);
+});
+
+test("a conforming work library function is published and bound", async () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-tool-"));
+  mkdirSync(join(root, "work", "lib"), { recursive: true });
+  writeFileSync(join(root, "work", "lib", "count.py"), "def count(args):\n    return len(args)\n");
+  const { handlers, tools, python, rows } = setup({ root, harnessProfile: true });
+  await handlers.before_agent_start({});
+  assert.ok(tools.count);
+  assert.match(readFileSync(join(root, "harness", "components", "tool", "count", "v1.json"), "utf8"), /def count/);
+  const invoked = await tools.count.execute("id", { args: { a: 1 } });
+  assert.match(textOf(invoked.content), /ok/);
+  assert.equal(python.runs, 1);
+  assert.equal(rows("bound_invocation")[0].ok, true);
+  const failed = setup({ root: mkdtempSync(join(tmpdir(), "layered-failed-tool-")), harnessProfile: true });
+  mkdirSync(join(failed.root, "work", "lib"), { recursive: true });
+  writeFileSync(join(failed.root, "work", "lib", "broken.py"), "def broken(args):\n    raise ValueError('bad input')\n");
+  failed.python.run = async () => ({ text: "ValueError: bad input", error: "ValueError: bad input", acted: null, images: [], metrics: {}, truncated: false });
+  await failed.handlers.before_agent_start({});
+  assert.equal((await failed.tools.broken.execute("id", { args: {} })).isError, true);
+  assert.equal(failed.rows("bound_invocation")[0].ok, false);
+});
+
+test("consult uses the parent model once without action tools and enforces the level limit", async () => {
+  const { handlers, tools, rows } = setup({ harnessProfile: true });
+  await handlers.before_agent_start({});
+  const model = { id: "same-model" };
+  let calls = 0;
+  const ctx: any = { model, modelRegistry: {
+    getApiKeyAndHeaders: async () => ({ apiKey: "test", headers: {} }),
+    streamSimple: (selected: any, input: any, options: any) => {
+      calls += 1;
+      assert.equal(selected, model);
+      assert.deepEqual(input.tools, []);
+      assert.equal(options.maxTokens, 1500);
+      return { result: async () => ({ content: [{ type: "text", text: "two explanations" }], stopReason: "stop",
+        usage: { input: 30, output: 10, totalTokens: 40 } }) };
+    } } };
+  for (let i = 0; i < 2; i++) {
+    const result = await tools.consult.execute("id", { name: "reframer", question: "What changed?" }, undefined, undefined, ctx);
+    assert.match(result.content[0].text, /two explanations/);
+  }
+  const blocked = await tools.consult.execute("id", { name: "reframer", question: "Again" }, undefined, undefined, ctx);
+  assert.equal(blocked.isError, true);
+  assert.equal(calls, 2);
+  assert.equal(rows("consult").filter(row => row.ok).length, 2);
+  assert.deepEqual((await tools.consult.execute("id", { name: "reframer", question: "Again" }, undefined, undefined, ctx)).isError, true);
+});
+
+test("consult limit persists across a resumed session and can be disabled for B1", async () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-consult-"));
+  const first = setup({ root, harnessProfile: true });
+  await first.handlers.before_agent_start({});
+  const ctx: any = { model: { id: "same-model" }, modelRegistry: {
+    getApiKeyAndHeaders: async () => ({ apiKey: "test", headers: {} }),
+    streamSimple: () => ({ result: async () => ({ content: [], stopReason: "stop", usage: {} }) }) } };
+  await first.tools.consult.execute("id", { name: "reframer", question: "First" }, undefined, undefined, ctx);
+  const resumed = setup({ root, harnessProfile: true });
+  await resumed.handlers.before_agent_start({});
+  await resumed.tools.consult.execute("id", { name: "reframer", question: "Second" }, undefined, undefined, ctx);
+  assert.equal((await resumed.tools.consult.execute("id", { name: "reframer", question: "Third" }, undefined, undefined, ctx)).isError, true);
+  const b1 = setup({ harnessProfile: true, consult: false });
+  assert.equal(b1.tools.consult, undefined);
+  assert.ok(b1.tools.reflect_component);
+  assert.ok(b1.tools.read_component);
+});
+
+test("whole-level trajectory keeps first change, death and final steps within its cap", () => {
+  const steps = Array.from({ length: 50 }, (_, i) => ({ step: i + 1, action: "UP", tries: i, same: i > 0,
+    new: i === 0, death: i === 29, level_up: false, source: null, predict_off: null,
+    claims_failed: [], claims_held: [] })) as any;
+  const summary = compressedTrajectory(steps);
+  assert.ok(summary.length <= 3000);
+  assert.match(summary, /s1 UP/);
+  assert.match(summary, /s30 UP.*DEATH/);
+  assert.match(summary, /s48 UP/);
+  assert.match(summary, /s50 UP/);
+  assert.match(summary, /s3–s29/);
+  assert.match(summary, /no-new-interior-state/);
+  assert.match(summary, /unchanged-frame/);
+});
+
+test("long trajectory preserves critical markers within the character budget", () => {
+  const steps = Array.from({ length: 180 }, (_, i) => ({ step: i + 1, action: "UP", tries: i,
+    same: i > 0, changed: i === 0, new: i === 0, death: i % 7 === 0 && i > 0, level_up: false,
+    source: "long_method_name", predict_off: null, claims_failed: [], claims_held: [] })) as any;
+  const summary = compressedTrajectory(steps);
+  assert.ok(summary.length <= 3000);
+  assert.match(summary, /s1 UP/);
+  assert.match(summary, /s176 UP.*DEATH/);
+  assert.match(summary, /s178 UP/);
+  assert.match(summary, /s180 UP/);
 });
 
 test("the gradient line is appended to state messages when enabled", async () => {

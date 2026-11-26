@@ -26,8 +26,9 @@ from .project import load_project_dotenv
 
 EXTENSION = PROJECT_ROOT / "demo" / "arc_layered_extension.ts"
 CONFIGS = ("kaggle-local", "api-research")
+PROFILES = ("qwen27b", "qwen27b-harness")
 MAX_PROVIDER_ERRORS = 3
-MAX_IDLE_SEGMENTS = 2
+MAX_IDLE_SEGMENTS = 4
 MAX_PROVIDER_STALLS = 3
 
 
@@ -87,6 +88,7 @@ def _layered_evidence(root: Path) -> dict[str, Any]:
 
 
 def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: str, pi_model: str, config: str = "api-research",
+                        profile: str = "qwen27b",
                         provider_extension: Path | None = None, agent_dir: Path | None = None, thinking: str | None = None,
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
                         segment_seconds: float = 1_000_000.0, segment_tokens: int = 100_000_000, idle_continuations: int = 3,
@@ -95,6 +97,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                         bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = ()) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {PROFILES}")
     root = root.resolve()
     harness = root / "harness"
     harness.mkdir(parents=True, exist_ok=True)
@@ -102,7 +106,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     used_tokens = _reported_tokens if count_cache else _budget_tokens
     started = time.monotonic()
     deadline = started + wall_seconds
-    summary: dict[str, Any] = {"format": "arc-layered-run-v1", "game": game, "config": config, "provider": pi_provider,
+    summary: dict[str, Any] = {"format": "arc-layered-run-v1", "game": game, "config": config, "profile": profile, "provider": pi_provider,
                                "model": pi_model, "thinking": thinking or "provider-default", "stop_reason": None,
                                "segments": 0, "segment_reasons": [], "provider_errors": 0}
     bridge, bridge_stderr, launch_id, action_token = _start_bridge(
@@ -135,7 +139,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         # 3 bytes per token keeps the estimate conservative while leaving usable budget.
         pi_env.setdefault("PI_PROVIDER_TEXT_BYTES_PER_TOKEN", "3")
         pi_env.update({"PI_CODING_AGENT_DIR": str(agent_dir), "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_ACTION_TOKEN": action_token,
-                       "ARC_RUN_ROOT": str(root), "ARC_GAME": game, "ARC_LAYERED_CONFIG": config, "ARC_LAYERED_COUNT_CACHE": str(int(count_cache)), "ARC_LAYERED_OUTPUT_TOKENS": str(max_output_tokens),
+                       "ARC_RUN_ROOT": str(root), "ARC_GAME": game, "ARC_LAYERED_CONFIG": config, "ARC_LAYERED_PROFILE": profile,
+                       "ARC_LAYERED_COUNT_CACHE": str(int(count_cache)), "ARC_LAYERED_OUTPUT_TOKENS": str(max_output_tokens),
                        "ARC_LAYERED_SEGMENT_SECONDS": str(segment_seconds), "ARC_LAYERED_SEGMENT_TOKENS": str(segment_tokens),
                        "ARC_LAYERED_IDLE_CONTINUATIONS": str(idle_continuations), **(extension_env or {})})
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", pi_model, "--session", str(root / "session.jsonl"),
@@ -146,10 +151,12 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         if max_reported_tokens is not None:
             command.extend(["--extension", str(PROJECT_ROOT / "demo" / "pi_final_provider_payload.ts")])
         (root / "run-config.json").write_text(json.dumps({
-            **{key: summary[key] for key in ("format", "game", "config", "provider", "model", "thinking")},
+            **{key: summary[key] for key in ("format", "game", "config", "profile", "provider", "model", "thinking")},
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
             "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
             "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
+            "consult_enabled": profile == "qwen27b-harness" and (extension_env or {}).get("ARC_LAYERED_CONSULT") != "0",
+            "no_image": (extension_env or {}).get("ARC_LAYERED_NO_IMAGE") == "1",
             "fresh_level_session": fresh_level_session, "command": command,
             "pi_version": _pi_cli_version(Path(cli)),
         }, indent=2) + "\n", encoding="utf-8")
@@ -177,6 +184,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                          "context_window": (pi_state.get("model") or {}).get("contextWindow")}
 
         prompt, overflow_retried, idle_segments, stalls = "Play the game.", False, 0, 0
+        idle_change_credit = False
         while True:
             if time.monotonic() >= deadline:
                 summary["stop_reason"] = "deadline"
@@ -236,14 +244,23 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             elif reason == "aborted":
                 summary["stop_reason"] = (_provider_admission_stop(harness) or {}).get("stop_reason", "aborted")
                 break
-            idle_segments = idle_segments + 1 if not end.get("actions") else 0
-            if idle_segments >= MAX_IDLE_SEGMENTS:
-                summary["stop_reason"] = "idle"
-                break
             changed, parse_errors = _scan_work(root, harness, summary["segments"], work_hashes)
             evolution_changes += changed
             evolution_errors += len(parse_errors)
+            if end.get("actions"):
+                idle_segments = 0
+                idle_change_credit = False
+            elif changed > 0 and not parse_errors and not idle_change_credit:
+                idle_segments = max(0, idle_segments - 1)
+                idle_change_credit = True
+            else:
+                idle_segments += 1
+            if idle_segments >= MAX_IDLE_SEGMENTS:
+                summary["stop_reason"] = "idle"
+                break
             prompt = "Continue playing."
+            if idle_segments == MAX_IDLE_SEGMENTS - 1:
+                prompt += "\nThis is the last idle segment before the run stops. Take an environment action if one is warranted."
             if parse_errors:
                 prompt += "\nThese files under work/ do not parse:\n" + "\n".join(parse_errors)
             if (fresh_level_session and reason == "level_change") or end.get("session_oversized"):
@@ -270,6 +287,17 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     changed, parse_errors = _scan_work(root, harness, summary.get("segments", 0), work_hashes)
     budget = state.get("action_budget") or {}
     requests = _request_accounting(_read_jsonl(harness / "request-events.jsonl"))
+    child_usage = [row for row in _read_jsonl(harness / "usage.jsonl") if row.get("kind") == "subagent"]
+    child_known = sum(int(row.get("total") or (int(row.get("input") or 0) + int(row.get("output") or 0))) for row in child_usage)
+    if child_usage:
+        requests["by_kind"]["subagent"] = {
+            "attempts": len(child_usage), "completed": sum(row.get("cost_status") == "reported" for row in child_usage),
+            "unknown_cost_attempts": sum(row.get("cost_status") != "reported" for row in child_usage),
+        }
+        requests["attempts"] += len(child_usage)
+        requests["known_tokens_lower_bound"] += child_known
+        requests["unknown_cost_attempts"] += sum(row.get("cost_status") != "reported" for row in child_usage)
+        requests["complete_cost_known"] = requests["unknown_cost_attempts"] == 0
     summary.update({
         "actions": budget.get("total_used"), "levels_completed": state.get("levels_completed"), "win_levels": state.get("win_levels"),
         "final_state": state.get("state"), "wall_seconds": round(time.monotonic() - started, 1),
@@ -299,6 +327,7 @@ def main() -> None:
     parser.add_argument("root", type=Path)
     parser.add_argument("--game", required=True)
     parser.add_argument("--config", choices=CONFIGS, default="api-research")
+    parser.add_argument("--profile", choices=PROFILES, default="qwen27b")
     parser.add_argument("--arc-root", type=Path, default=Path("D:/arc-agi-benchmark/arc-agi-3-benchmarking"))
     parser.add_argument("--provider", required=True)
     parser.add_argument("--model", required=True)
@@ -313,7 +342,7 @@ def main() -> None:
     parser.add_argument("--dotenv-root", type=Path, default=PROJECT_ROOT)
     args = parser.parse_args()
     path = run_arc_layered_e2e(args.root, game=args.game, arc_root=args.arc_root, pi_provider=args.provider, pi_model=args.model,
-                               config=args.config, provider_extension=args.provider_extension, agent_dir=args.agent_dir,
+                               config=args.config, profile=args.profile, provider_extension=args.provider_extension, agent_dir=args.agent_dir,
                                thinking=args.thinking, max_actions=args.max_actions, max_reported_tokens=args.max_reported_tokens,
                                wall_seconds=args.wall_seconds, segment_seconds=args.segment_seconds,
                                fresh_level_session=args.fresh_level_session, dotenv_root=args.dotenv_root)

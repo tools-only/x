@@ -244,6 +244,8 @@ stage33最终：当前完整SDK17/425、advisory1/11、snapshot1/9均通过，44
 
 ## B. 离线研究目的与可观测条件
 
+2026-11-26 实验档 `qwen27b-harness` 只完成同模型单轮 `consult` 的无动作隔离视角与脚本 provider 接线；研究目的、视图比较、发现质量及任务收益仍待真实对照。证据见 [实现记录](plans/2026-11-26-layered-qwen-harness-implementation.md)。A/C/D 的边界与连续性待办亦未据此勾选。
+
 用户提出：父 Agent 可把全局或局部轨迹交给隔离 child，按猜想验证、double check、开放探索等目的发起研究，平衡归纳能力与自发探索能力。
 
 - [ ] 设计彼此独立的研究目的和可观测策略，避免只增加 prompt 标签。

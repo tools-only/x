@@ -36,6 +36,28 @@ async function session(extra: Partial<LayeredConfig> = {}) {
   return { bridge, python };
 }
 
+test("agent library module returns a value and reloads its revised source in the WASI kernel", async () => {
+  const workDir = join(mkdtempSync(join(tmpdir(), "layered-bound-")), "work");
+  mkdirSync(join(workDir, "lib"), { recursive: true });
+  const path = join(workDir, "lib", "measure.py");
+  writeFileSync(path, "def measure(args):\n    return args['value'] * 2\n");
+  const { python } = await session({ workDir });
+  try {
+    assert.match((await python.run("print(repr(measure.measure({'value': 7})))")).text, /14/);
+    writeFileSync(path, "def measure(args):\n    return args['value'] * 3\n");
+    assert.match((await python.run("print(repr(measure.measure({'value': 7})))")).text, /21/);
+  } finally { python.close(); }
+});
+
+test("repeated ineffective clicks report a region count", async () => {
+  const { python } = await session();
+  const first = await python.run("submit_actions({'action':'MOUSE','x':0,'y':0})");
+  const second = await python.run("submit_actions({'action':'MOUSE','x':1,'y':0})");
+  python.close();
+  assert.doesNotMatch(first.text, /ineffective clicks in this region/);
+  assert.match(second.text, /ineffective clicks in this region: 2/);
+});
+
 test("variables refresh inside the same call after submit_actions", async () => {
   const { python } = await session();
   const out = await python.run("before = current_frame.ascii\nr = submit_actions('UP')\nprint(before != current_frame.ascii, last_action, len(history), previous_frame.ascii == before)\nprint(valid_actions)");
@@ -84,12 +106,12 @@ test("open() reaches work/ only", async () => {
     "with open('work/notes.md', 'w') as f: f.write('hello')",
     "with open('notes.md', 'a') as f: f.write(' world')",
     "print(open('work/notes.md').read())",
-    "for bad in ['../escape.txt', 'C:/Windows/x.txt', 'work/../../x']:",
+    "for bad in ['../escape.txt', 'C:/Windows/x.txt', 'work/../../x', '../harness/components/memory/current/v1.json']:",
     "    try:\n        open(bad, 'w').close()\n    except PermissionError as e:\n        print('denied')",
     "try:\n    open('missing.txt')\nexcept FileNotFoundError:\n    print('missing')",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^hello world\ndenied\ndenied\ndenied\nmissing/);
+  assert.match(out.text, /^hello world\ndenied\ndenied\ndenied\ndenied\nmissing/);
   assert.equal(readFileSync(join(dir, "notes.md"), "utf8"), "hello world");
 });
 

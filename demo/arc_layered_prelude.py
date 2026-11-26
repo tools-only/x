@@ -1,8 +1,8 @@
-import ast, builtins, contextlib, importlib.util, io, json, os, sys, traceback, types
+import ast, builtins, contextlib, importlib.util, io, json, os, re, sys, traceback, types
 
 CHARS = "WwgGcBMPRbSYOrNp"
 MAX_IMAGES = 2
-_H, _T, _S = [], [], {"ns": None, "tries": {}, "seen": set(), "deaths": []}
+_H, _T, _S = [], [], {"ns": None, "tries": {}, "seen": set(), "deaths": [], "mouse_tries": {}}
 
 
 def _freeze(grid):
@@ -518,7 +518,7 @@ def _ledger(t):
 
 
 def _rebuild():
-    _S.update(tries={}, seen=set(), deaths=[])
+    _S.update(tries={}, seen=set(), deaths=[], mouse_tries={})
     for entry in _H:
         entry.pop("key", None)
     if _H:
@@ -555,6 +555,28 @@ def _observe(before, forecast, source):
                 level_up=after["raw"]["levels_completed"] != before["raw"]["levels_completed"], source=source,
                 fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[],
                 predict_off=_off(forecast["predict"], after["grids"][-1]) if "predict" in forecast else None)
+    if t["action"].startswith("MOUSE(x="):
+        match = re.match(r"MOUSE\(x=(\d+),y=(\d+)\)", t["action"])
+        if match:
+            x, y = map(int, match.groups())
+            grid = before["grids"][-1]
+            if 0 <= y < len(grid) and 0 <= x < len(grid[y]):
+                color, todo, cells = grid[y][x], [(y, x)], {(y, x)}
+                while todo:
+                    cy, cx = todo.pop()
+                    for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                        if 0 <= ny < len(grid) and 0 <= nx < len(grid[ny]) and (ny, nx) not in cells and grid[ny][nx] == color:
+                            cells.add((ny, nx))
+                            todo.append((ny, nx))
+                region = (color, tuple(sorted(cells))) if len(cells) <= 256 else ("block", x // 4, y // 4)
+                key = (_key(before), region)
+                tries = _S.setdefault("mouse_tries", {})
+                fact["region_tries"] = tries.get(key, 0) + 1
+                if fact["changed"] or fact["new"]:
+                    tries.clear()
+                else:
+                    tries[key] = fact["region_tries"]
+                fact["untouched_regions"] = len({item[1] for item in tries})
     for name, claim in sorted((_S.get("claims") or {}).items()):
         if claim.get("fn"):
             verdict = _judge_claim(name, claim, t)
@@ -569,6 +591,9 @@ def _echo(fact):
     if fact["tries"]:
         out += "  [tried %d time%s before from this board%s]" % (
             fact["tries"], "s" if fact["tries"] > 1 else "", ", same result each time" if fact["same"] else "")
+    if fact.get("region_tries", 0) >= 2:
+        out += "  [ineffective clicks in this region: %d; ineffective regions tried: %d]" % (
+            fact["region_tries"], fact["untouched_regions"])
     if fact["predict_off"]:
         out += "  [predict: %d cells off]" % fact["predict_off"]
     if fact["death"]:

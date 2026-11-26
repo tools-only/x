@@ -1,0 +1,37 @@
+# Layered Qwen 五组件变更记录
+
+日期：2026-11-26（Asia/Shanghai）。状态：实验实现与免费本地接线完成；真实模型采用和收益未验证。范围：`arc_layered` 的独立 `qwen27b-harness` profile。用户桌面上的 v2 方案是设计输入，本记录反映本次实际实现与证据。
+
+## 问题与窄命题
+
+旧 `qwen27b` 档位把认知分散在多种 `work/` 文件中，两个无动作 segment 即停止；点击区域重复、全关回顾与纯文本观测缺失。先前真实游戏行为材料见桌面方案 §1.2 及 `docs/deferred-research-todos.md`，其归因仍待独立对照。窄命题：把 Memory、Agent 作者的 Python Tools、按需 Skills、短 Prompt 与同模型 consult 放进一个实验档位，减少首次创建及恢复的手续；底座修复避免过早 idle 和无效重复。若普通运行仍频繁出现管理空转、复用不发生，或任务成绩与父子总成本触及桌面方案 §2 的退化条件，则推翻收益主张。简单关卡合理不使用组件。
+
+## 设计、生命周期和成本
+
+Agent 自行调用 `reflect_component` 定义/修订/恢复 Memory、Skill、Prompt 和 Subagent；runtime 原子更新版本 HEAD，拒绝直接写组件存储。Agent 在 `work/lib/<name>.py` 写合规 `def <name>(args)` 或 `def run(args)`，下一 Python 调用或 segment 起点扫描语法、版本化并挂载同名工具；实际 bound 调用走同一 WASI Python session，成功/动作产出单独记账。Skill 仅列名称摘要，正文由 Agent 按需 `read_component`。Memory/Prompt 在决策状态中注入，context 裁剪后补回当前版本；`live_injected` 只在 context hook 检测可见时记，不能据此断言模型用到了内容。Agent 在停滞时可选择 `consult`；它使用父模型、单轮、无工具、30 秒超时、1500 输出 token 与每关两次的持久配额，结果回到父轮，成本写 `usage.jsonl` 并纳入 runner 汇总。`ARC_LAYERED_CONSULT=0` 可作 B1 消融。
+
+`MAX_IDLE_SEGMENTS=4`，有效工作改动对一个 idle streak 最多抵免一次，末次前警告；无语义门禁。鼠标同帧同连通区域的无效点击计数随变化清空。全关轨迹合并无新态段，报告内部新态及整帧变化两个口径，优先保留首变、死亡、过关与末三步，在 3000 字符上限内可能省略极端密集事件详情。`ARC_LAYERED_NO_IMAGE=1` 发送完整十六进制文本帧和变化摘要，不发 PNG。旧 profile 保持自己的提示及入口。组件能修订/恢复，但不回滚真实环境历史；不再有价值时 Agent 可停止调用，consult 配额按数字 level 累计，同一关重启不刷新。
+
+常驻系统提示为 1231 字符，五组件带来三个工具 schema（`consult` 关闭时两个）及按需状态文字；子调用有真实计算与墙钟成本。首次收益路径是发现适用机会、写函数或定义组件、下一轮实际读取/绑定、观察动作结果、再修订；只存文件或读索引不算采用。没有注入开发流程或仓库 AGENTS.md 到 Pi；runner 保留 `--no-context-files`，adapter/bridge 未扩展研究权限。
+
+## 实验协议与验收边界
+
+桌面方案 §6 的 A（`a791d63`/`qwen27b`）、B1（五组件、consult off）、B2（consult on）、B1-NoImg 是待授权的真实 Qwen 3.8 27B 独立对照。当前工作树基于 `1c9a871b`，与历史 A 提交并非单因素差异；先固定比较 checkout 和模型 thinking/output 参数，再探索、留出游戏交替重复。按方案预定动作、时间、父子 token 预算及退化阈值，记录失败/pending、合理不使用、首次语义使用和后续动作。真实付费运行需要用户另行授权预算，本轮没有启动。无图像与 consult 开关是消融入口，不能由脚本 provider 推论视觉能力或自主发现。
+
+## 实现与已完成检查
+
+- 入口：`demo/arc_layered_components.ts`、`demo/arc_layered_extension.ts`、`demo/arc_layered_prelude.py`、`demo/prompts/arc_layered_system_harness.md`、`src/autoresearch_pi/arc_layered_e2e.py`；脚本传输 `tools/arc_layered_smoke_provider.ts`。
+- 定向 Node：组件版本/恢复、当前注入、工具发布与失败、consult 同模型/无工具/限额、轨迹上限、文本帧、鼠标重复、真实 LayeredPython/WASI 函数返回和源修订均通过；Python `tests/test_arc_layered_evolution.py` 2 passed；`git diff --check` 通过。
+- 本地链路 `runs/layered-harness-b1-final-20261126/summary.json`：实际 runner + bridge + Pi + WASI、mock ARC SDK、scripted provider，consult off/no-image on，首请求仍有 `reflect_component`、`read_component`，2 动作、0 Python 错误；`smoke-requests.jsonl` 首请求 system 1231 字符、图像 0。`runs/layered-harness-consult-final-20261126/`：同链路 consult on，子请求同 `scripted` 模型、零工具，结果进入下一父轮后执行 1 动作；`usage.jsonl` 子调用 2 reported tokens，runner 汇总 19 次请求、父子 38 reported tokens。此处 token 是脚本伪计量，不是供应商计费。
+- 旧测试全集 66 项中 52 通过、14 失败；失败集中在已有 review/claims/expect/lib 输出断言，本轮没有对 HEAD 基线逐项归因，不能声称全套回归通过。此仓库无本地 TypeScript compiler，`npx tsc` 未完成类型检查。
+
+| 层级 | 状态 | Provider / environment | 证据与局限 |
+| --- | --- | --- | --- |
+| 功能正确 | 定向通过；完整旧套件未通过 | Node tests、真实 WASI + FakeBridge、pytest | 版本/负例、函数语义、已修改接口；旧失败未作基线归因 |
+| 全链路可达 | 基本路径及 consult 路径通过；五组件完整语义链未逐项跑通 | scripted provider + mock ARC SDK，实际 runner/bridge/Pi/WASI | 上述两个 `runs/`；不代表真实游戏或模型行为 |
+| 自主采用 | 未验证 | 真实 Qwen 未运行 | 不能从 scripted 工具调用推断 |
+| 净收益 | 未验证 | 无 A/B 独立对照 | 不能从提示字符数或组件数量推断 |
+
+决定：保留实验档位，不默认替换旧档位。下一可证伪检查是获预算授权后先以短真实 Qwen 运行检验普通情况下的首次创作、绑定调用、Memory 后续探针和停滞 consult 的合理使用，再按预注册对照比较任务效果与父子成本；若未出现使用，定位到曝光、调用摩擦或价值，不增加强制提醒。
+
+关联 backlog：`docs/deferred-research-todos.md` 的 A（adapter 边界）、B/C（子研究目的及父子通信）、D（压缩后认知连续性）保持开放；本轮仅证明无动作子请求与 context hook 可达，未证明研究质量、主动实验或跨压缩后的认知保持。
