@@ -82,37 +82,6 @@ These names are bound fresh at the start of every call:
 - `submit_actions(..., skip_known_noops=True)` skips actions already proven to do nothing in the current state
   (`force=True` sends them anyway).
 {{/graph}}
-{{?review}}
-- At structural failure points the host freezes `submit_actions` and the state message says REVIEW REQUIRED; querying,
-  computing and reading history still work. Freeze triggers: a second GAME_OVER on a level, long stagnation, half the
-  level budget gone with the level not done, a completed level (with the claims ledger and model back-test printed in
-  the freeze reason), the same action re-sent three times against the same board since the last review, or several
-  python calls in a row that produce no action and no `work/` write. The host also freezes actions when a
-  `work/claims/` rule was falsified or never applied; the message names the rule and `review` must revise or discard
-  it. Unfreeze with `review(layer=..., diagnosis=..., evidence=[history step numbers], change=..., test=...)`. `layer`
-  names where the failure is: "action" (wrong move), "rule" (wrong dynamics), "goal" (wrong objective) or
-  "representation" (wrong reading of what the objects are). `change` may be "none" or the revised reading in your own
-  words - never just a layer name; `test` must be a check that would tell the new reading from the old. The strongest
-  form of `test` is a callable `(transition) -> True/False/None` (None = not applicable): it then runs automatically
-  after every later action, failures are flagged on the action line, and running counts appear in
-  `harness_state["predictions"]["review_checks"]`. With a prose `test`, your first non-RESET batch after the review
-  should carry an `expect` that implements it: the host reports whether it held, failed, or was never checked. Past
-  reviews stay readable in `harness_state["reviews"]` and `work/review_log.md`. The revised reading is echoed once
-  into the next state message as `Active revision:`.
-- A review whose `change` is not "none" must also say where the conclusion lands: `place=` one of "memory", "tool",
-  "prompt", "loop", "context", "skill", "subagent", and `artifact=` the `work/` file that will hold it (for example
-  `work/world_model.py` or `work/lib/push.py`). Actions stay frozen until you actually write the declared file -
-  a review only completes when its conclusion exists as a file, because a conclusion that only lives in prose is
-  lost at eviction. The host also checks what you wrote: a `work/claims/` file must load and define `check`, and
-  `work/world_model.py` is only accepted when its back-test beats copying the frame - a stub that returns the frame
-  unchanged keeps actions frozen. A `work/claims/` landing is also rejected when it returns None on every transition
-  it was checked against - a rule that never applies is not a conclusion, narrow its guard first. Rule- and
-  action-layer conclusions normally land best as a falsifiable `work/claims/<name>.py`. Direction: after a GAME_OVER
-  review, repair the hypothesis or build a perception helper; after a completed level, compress - turn the route that
-  worked into a parameterized function and shorten your beliefs. When the freeze reason is "the same action re-sent
-  three times", the review must name which belief kept recommending that move and which alternative it ruled out, and
-  land that as a falsifiable `work/claims/<name>.py`.
-{{/review}}
 {{?claims}}
 - Knowledge only counts when the host can execute it. Write each falsifiable rule as a file `work/claims/<name>.py`
   defining `check(transition) -> True/False/None` (None = not applicable) with a one-line docstring stating the rule.
@@ -121,13 +90,9 @@ These names are bound fresh at the start of every call:
   return None unless the transition is one the rule speaks about (for example
   `if "MOUSE" not in transition.action: return None`), then return whether the rule held. A check without its guard
   judges transitions it knows nothing about and the first of them falsifies it.
-  The host back-tests a new or edited claim against the whole recorded history at once, then runs it on every later
-  transition, and keeps a read-only ledger in `harness_state["claims"]`:
-  3 supports with no counterexample makes it validated; one counterexample falsifies it; editing the file resets its
-  record. A claim whose scale shows "game" has held on more than one level. A claim with zero recorded support is
-  still a hypothesis: never use it to rule out a class of actions - probe it first. Prose notes accumulate no support - ground
-  your models, routes and reviews in validated claims (a natural review landing: place="memory",
-  artifact="work/claims/<name>.py").
+  The host executes a new or edited claim against the whole recorded history, then on every later transition; the action
+  echo names held and failed claims. Treat failures as evidence, not as blocks. Prose notes accumulate no evidence -
+  ground your models, routes and reviews in executable claims.
 {{/claims}}
 {{?work}}
 - `open()` reads and writes files under `work/`. Files survive a kernel restart; names you define in the kernel do not,
@@ -140,6 +105,11 @@ These names are bound fresh at the start of every call:
 - Keep constraints you have verified in `work/claims.json` (your own format; record which steps support each one),
   so they survive context loss and kernel restarts.
 {{/work}}
+- Capability directories: `work/claims/` holds falsifiable rules, `work/model.py` holds the dynamic model, `work/lib/`
+  holds reusable perception and planning helpers, and `work/replay/level_N.md` holds the host's level review. After each
+  level or death, the state message names the review path; before continuing, answer the three questions: which
+  attribution (memory, model, method or tool) failed, what one executable artifact fixes or encodes it, and what probe
+  proves the new idea.
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
 ## Working method
@@ -147,7 +117,8 @@ These names are bound fresh at the start of every call:
    regions as text.
 2. Build a model: what each action does, what the goal seems to be, and which observations support each belief.
 {{?model}}
-3. When you think you know the dynamics, write them into `work/world_model.py` as `predict(frame, action) -> grid`.
+3. When you think you know the dynamics, write them into `work/model.py` as `state_key(frame)`, `predict(frame, action) -> grid`
+   (use `-1` for cells you do not care about), and optional `is_fatal(frame, action) -> bool`.
    The host back-tests your `predict` against the recorded transitions after every call and shows the hit rate in
    `harness_state["model"]` and the gradient line. That measured number is the model's truth: a predict that returns
    the frame unchanged scores visibly low, and a self-written test proves nothing the host number does not.
@@ -155,21 +126,15 @@ These names are bound fresh at the start of every call:
    over states you have really seen. Walking the game by hand is the expensive fallback, not the default.
 5. Send sequences you trust in one batch, with an `expect`. A SURPRISE means the model is wrong somewhere: go back to
    step 3 and re-test before acting further. After a level change or GAME_OVER, look at the new board before acting again.
-6. When a level is done, write two or three lines about what carried over, and re-run the back-test on the new level
-   before trusting the old model.
-
-Two hard rules about order:
-- Until `harness_state["model"]` shows your predict getting most recorded transitions right, spend actions only in
-  small probe batches (1-3 actions each), chosen to distinguish between hypotheses. By roughly ten spent actions on a
-  level the back-test number should exist and be climbing, not still absent.
-- Never resend a route that already failed. A failed route or a SURPRISE means a belief is wrong: name the belief,
-  fix the model, re-run the back-test, and only then act again. A RESET replays the level, not your mistakes.
+6. When a level is done, write two or three lines about what carried over into `work/REVIEW.md`, ending with a line
+   `下一关看: ...` for the next level. Read `work/replay/level_N.md` when the host names it, and turn the diagnosis into
+   `work/model.py`, `work/lib/<name>.py`, or `work/claims/<name>.py` rather than re-deriving the same pattern.
 {{/model}}
 {{?no_model}}
 3. State your current model of the controls and the goal in one or two lines at the top of each reply, check each new
    transition against it, and revise it whenever the evidence contradicts it.
 4. Prefer short batches whose outcome you can predict. After a level change or GAME_OVER, look at the new board before
-   acting again, and never resend a route that already failed.
+   acting again; a failed route is evidence for a revised model, not something to repeat unchanged.
 {{/no_model}}
 
 ## Traps

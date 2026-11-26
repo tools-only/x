@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { BridgeClient, COLOR_LEGEND, LayeredPython, type ActionBatch, type LayeredState } from "./arc_layered_python.ts";
+import { BridgeClient, COLOR_LEGEND, LayeredPython, type ActionBatch, type LayeredState, type StepFact } from "./arc_layered_python.ts";
 import { PALETTE } from "./arc_thin_ch_view.ts";
 import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
@@ -20,9 +20,8 @@ const IMAGE_TOKENS = 1000;
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
-  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; review?: boolean;
-    claims?: boolean } };
-type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient" | "evolutionDigest">>;
+  flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
+type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -76,6 +75,44 @@ export function extractTags(text: string): Record<string, string> {
     } else if (current) blocks[current] += `\n${line}`;
   }
   return Object.fromEntries(Object.entries(blocks).map(([tag, body]) => [tag, body.trim()]).filter(([, body]) => body));
+}
+
+function readReviewCallback(root: string) {
+  try {
+    const text = readFileSync(join(root, "work", "REVIEW.md"), "utf8");
+    const matches = [...text.matchAll(/^\s*(?:\*\*)?下一关看(?:\*\*)?\s*[:：]\s*(.+)$/gm)];
+    return matches.at(-1)?.[1]?.trim() ?? "";
+  } catch { return ""; }
+}
+
+function writeLevelReview(root: string, level: number, state: LayeredState, steps: StepFact[], notes: string[]) {
+  const trajectory = steps.slice(-15).map(fact => `s${fact.step} ${fact.action} try${fact.tries}` +
+    `${fact.same ? " same" : ""}${fact.death ? " DEATH" : ""}${fact.level_up ? " LEVEL_UP" : ""}` +
+    `${fact.source ? ` via ${fact.source}` : ""}${fact.predict_off !== null ? ` off:${fact.predict_off}` : ""}` +
+    `${fact.claims_failed.length ? ` failed:${fact.claims_failed.join("/")}` : ""}` +
+    `${fact.claims_held.length ? ` held:${fact.claims_held.join("/")}` : ""}`);
+  const memory = [
+    ...new Set(steps.flatMap(fact => [...fact.claims_failed, ...fact.claims_held].map(name => `claims/${name}`))),
+    ...notes.filter(note => note.includes("claims/")).map(note => note.slice(0, 120))];
+  const model = steps.filter(fact => fact.predict_off !== null).map(fact => `predict off ${fact.predict_off} at s${fact.step}`);
+  const method = [...new Set(steps.filter(fact => fact.source).map(fact => fact.source!))];
+  const tool = notes.filter(note => !note.includes("claims/")).map(note => note.slice(0, 120));
+  const list = (name: string, values: string[]) => `## ${name}\n${values.length ? values.slice(-12).map(value => `- ${value}`).join("\n") : "- none"}`;
+  const directory = join(root, "work", "replay");
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, `level_${level}.md`);
+  const body = [
+    `# Level ${level} review`, "",
+    `Outcome: ${state.state}; actions used ${state.actions_used}; completed ${state.levels_completed}/${state.win_levels}.`,
+    "", "## Compressed trajectory", "",
+    trajectory.length ? trajectory.join("\n") : "- no transition facts", "", list("Memory (claims)", memory), "",
+    list("Model", model), "", list("Method (lib)", method), "", list("Tool", tool), "",
+    "## Three questions", "",
+    "1. Which attribution actually caused the repeated or fatal transitions?",
+    "2. What one executable artifact would prevent that failure or encode the successful pattern?",
+    "3. What is the next safe probe, and what observation would falsify it?", ""].join("\n");
+  writeFileSync(path, body, "utf8");
+  return "work/replay/" + `level_${level}.md`;
 }
 
 export function estimateTokens(message: any): number {
@@ -142,7 +179,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const [, ...parts] = prompt("arc_layered_state.md").split(/^## (\w+)\s*$/m);
   const template = Object.fromEntries(parts.flatMap((name, index) => index % 2 ? [] : [[name, parts[index + 1].trim()]])) as
     Record<"state" | "reminder" | "nudge", string>;
-  const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false, review: false,
+  const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false,
     claims: false, ...options.flags };
   flags.no_model = !flags.model;
   const system = prompt("arc_layered_system.md")
@@ -152,15 +189,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let memory: Record<string, string> = {};
   let notebook: Record<string, string> = {};
   let trail: string[] = [];
-  let activeRevision = "";
+  let lastReviewCallback = "";
+  let lastReviewPath = "";
   try { memory = JSON.parse(readFileSync(join(store, "memory.json"), "utf8")); } catch {}
   try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
-  try {
-    for (const line of readFileSync(join(store, "review.jsonl"), "utf8").trim().split("\n")) {
-      const row = JSON.parse(line);
-      activeRevision = String(row.change !== "none" ? row.change : row.diagnosis ?? "").slice(0, 200);
-    }
-  } catch {}
+  lastReviewCallback = readReviewCallback(options.root);
+  const levelSteps: StepFact[] = [];
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let rawEstimate = 0, rollThreshold = 0;
   let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
@@ -204,28 +238,27 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`Unchecked: your last ${state.unchecked_batches} action batches carried no expect; without a prediction a ` +
         "wrong belief costs actions instead of becoming a signal.");
     }
-    if (state.review_required) events.push(`REVIEW REQUIRED (${state.review_required}): submit_actions is frozen; everything ` +
-      "else still works. Inspect the evidence, then call review(layer=..., diagnosis=..., evidence=[history steps], " +
-      'change=..., test=..., place=..., artifact=...) to unfreeze. change="none" is allowed; a test that tells the new ' +
-      "reading from the old is not optional, and any real change must land in the declared work/ file.");
+    if (state.mini_review) events.push(`MINI REVIEW: ${state.mini_review}. Name the failing attribution (memory/model/method/tool), ` +
+      "write the smallest executable fix or one-line decision rule into work/, then continue. Nothing is frozen.");
+    if (batch?.steps?.some(fact => fact.claims_failed.length)) events.push(`Claims failed: ` +
+      batch.steps.flatMap(fact => fact.claims_failed).join(", ") + ". Treat the next applicable transition as evidence, not as a reason to stop.");
+    if (batch?.steps?.some(fact => fact.claims_held.length)) events.push(`Claims held: ` +
+      batch.steps.flatMap(fact => fact.claims_held).join(", ") + ".");
+    if (batch?.level_changed && lastReviewPath) events.push(`LEVEL REVIEW: ${lastReviewPath}` +
+      (lastReviewCallback ? `\nCarry forward: ${lastReviewCallback}` : "") +
+      "\nBefore acting on the new level: which attribution failed, what artifact fixes it, and what probe proves that?");
+    if (batch?.game_over && !batch.level_changed && lastReviewPath) events.push(`DEATH REVIEW: ${lastReviewPath}` +
+      "\nBefore RESET: was this memory, model, method or tool failure? Write the one artifact that prevents a repeat.");
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
-    if (batch?.review_test) events.push(batch.review_test === "hit"
-      ? "Review test: the expect on your first batch after the review held."
-      : batch.review_test === "surprise"
-        ? "Review test: the expect on your first batch after the review failed - the revised reading is also wrong."
-        : "Review test: untested - your first batch after the review carried no expect, so the revision was never checked.");
-    if (batch?.review_placement) events.push(batch.review_placement === "placed"
-      ? `Review placement: ${batch.review_artifact} was written as declared.`
-      : `Review placement: the review declared ${batch.review_artifact} but the file is unchanged - write it or the conclusion is lost.`);
-    for (const name of batch?.claims_falsified ?? []) events.push(`Claim falsified: ${name} hit a counterexample. ` +
-      "Most falsifications are a missing guard: the check judged a transition outside the rule's scope. Narrow the " +
-      "condition (return None when the rule does not apply) and keep the rule executable - a check that always " +
-      "returns None accumulates nothing.");
-    for (const name of batch?.claims_validated ?? []) events.push(`Claim validated: ${name} (3+ supports, no counterexample).`);
-    for (const name of batch?.claims_inapplicable ?? []) events.push(`Claim never applies: ${name} returned None on ` +
-      "every transition so far. A rule that never applies should not guide action - design a probe where it would " +
-      "apply, or drop it.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
+    if (batch?.notes?.length) events.push(...batch.notes);
+    if (batch?.steps?.length) {
+      const echoes = batch.steps.map(fact => `step ${fact.step}: ${fact.action}` +
+        (fact.tries ? ` (repeat ${fact.tries})` : "") + (fact.predict_off ? ` (predict off ${fact.predict_off})` : "") +
+        (fact.claims_failed.length ? ` (claims failed: ${fact.claims_failed.join(", ")})` : "") +
+        (fact.claims_held.length ? ` (claims held: ${fact.claims_held.join(", ")})` : ""));
+      events.push("Trajectory evidence:\n" + echoes.slice(-6).join("\n"));
+    }
     if (options.gradient && python.gradient) {
       const g = python.gradient();
       events.push(`Gradient: ${g.actions_this_level} actions this level${g.level_budget_left !== undefined
@@ -244,9 +277,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         + (state.budget_left === undefined ? "" : ` | run budget left ${state.budget_left}`),
       valid: state.valid_actions.join(" "), memory: TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
       notebook: options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
-      revision: activeRevision ? `Active revision: ${activeRevision}` : "",
+      revision: "",
       tags_hint: flags.tags ? " Start your reply with updated `World model:`, `Goal model:`, `Action model:` and `Plan:` blocks." : "" };
-    activeRevision = "";
     const parts: Content = [];
     let diffNote = "";
     if (options.diffImage && shownFrame && shownLevel === state.level && state.frame !== shownFrame) {
@@ -274,16 +306,6 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
         level: state.level, step: state.step, images: outcome.images.length, metrics: outcome.metrics });
-      for (const review of outcome.reviews ?? []) {
-        write("review.jsonl", review);
-        log("review", { layer: review.layer, trigger: review.trigger });
-        activeRevision = String(review.change !== "none" ? review.change : review.diagnosis ?? "").slice(0, 200);
-        mkdirSync(join(options.root, "work"), { recursive: true });
-        appendFileSync(join(options.root, "work", "review_log.md"),
-          `## ${review.trigger ?? `${review.layer} review`}\n- layer: ${review.layer}\n- diagnosis: ${review.diagnosis}\n` +
-          `- change: ${review.change}\n- test: ${review.test}\n` +
-          (review.place ? `- place: ${review.place} -> ${review.artifact}\n` : "") + "\n", "utf8");
-      }
       if (batch) {
         actedThisTurn = true;
         idle = 0;
@@ -294,6 +316,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           : batch.level_changed ? "level_change" : softLimit();
         if (endReason) pending = batch;
         else pi.sendMessage({ customType: STATE_TYPE, content: content(batch), display: false }, { deliverAs: "steer" });
+      }
+      for (const fact of outcome.steps ?? []) {
+        write("decisions.jsonl", { t: new Date().toISOString(), ...fact, notes: outcome.notes ?? [], error: outcome.error ?? null });
+        levelSteps.push(fact);
+      }
+      if (batch && (batch.level_changed || batch.game_over) && levelSteps.length) {
+        lastReviewPath = writeLevelReview(options.root, state.level, state, levelSteps, outcome.notes ?? []);
+        levelSteps.length = 0;
+        lastReviewCallback = readReviewCallback(options.root);
       }
       const parts: Content = [{ type: "text", text: outcome.text }];
       for (const image of outcome.images) parts.push({ type: "image", mimeType: "image/png",
@@ -347,7 +378,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const summary = ["Earlier history was compacted away. What you know so far:",
         TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
         options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
-        (python.evolutionDigest ? python.evolutionDigest() : null),
+        lastReviewCallback ? `Last review callback: ${lastReviewCallback}` : "",
         `Progress: level ${state.level} of ${state.win_levels}, ${state.state}, ${state.actions_used} actions used` +
           `${state.budget_left === undefined ? "" : `, ${state.budget_left} budget left`}.`,
         trail.length ? `Recent action results:\n${trail.join("\n")}` : ""].filter(Boolean).join("\n\n");
@@ -413,9 +444,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 export default function arcLayeredExtension(pi: ExtensionAPI) {
   const env = process.env, root = env.ARC_RUN_ROOT ?? process.cwd(), local = env.ARC_LAYERED_CONFIG === "kaggle-local";
   const maxActionsPerCall = 16;
-  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8), review = env.ARC_LAYERED_REVIEW !== "0";
-  const reviewTriggers = env.ARC_LAYERED_REVIEW_TRIGGERS
-    ? env.ARC_LAYERED_REVIEW_TRIGGERS.split(",").map(part => part.trim()).filter(Boolean) : undefined;
+  const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8);
   if (env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
     const store = join(root, "harness");
     mkdirSync(store, { recursive: true });
@@ -427,7 +456,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     undo: env.ARC_LAYERED_UNDO !== "0", timeoutMs: 30000, outputChars: 4096, maxActionsPerCall, workDir: join(root, "work"),
     competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
     expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
-    review, reviewStuckSteps: stuckAfter > 0 ? stuckAfter * 4 : 32, reviewTriggers });
+    miniReview: { maxPerLevel: Number(env.ARC_LAYERED_MINI_REVIEWS_PER_LEVEL ?? 2) } });
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
     outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
     contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? 131072), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? 57344),
@@ -438,6 +467,6 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
     flags: { expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
-      work: env.ARC_LAYERED_WORK !== "0", model: env.ARC_LAYERED_MODEL !== "0", tags: env.ARC_LAYERED_TAGS === "1", review,
+      work: env.ARC_LAYERED_WORK !== "0", model: env.ARC_LAYERED_MODEL !== "0", tags: env.ARC_LAYERED_TAGS === "1",
       claims: env.ARC_LAYERED_CLAIMS !== "0" } });
 }

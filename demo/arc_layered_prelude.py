@@ -1,8 +1,8 @@
-import ast, builtins, contextlib, importlib.util, io, json, os, sys, traceback
+import ast, builtins, contextlib, importlib.util, io, json, os, sys, traceback, types
 
 CHARS = "WwgGcBMPRbSYOrNp"
 MAX_IMAGES = 2
-_H, _T, _S = [], [], {"ns": None}
+_H, _T, _S = [], [], {"ns": None, "tries": {}, "seen": set(), "deaths": []}
 
 
 def _freeze(grid):
@@ -290,47 +290,6 @@ def _expect_ok(expect, before, after, result):
     return lo <= result.get("changed_cells", 0) <= hi
 
 
-def review(layer, diagnosis, evidence, change, test, place=None, artifact=None):
-    """Name the failing layer with evidence; required to unfreeze submit_actions after the host froze it.
-    A review whose change is not 'none' must also declare where the conclusion lands: place= one of
-    memory/tool/prompt/loop/context/skill/subagent and artifact= the work/ file that will hold it."""
-    if layer not in ("action", "rule", "goal", "representation"):
-        raise ValueError("layer must be one of: action, rule, goal, representation")
-    steps = list(evidence) if isinstance(evidence, (list, tuple)) else None
-    if not steps or not all(isinstance(s, int) and not isinstance(s, bool) and 0 <= s < len(_H) for s in steps):
-        raise ValueError("evidence must be a non-empty list of history step numbers (0..%d)" % (len(_H) - 1))
-    for name, value in (("diagnosis", diagnosis), ("change", change)):
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("%s must be a non-empty string; change='none' is allowed, a missing test is not" % name)
-    if not callable(test) and (not isinstance(test, str) or not test.strip()):
-        raise ValueError("test must be a non-empty string or a callable (transition) -> bool|None")
-    if change.strip().lower() in ("action", "rule", "goal", "representation"):
-        raise ValueError("change must be the revised reading in your own words (or 'none'), not a layer name")
-    if change.strip().lower() != "none" and (place is None or artifact is None):
-        raise ValueError("a review whose change is not 'none' must declare place= (memory, tool, prompt, loop, "
-                         "context, skill or subagent) and artifact= (the work/ file where the conclusion lands)")
-    if place is not None and place not in ("memory", "tool", "prompt", "loop", "context", "skill", "subagent"):
-        raise ValueError("place must be one of: memory, tool, prompt, loop, context, skill, subagent")
-    if artifact is not None and (not isinstance(artifact, str)
-                                 or not artifact.replace("\\", "/").lstrip("./").startswith("work/")):
-        raise ValueError("artifact must be a path under work/")
-    if callable(test):
-        checks = _S.setdefault("review_checks", [])
-        checks.append({"id": "r%d" % (len(checks) + 1), "fn": test, "ok": 0, "fail": 0})
-        test_repr = "<callable %s, run after every later action>" % getattr(test, "__name__", "test")
-    else:
-        test_repr = test
-    reply = _rpc({"t": "review", "review": {"layer": layer, "diagnosis": diagnosis, "evidence": steps,
-                                            "change": change, "test": test_repr, "place": place, "artifact": artifact}})
-    _S["review_required"] = reply.get("review_required")
-    _S["review_test_pending"] = True
-    unfrozen = not _S["review_required"]
-    out = {"ok": True, "layer": layer, "unfrozen": unfrozen}
-    if not unfrozen:
-        out["next"] = "write %s to complete the review and unfreeze actions" % artifact
-    return out
-
-
 class _WorkLoader:
     def __init__(self, name, path, package):
         self.name, self.path, self.package = name, path, package
@@ -342,6 +301,7 @@ class _WorkLoader:
         module.__file__ = self.path
         if self.package:
             module.__path__ = ["work/" + self.name.replace(".", "/")]
+        module.__dict__.update(_API)
         exec(compile(_file("read", self.path), self.path, "exec"), module.__dict__)
 
 
@@ -351,7 +311,7 @@ class _WorkFinder:
             return None
         base = name.replace(".", "/")
         for candidate, package in (("work/" + base + ".py", False), ("work/" + base + "/__init__.py", True),
-                                   ("work/harness/lib/" + base + ".py", False)):
+                                   ("work/lib/" + base + ".py", False), ("work/harness/lib/" + base + ".py", False)):
             try:
                 _file("read", candidate)
             except (FileNotFoundError, PermissionError):
@@ -384,14 +344,6 @@ def _bind():
     transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T]
     last = transitions[-1] if transitions else None
     harness = dict(_S.get("harness") or {})
-    extra = {}
-    if _S.get("last_review_test"):
-        extra["last_review_test"] = _S["last_review_test"]
-    checks = _S.get("review_checks") or []
-    if checks:
-        extra["review_checks"] = {c["id"]: "%d ok / %d fail" % (c["ok"], c["fail"]) for c in checks}
-    if extra:
-        harness["predictions"] = dict(harness.get("predictions") or {}, **extra)
     ns.update(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
               history=history, transitions=transitions, last_transition=last,
               last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
@@ -400,23 +352,12 @@ def _bind():
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
                    skip_known_noops=False, force=False, stop_on_noop=True):
-    if _S.get("review_required"):
-        required = _S["review_required"]
-        hint = ("write the declared artifact file to complete the review" if "write that file" in required
-                else "fix the declared artifact file - the review is not complete"
-                if "failed to load" in required or "copying the frame" in required
-                else "call review(layer=..., diagnosis=..., evidence=[history steps], change=..., test=...) "
-                     "first — see harness_state for evidence")
-        raise RuntimeError("ReviewRequired: %s. Trigger: %s" % (hint, required))
     if expect is not None and not _S.get("expect_on"):
         raise ValueError("expect is disabled in this run; drop the expect argument")
     if expect is not None and not (callable(expect) or (isinstance(expect, int) and not isinstance(expect, bool))
                                    or (isinstance(expect, (tuple, list)) and len(expect) == 2)):
         raise ValueError("expect must be a (lo, hi) changed-cell range, an int levels_completed increase, "
                          "or a callable (before, after) -> bool")
-    if isinstance(expect, (tuple, list)) and len(expect) == 2 and expect[1] - expect[0] > 16:
-        raise ValueError("expect range (%s, %s) is too wide to mean anything; commit to a range no wider than 16 "
-                         "changed cells, an int levels_completed increase, or a callable" % (expect[0], expect[1]))
     items = [actions] if isinstance(actions, (str, dict)) else list(actions)
     if items and _H and _H[-1]["raw"].get("state") == "GAME_OVER":
         first = items[0]
@@ -424,8 +365,8 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         if first_name != "RESET":
             raise RuntimeError("the game is over: only RESET works now. Retrying other actions in a loop can never "
                                "succeed; submit_actions('RESET') first")
+    source = next((f.filename[9:-3] for f in traceback.extract_stack() if f.filename.startswith("work/lib/")), None)
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
-    acted_real = False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
     skipped, surprise = 0, False
     for item in items:
@@ -439,17 +380,16 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             lines.append("%s: skipped, a known no-op in this state (force=True to send)" % label)
             skipped += 1
             continue
+        forecast = _forecast(before, label)
         reply = _rpc({"t": "act", "call": call, "confirm_full_reset": bool(confirm_full_reset), "expect": repr(expect) if expect is not None else None})
         if "stopped" in reply:
             reason = reply["stopped"]
             break
         _S["valid"], _S["valid_raw"], _S["last_result"] = reply["valid_actions"], reply["valid_actions_raw"], reply["result"]
-        _S["review_required"] = reply.get("review_required")
         _append(reply["entry"], _S["numeric"], reply["result"])
         _bind()
         executed += 1
         reset = reset or call["action"] == "RESET"
-        acted_real = acted_real or call["action"] != "RESET"
         level_changed = level_changed or _H[-1]["raw"]["levels_completed"] != before["raw"]["levels_completed"]
         lines.append(reply["line"])
         grids = _H[-1]["grids"]
@@ -457,20 +397,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             transient = _transient(grids)
             if transient:
                 lines[-1] += "  [animation: %d transient cells; inspect frames_of(%d)]" % (transient, len(_H) - 1)
-        for check in _S.get("review_checks") or []:
-            try:
-                verdict = check["fn"](Transition(_T[-1]["action"], _frame(_T[-1]["before"]), _frame(_T[-1]["after"]),
-                                                 dict(_T[-1]["result"]))) if _T else None
-            except Exception:
-                verdict = None
-            if verdict is True:
-                check["ok"] += 1
-            elif verdict is False:
-                check["fail"] += 1
-                lines[-1] += "  <- review test %s failed" % check["id"]
-        for claim_name, claim in sorted((_S.get("claims") or {}).items()):
-            if claim.get("fn") and _T:
-                _judge_claim(claim_name, claim, _T[-1])
+        lines[-1] += _echo(_observe(before, forecast, source))
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
             log = _S.setdefault("expect_log", [])
@@ -497,91 +424,133 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
             break
     latest = _H[-1]["raw"]
     log = _S.get("expect_log") or []
-    review_test = None
-    if executed and acted_real and _S.get("review_test_pending"):
-        _S.pop("review_test_pending")
-        review_test = "surprise" if surprise else ("hit" if expect is not None else "untested")
-        _S["last_review_test"] = review_test
     summary = {"executed_count": executed, "requested": len(items), "stopped_early": reason is not None,
                "stop_reason": reason, "level": latest["level"], "levels_completed": latest["levels_completed"],
                "win_levels": latest.get("win_levels", 0), "state": latest["state"], "level_changed": level_changed,
                "reset": reset, "valid_actions": list(_S["valid"]), "lines": lines, "skipped_noops": skipped,
-               "surprise": surprise, "expect_hits": "%d/%d" % (sum(log), len(log)) if log else None,
-               "review_test": review_test}
+               "surprise": surprise, "expect_hits": "%d/%d" % (sum(log), len(log)) if log else None}
     _S["last_result"] = summary
     _bind()
     return summary
 
 
-def _probe_artifact(path, data):
-    name = str(path).replace("\\", "/")
-    if name.startswith("work/"):
-        name = name[5:]
-    if name == "world_model.py":
-        try:
-            mod = {"__name__": "work.world_model"}
-            exec(compile(data, "work/world_model.py", "exec"), mod)
-            fn = mod.get("predict")
-            if not callable(fn):
-                return {"kind": "model", "error": "defines no callable predict(frame, action)"}
-        except BaseException as exc:
-            return {"kind": "model", "error": "%s: %s" % (type(exc).__name__, exc)}
-        tested = correct = identity = 0
-        err = None
-        for t in _T[-24:]:
-            before_grid = t["before"]["grids"][-1]
-            after_grid = t["after"]["grids"][-1]
+def _note(text):
+    notes = _S.setdefault("notes", [])
+    if text not in notes:
+        notes.append(text)
+
+
+def _doc(text):
+    return (text or "").strip().split("\n")[0][:120]
+
+
+def _key(entry):
+    if "key" not in entry:
+        value, fn = None, (_S.get("model") or {}).get("state_key")
+        if fn:
             try:
-                predicted = fn(_frame(t["before"]), t["action"])
+                value = "k:" + repr(fn(_frame(entry)))
             except BaseException as exc:
-                err = "%s: %s" % (type(exc).__name__, exc)
-                continue
-            tested += 1
-            if _same_grid(predicted, after_grid):
-                correct += 1
-            if _same_grid(before_grid, after_grid):
-                identity += 1
-        out = {"kind": "model", "tested": tested, "correct": correct, "identity": identity}
-        if err:
-            out["error_sample"] = err
-        return out
-    if name.startswith("claims/") and name.endswith(".py"):
-        try:
-            mod = {"__name__": "work." + name[:-3].replace("/", ".")}
-            exec(compile(data, "work/" + name, "exec"), mod)
-            fn = mod.get("check")
-            if not callable(fn):
-                return {"kind": "claim", "error": "defines no callable check(transition)"}
-        except BaseException as exc:
-            return {"kind": "claim", "error": "%s: %s" % (type(exc).__name__, exc)}
-        checked = support = counter = 0
-        for t in _T:
+                _note("model.state_key raised %s: %s" % (type(exc).__name__, exc))
+        entry["key"] = value or _grid_hash(_interior(entry["grids"][-1]))
+    return entry["key"]
+
+
+def _ledger(t):
+    before, after = _key(t["before"]), _key(t["after"])
+    seen = _S["seen"]
+    seen.add(before)
+    prev = _S["tries"].setdefault((before, t["action"]), [])
+    step = t["after"]["raw"]["step"]
+    fact = {"step": step, "action": t["action"], "tries": len(prev), "same": bool(prev) and all(a == after for _, a in prev),
+            "last_try": prev[-1][0] if prev else None, "new": after not in seen}
+    prev.append((step, after))
+    seen.add(after)
+    if t["after"]["raw"]["state"] == "GAME_OVER" and t["before"]["raw"]["state"] != "GAME_OVER":
+        mark = (before, t["action"])
+        fact["same_death"] = next((s for m, s in _S["deaths"] if m == mark), None)
+        _S["deaths"].append((mark, step))
+    return fact
+
+
+def _rebuild():
+    _S.update(tries={}, seen=set(), deaths=[])
+    for entry in _H:
+        entry.pop("key", None)
+    if _H:
+        _S["seen"].add(_key(_H[0]))
+    for t in _T:
+        _ledger(t)
+
+
+def _forecast(entry, label):
+    model, out = _S.get("model") or {}, {}
+    for name in ("predict", "is_fatal"):
+        if model.get(name):
             try:
-                verdict = fn(Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])))
+                out[name] = model[name](_frame(entry), label)
             except BaseException as exc:
-                return {"kind": "claim", "error": "%s: %s" % (type(exc).__name__, exc)}
-            checked += 1
-            if verdict is True:
-                support += 1
-            elif verdict is False:
-                counter += 1
-        return {"kind": "claim", "checked": checked, "support": support, "counter": counter}
-    return None
+                _note("model.%s raised %s: %s" % (name, type(exc).__name__, exc))
+    return out
+
+
+def _off(predicted, actual):
+    try:
+        cells = _cells(predicted)
+        return sum(1 for r, row in enumerate(actual) for c, value in enumerate(row) if cells[r][c] != -1 and cells[r][c] != value)
+    except BaseException:
+        _note("model.predict must return a grid (rows of ints, -1 = don't care); got %s" % type(predicted).__name__)
+        return None
+
+
+def _observe(before, forecast, source):
+    t, after = _T[-1], _H[-1]
+    fact = _ledger(t)
+    fact.update(level=before["raw"]["level"], changed=gameplay_changed(before["grids"][-1], after["grids"][-1]),
+                death=after["raw"]["state"] == "GAME_OVER" and before["raw"]["state"] != "GAME_OVER",
+                level_up=after["raw"]["levels_completed"] != before["raw"]["levels_completed"], source=source,
+                fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[],
+                predict_off=_off(forecast["predict"], after["grids"][-1]) if "predict" in forecast else None)
+    for name, claim in sorted((_S.get("claims") or {}).items()):
+        if claim.get("fn"):
+            verdict = _judge_claim(name, claim, t)
+            if verdict is not None:
+                fact["claims_held" if verdict else "claims_failed"].append(name)
+    _S.setdefault("steps", []).append(fact)
+    return fact
+
+
+def _echo(fact):
+    out = ""
+    if fact["tries"]:
+        out += "  [tried %d time%s before from this board%s]" % (
+            fact["tries"], "s" if fact["tries"] > 1 else "", ", same result each time" if fact["same"] else "")
+    if fact["predict_off"]:
+        out += "  [predict: %d cells off]" % fact["predict_off"]
+    if fact["death"]:
+        out += "  [death%s%s]" % (
+            "; repeats the death at step %d (same board, same action)" % fact["same_death"]
+            if fact.get("same_death") is not None else "", "; is_fatal had flagged it" if fact["fatal"] else "")
+    elif fact["fatal"]:
+        out += "  [is_fatal flagged this action; it was not fatal]"
+    for name in fact["claims_failed"]:
+        out += "  [claims/%s failed]" % name
+    return out
+
+
+def _load(path, source):
+    module = types.ModuleType(path[5:-3].replace("/", "."))
+    module.__file__ = path
+    module.__dict__.update(_API)
+    exec(compile(source, path, "exec"), module.__dict__)
+    return module
 
 
 def _file(op, path, data=None):
     req = {"t": "file", "op": op, "path": str(path), "data": data}
-    if op == "write":
-        probe = _probe_artifact(path, data)
-        if probe is not None:
-            req["probe"] = probe
     reply = _rpc(req)
     if "error" in reply:
         raise (FileNotFoundError if reply.get("missing") else PermissionError)(reply["error"])
-    if reply.get("review_cleared"):
-        _S["review_required"] = None
-    elif reply.get("review_required"):
-        _S["review_required"] = reply["review_required"]
     return reply.get("data")
 
 
@@ -615,57 +584,25 @@ def _is_work_path(path):
     return clean == "work" or clean.startswith("work/")
 
 
-def _same_grid(predicted, actual):
-    try:
-        cells = _cells(predicted)
-        if cells is None or len(cells) != len(actual):
-            return False
-        for row_p, row_a in zip(cells, actual):
-            if len(row_p) != len(row_a):
-                return False
-            for a, b in zip(row_p, row_a):
-                if a != b:
-                    return False
-        return True
-    except BaseException:
-        return False
-
-
 def _judge_claim(claim_name, claim, t):
     try:
         verdict = claim["fn"](Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])))
     except BaseException as exc:
         claim["error"] = "%s: %s" % (type(exc).__name__, exc)
-        return
-    box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "checked": 0, "levels": []})
+        _note("claims/%s raised %s" % (claim_name, claim["error"]))
+        return None
+    box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "checked": 0,
+                                                                     "levels": [], "last_fail": None})
     box["checked"] += 1
     if verdict is True or verdict is False:
         box["support" if verdict else "counter"] += 1
         level = t["after"]["raw"]["level"]
         if verdict and level not in box["levels"]:
             box["levels"].append(level)
-
-
-def _backtest_model(model):
-    fn = model.get("fn")
-    if not fn or not _T:
-        return None
-    tested = correct = 0
-    err = model.get("error")
-    for t in _T[-24:]:
-        try:
-            predicted = fn(_frame(t["before"]), t["action"])
-        except BaseException as exc:
-            err = "%s: %s" % (type(exc).__name__, exc)
-            continue
-        tested += 1
-        if _same_grid(predicted, t["after"]["grids"][-1]):
-            correct += 1
-    model["tested_at"] = len(_T)
-    out = {"tested": tested, "correct": correct}
-    if err:
-        out["error"] = err
-    return out
+        if not verdict:
+            box["last_fail"] = t["after"]["raw"]["step"]
+        return bool(verdict)
+    return None
 
 
 def _makedirs(path, *args, **kwargs):
@@ -682,14 +619,15 @@ def _mkdir(path, *args, **kwargs):
 
 _os_makedirs, _os_mkdir = os.makedirs, os.mkdir
 os.makedirs, os.mkdir = _makedirs, _mkdir
+_API = dict(open=_open, submit_actions=submit_actions, diff=diff, ascii=ascii, frames_of=frames_of,
+            frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed)
 
 
 def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
               skip_noops=bool(req.get("skip_noops")), expect_on=bool(req.get("expect_enabled")),
-              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {},
-              review_on=bool(req.get("review_enabled")), review_required=req.get("review_required"))
+              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {})
     if req["reset_history"]:
         _H.clear()
         _T.clear()
@@ -702,8 +640,6 @@ def _cell(req):
                     "diff": diff, "ascii": ascii, "frames_of": frames_of, "frame_diff": frame_diff}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
-        if _S["review_on"]:
-            _S["ns"]["review"] = review
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
             sys.meta_path.append(_WorkFinder())
     _bind()
@@ -718,38 +654,84 @@ def _cell(req):
         cur = store.get(claim["name"])
         if cur is not None and cur["source"] == claim["source"]:
             continue
-        entry = {"source": claim["source"], "fn": None, "error": None}
+        fresh_claim = cur is None or cur.get("source") != claim["source"]
+        name, entry = claim["name"], {"source": claim["source"], "fn": None, "error": None, "doc": ""}
         try:
-            mod = {"__name__": "work.claims." + claim["name"]}
-            exec(compile(claim["source"], "work/claims/%s.py" % claim["name"], "exec"), mod)
-            if callable(mod.get("check")):
-                entry["fn"] = mod["check"]
+            mod = _load("work/claims/%s.py" % name, claim["source"])
+            if callable(getattr(mod, "check", None)):
+                entry.update(fn=mod.check, doc=_doc(mod.__doc__ or mod.check.__doc__))
             else:
                 entry["error"] = "defines no callable check(transition)"
         except BaseException as exc:
             entry["error"] = "%s: %s" % (type(exc).__name__, exc)
-        store[claim["name"]] = entry
-        if entry["fn"] and claim.get("fresh"):
-            for t in _T:
-                _judge_claim(claim["name"], entry, t)
+        store[name] = entry
+        if entry["error"]:
+            _note("claims/%s failed to load: %s" % (name, entry["error"]))
+        elif fresh_claim:
+            verdicts = [_judge_claim(name, entry, t) for t in _T]
+            _note("loaded claims/%s (back-test on %d transitions: applied %d, held %d, failed %d)" % (
+                name, len(verdicts), sum(v is not None for v in verdicts), verdicts.count(True), verdicts.count(False)))
     supplied = {claim["name"] for claim in req.get("claims") or []}
     for name in list(store):
         if name not in supplied:
             del store[name]
-    model = _S.setdefault("model", {"source": None, "fn": None, "error": None, "tested_at": -1})
+    libs = _S.get("lib") or {}
+    for name, item in libs.items():
+        if item.get("module"):
+            ns[name] = item["module"]
+    model = _S.setdefault("model", {"source": None})
     model_source = req.get("model_source")
+    rebuild = bool(req["new_history"])
     if model_source != model["source"]:
-        model.update(source=model_source, fn=None, error=None, tested_at=-1)
+        _S["model"] = model = {"source": model_source}
+        rebuild = True
         if model_source:
             try:
-                mod = {"__name__": "work.world_model"}
-                exec(compile(model_source, "work/world_model.py", "exec"), mod)
-                if callable(mod.get("predict")):
-                    model["fn"] = mod["predict"]
-                else:
-                    model["error"] = "defines no callable predict(frame, action)"
+                _S["model_module"] = mod = _load("work/model.py", model_source)
+                model.update({name: getattr(mod, name) for name in ("state_key", "predict", "is_fatal")
+                              if callable(getattr(mod, name, None))})
+                tested = correct = 0
+                if "predict" in model:
+                    for transition in _T:
+                        forecast = _forecast(transition["before"], transition["action"])
+                        if "predict" not in forecast:
+                            continue
+                        off = _off(forecast["predict"], transition["after"]["grids"][-1])
+                        if off is not None:
+                            tested += 1
+                            correct += off == 0
+                    model["tested"], model["correct"] = tested, correct
+                _note("loaded model.py (%s)%s" % (", ".join(name for name in ("state_key", "predict", "is_fatal") if name in model)
+                     or "defines none of state_key, predict, is_fatal",
+                     "; back-test on %d transitions: %d accurate" % (tested, correct) if "predict" in model else ""))
             except BaseException as exc:
                 model["error"] = "%s: %s" % (type(exc).__name__, exc)
+                _note("model.py failed to load: %s" % model["error"])
+    if model.get("source"):
+        ns["model"] = _S["model_module"]
+    if rebuild:
+        _rebuild()
+    libs = _S.setdefault("lib", {})
+    for item in req.get("lib") or []:
+        name, cur = item["name"], libs.get(item["name"])
+        if cur is not None and cur["source"] == item["source"]:
+            if fresh and cur["module"]:
+                ns[name] = cur["module"]
+            continue
+        entry = {"source": item["source"], "module": None, "error": None, "doc": ""}
+        try:
+            entry["module"] = ns[name] = _load("work/lib/%s.py" % name, item["source"])
+            entry["doc"] = _doc(entry["module"].__doc__)
+            _note("loaded lib/%s as `%s`%s" % (name, name, ": " + entry["doc"] if entry["doc"] else ""))
+        except BaseException as exc:
+            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
+            _note("lib/%s failed to load: %s" % (name, entry["error"]))
+        libs[name] = entry
+    for name in [name for name in libs if name not in {item["name"] for item in req.get("lib") or []}]:
+        if ns.get(name) is libs[name]["module"]:
+            ns.pop(name)
+        del libs[name]
+    _bind()
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
@@ -772,15 +754,15 @@ def _cell(req):
         shown = value if isinstance(value, str) else repr(value)
         text += ("" if not text or text.endswith("\n") else "\n") + shown
     claim_errors = {name: c["error"] for name, c in (_S.get("claims") or {}).items() if c.get("error")}
-    backtest = None
-    if model.get("fn") and len(_T) != model.get("tested_at"):
-        backtest = _backtest_model(model)
-    elif model.get("error"):
-        backtest = {"tested": 0, "correct": 0, "error": model["error"]}
+    text = text + ("\n" + "\n".join(_S.get("notes") or []) if _S.get("notes") else "")
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
-            "last_result": dict(_S["last_result"]),
-            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors},
-            "model": backtest}
+            "last_result": dict(_S["last_result"]), "steps": _S.pop("steps", []), "notes": _S.pop("notes", []),
+            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors,
+                       "docs": {name: c["doc"] for name, c in (_S.get("claims") or {}).items()}},
+            "model": {"funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],
+                      "tested": model.get("tested"), "correct": model.get("correct"),
+                      "error": model.get("error")} if model.get("source") else None,
+            "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()}}
 
 
 _req = input

@@ -108,10 +108,10 @@ test("os.makedirs under work/ is a no-op and nested writes work", async () => {
   assert.match(readFileSync(join(dir, "claims", "rule.py"), "utf8"), /return None/);
 });
 
-test("the host back-tests work/world_model.py and reports the hit rate", async () => {
+test("the host back-tests work/model.py and reports the hit rate", async () => {
   const { python } = await session();
   const out = await python.run([
-    "with open('work/world_model.py', 'w') as f: f.write('def predict(frame, action):\\n    return frame.grid\\n')",
+    "with open('work/model.py', 'w') as f: f.write('def predict(frame, action):\\n    return frame.grid\\n')",
     "submit_actions(['UP', 'UP'])",
     "print('ran')",
   ].join("\n"));
@@ -186,18 +186,16 @@ test("trimmed names are not bound by default and .ascii still compares as a stri
   assert.match(out.text, /^\[\]\nTrue False False/);
 });
 
-test("modules written under work/ and work/harness/lib can be imported", async () => {
+test("modules written under work/ are imported automatically", async () => {
   const { python } = await session();
   const first = await python.run([
-    "with open('work/world_model.py', 'w') as f: f.write('VALUE = 7\\n')",
-    "with open('work/harness/lib/helpers.py', 'w') as f: f.write('def twice(v): return v * 2\\n')",
-    "import world_model, helpers",
-    "print(world_model.VALUE, helpers.twice(3))",
+    "with open('work/model.py', 'w') as f: f.write('VALUE = 7\\n')",
+    "with open('work/lib/helpers.py', 'w') as f: f.write('def twice(v): return v * 2\\n')",
+    "print(model.VALUE, helpers.twice(3))",
   ].join("\n"));
   const second = await python.run([
-    "with open('work/world_model.py', 'w') as f: f.write('VALUE = 8\\n')",
-    "import importlib, world_model",
-    "print(importlib.reload(world_model).VALUE)",
+    "with open('work/model.py', 'w') as f: f.write('VALUE = 8\\n')",
+    "print(model.VALUE)",
   ].join("\n"));
   python.close();
   assert.match(first.text, /^7 6\n/);
@@ -287,98 +285,56 @@ test("harness_state is bound with run evidence and refreshes between calls", asy
   assert.match(third.text, /^0 1\/1/);
 });
 
-test("a completed level freezes submit_actions until a review unfreezes it", async () => {
-  const { python } = await session({ review: true });
+test("a completed level stops the batch and later calls act normally", async () => {
+  const { python } = await session();
   const levelUp = await python.run("print(submit_actions(['UP'] * 3)['stop_reason'])");
   assert.match(levelUp.text, /^level_change/);
-  const frozen = await python.run([
-    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print(str(e)[:14])",
-    "try:\n    review(layer='vibes', diagnosis='d', evidence=[1], change='c', test='t')\nexcept ValueError:\n    print('bad layer')",
-    "try:\n    review(layer='goal', diagnosis='d', evidence=[], change='c', test='t')\nexcept ValueError:\n    print('no evidence')",
-    "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='none', test=' ')\nexcept ValueError:\n    print('no test')",
-    "r = review(layer='goal', diagnosis='reach row 4', evidence=[1, 2], change='go up fast', test='two UPs complete a level', place='prompt', artifact='work/prompt.md')",
-    "f = open('work/prompt.md', 'w')\nf.write('go up fast')\nf.close()",
-    "print(r['unfrozen'], submit_actions('UP')['executed_count'])",
-  ].join("\n"));
+  const after = await python.run("print(submit_actions('UP')['executed_count'])");
   python.close();
-  assert.match(frozen.text, /^ReviewRequired\nbad layer\nno evidence\nno test\nFalse 1/);
-  assert.equal(frozen.reviews?.length, 1);
-  assert.equal((frozen.reviews?.[0] as any).layer, "goal");
-  assert.match(String((frozen.reviews?.[0] as any).trigger), /complete/);
+  assert.match(after.text, /^1/);
 });
 
-test("the first acting batch after a review reports whether its expect held", async () => {
-  const { python } = await session({ review: true });
+test("an acting batch reports whether its expect held", async () => {
+  const { python } = await session();
   await python.run("submit_actions(['UP'] * 3)");
   const out = await python.run([
-    "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='goal', test='t')\nexcept ValueError:\n    print('layer name rejected')",
-    "review(layer='goal', diagnosis='d', evidence=[1], change='rows fill upward', test='UP keeps changing cells', place='memory', artifact='work/claims.md')",
-    "f = open('work/claims.md', 'w')\nf.write('rows fill upward')\nf.close()",
-    "print(submit_actions('RESET')['review_test'])",
+    "print(submit_actions('RESET')['expect_hits'])",
     "r = submit_actions('UP', expect=lambda before, after: True)",
-    "print(r['review_test'], harness_state['predictions'].get('last_review_test'))",
-    "print(submit_actions('UP')['review_test'])",
+    "print(r['expect_hits'])",
+    "print(submit_actions('UP')['expect_hits'])",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^layer name rejected\nNone\nhit hit\nNone/);
-  assert.equal((out.acted as any)?.review_test, undefined);
+  assert.match(out.text, /^None\n1\/1\nNone/);
 });
 
-test("a callable review test runs after every later action and is mounted in harness_state", async () => {
-  const { python } = await session({ review: true });
+test("expect checks are exposed in harness_state without a review call", async () => {
+  const { python } = await session();
   await python.run("submit_actions(['UP'] * 3)");
-  const out = await python.run([
-    "review(layer='rule', diagnosis='UP always changes the frame', evidence=[1], change='keep going up', test=lambda t: t.action == 'UP', place='memory', artifact='work/claims.md')",
-    "f = open('work/claims.md', 'w')\nf.write('keep going up')\nf.close()",
-    "r = submit_actions(['UP', 'UP'])",
-    "print(harness_state['predictions']['review_checks'])",
-  ].join("\n"));
-  const mounted = await python.run(
-    "print(harness_state['reviews'][-1]['change'], '|', harness_state['reviews'][-1]['test'])");
+  const out = await python.run("r = submit_actions(['UP', 'UP'])\nprint(harness_state['predictions']['expect_hits'])");
   python.close();
-  assert.match(out.text, /\{'r1': '2 ok \/ 0 fail'\}/);
-  assert.match(mounted.text, /keep going up \| <callable/);
+  assert.match(out.text, /^2\/2/);
 });
 
-test("a review must declare a landing place and the host verifies the artifact", async () => {
-  const { python } = await session({ review: true });
+test("actions continue after a level without review calls", async () => {
+  const { python } = await session();
   await python.run("submit_actions(['UP'] * 3)");
-  const out = await python.run([
-    "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='c', test='t')\nexcept ValueError:\n    print('no place')",
-    "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='c', test='t', place='vibes', artifact='work/x.py')\nexcept ValueError:\n    print('bad place')",
-    "try:\n    review(layer='goal', diagnosis='d', evidence=[1], change='c', test='t', place='tool', artifact='lib/x.py')\nexcept ValueError:\n    print('bad artifact')",
-    "r = review(layer='goal', diagnosis='push up', evidence=[1], change='push the block up', test='UP changes cells', place='tool', artifact='work/lib/up.py')",
-    "print(r['unfrozen'])",
-    "try:\n    submit_actions('UP')\nexcept RuntimeError:\n    print('still frozen until the file exists')",
-    "f = open('work/lib/up.py', 'w')\nf.write('def up():\\n    return 1\\n')\nf.close()",
-    "r = submit_actions('UP')",
-    "print(r['review_test'])",
-  ].join("\n"));
+  const out = await python.run("print(submit_actions('UP')['executed_count'])");
   python.close();
-  assert.match(out.text, /^no place\nbad place\nbad artifact\nFalse\nstill frozen until the file exists\nuntested/);
-  assert.equal((out.acted as any)?.review_placement, "placed");
-  assert.equal((out.acted as any)?.review_artifact, "work/lib/up.py");
-  assert.equal((out.reviews?.[0] as any).place, "tool");
-  assert.equal((out.reviews?.[0] as any).placed, true);
+  assert.match(out.text, /^1/);
 });
 
-test("a declared-but-unwritten artifact keeps actions frozen until it is written", async () => {
-  const { python } = await session({ review: true, reviewStuckSteps: 2 });
+test("a repeated no-progress batch is reported without freezing", async () => {
+  const { python } = await session();
   await python.run("submit_actions(['DOWN'] * 4, stop_on_noop=False)");
   const out = await python.run([
-    "review(layer='rule', diagnosis='DOWN is a noop', evidence=[1, 2], change='move with UP only', test='UP changes cells', place='memory', artifact='work/claims.md')",
-    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'write the declared artifact' in str(e))",
-    "f = open('work/claims.md', 'w')\nf.write('# DOWN is a noop\\n')\nf.close()",
     "r = submit_actions('UP')",
-    "print(r['executed_count'], r['review_test'])",
+    "print(r['executed_count'])",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^frozen: True\n1 untested/);
-  assert.equal((out.acted as any)?.review_placement, "placed");
-  assert.equal((out.acted as any)?.review_artifact, "work/claims.md");
+  assert.match(out.text, /\n1$/);
 });
 
-test("claims are executed on every transition and validated by the host ledger", async () => {
+test("claims are executed on every transition and reported as evidence", async () => {
   const { python } = await session();
   await python.run([
     "f = open('work/claims/up_moves.py', 'w')",
@@ -387,13 +343,13 @@ test("claims are executed on every transition and validated by the host ledger",
   ].join("\n"));
   await python.run("print(submit_actions(['UP'] * 2)['executed_count'])");
   const third = await python.run("submit_actions('UP')\nprint('ok')");
-  const fourth = await python.run("c = harness_state['claims']['up_moves']\nprint(c['state'], c['support'], c['counter'], c['scale'])");
+  const fourth = await python.run("c = harness_state['claims']['up_moves']\nprint(c['support'], c['counter'])");
   python.close();
-  assert.deepEqual((third.acted as any)?.claims_validated, ["up_moves"]);
-  assert.match(fourth.text, /^validated 3 0 game/);
+  assert.match(third.text, /\[claims\/up_moves held\]/);
+  assert.match(fourth.text, /^3 0/);
 });
 
-test("a counterexample falsifies a claim and editing the file resets its record", async () => {
+test("a counterexample is reported as evidence and editing the file resets its record", async () => {
   const { python } = await session();
   await python.run([
     "f = open('work/claims/down_changes.py', 'w')",
@@ -405,17 +361,17 @@ test("a counterexample falsifies a claim and editing the file resets its record"
   ].join("\n"));
   const second = await python.run("r = submit_actions('DOWN')\nprint(r['executed_count'])");
   const third = await python.run(
-    "c = harness_state['claims']\nprint(c['down_changes']['state'], 'broken claim' in c['boom'].get('error', ''))");
+    "c = harness_state['claims']\nprint('broken claim' in c['boom'].get('error', ''))");
   await python.run("f = open('work/claims/down_changes.py', 'w')\nf.write('def check(t):\\n    return None\\n')\nf.close()");
   const fifth = await python.run(
-    "c = harness_state['claims']['down_changes']\nprint(c['state'], c['support'], c['counter'])");
+    "c = harness_state['claims']['down_changes']\nprint(c['support'], c['counter'])");
   python.close();
-  assert.deepEqual((second.acted as any)?.claims_falsified, ["down_changes"]);
-  assert.match(third.text, /^falsified True/);
-  assert.match(fifth.text, /^hypothesis 0 0/);
+  assert.match(second.text, /\[claims\/down_changes failed\]/);
+  assert.match(third.text, /^True/);
+  assert.match(fifth.text, /^0 1/);
 });
 
-test("a new claim is back-tested against the recorded history at load", async () => {
+test("a new claim is back-tested without freezing actions", async () => {
   const { python } = await session();
   await python.run("print(submit_actions(['UP'] * 2)['executed_count'])");
   await python.run("print(submit_actions('UP')['executed_count'])");
@@ -425,14 +381,14 @@ test("a new claim is back-tested against the recorded history at load", async ()
     "f.close()",
   ].join("\n"));
   const loaded = await python.run("print('loaded')");
-  const after = await python.run("c = harness_state['claims']['up_moves']\nprint(c['state'], c['support'], c['checked'])");
+  const after = await python.run("c = harness_state['claims']['up_moves']\nprint(c['support'], c['checked'])");
   python.close();
   assert.equal(loaded.acted?.executed, 0);
-  assert.deepEqual((loaded.acted as any)?.claims_validated, ["up_moves"]);
-  assert.match(after.text, /^validated 3 3/);
+  assert.match(loaded.notes?.join("\n") ?? "", /loaded claims\/up_moves/);
+  assert.match(after.text, /^3 3/);
 });
 
-test("a claim that never applies is flagged after 20 checks", async () => {
+test("a claim that never applies stays available and is not treated as an error", async () => {
   const { python } = await session();
   await python.run([
     "f = open('work/claims/never.py', 'w')",
@@ -441,76 +397,10 @@ test("a claim that never applies is flagged after 20 checks", async () => {
   ].join("\n"));
   const first = await python.run("r = submit_actions(['DOWN'] * 10, stop_on_noop=False)\nprint(r['executed_count'])");
   const second = await python.run("r = submit_actions(['DOWN'] * 10, stop_on_noop=False)\nprint(r['executed_count'])");
-  const after = await python.run("c = harness_state['claims']['never']\nprint(c['state'], c['support'], c['checked'])");
+  const after = await python.run("c = harness_state['claims']['never']\nprint(c['support'], c['checked'])");
   python.close();
-  assert.equal((first.acted as any)?.claims_inapplicable, undefined);
-  assert.deepEqual((second.acted as any)?.claims_inapplicable, ["never"]);
-  assert.match(after.text, /^hypothesis 0 20/);
-});
-
-test("stagnation freezes acting mid-batch and the freeze survives calls", async () => {
-  const { python } = await session({ review: true, reviewStuckSteps: 2 });
-  const out = await python.run("r = submit_actions(['DOWN'] * 4, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
-  assert.match(out.text, /^2 review required: 2 steps without a new state/);
-  const blocked = await python.run([
-    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen')",
-    "review(layer='rule', diagnosis='DOWN does nothing here', evidence=[1, 2], change='none', test='UP changes the frame')",
-    "print(submit_actions('UP')['executed_count'])",
-  ].join("\n"));
-  python.close();
-  assert.match(blocked.text, /^frozen\n1/);
-});
-
-test("a half-spent level budget freezes acting once", async () => {
-  const { python } = await session({ review: true, reviewTriggers: ["budget"] });
-  const out = await python.run("r = submit_actions(['DOWN'] * 16, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
-  python.close();
-  assert.match(out.text, /^10 review required: half the level budget/);
-});
-
-test("review triggers can be restricted to a subset", async () => {
-  const { python } = await session({ review: true, reviewStuckSteps: 2, reviewTriggers: ["game_over"] });
-  const out = await python.run("r = submit_actions(['DOWN'] * 8, stop_on_noop=False)\nprint(r['executed_count'], r.get('stop_reason'))");
-  python.close();
-  assert.match(out.text, /^8 None/);
-});
-
-test("three identical actions on the same board freeze acting for a hypothesis-elimination review", async () => {
-  const { python } = await session({ review: true });
-  const out = await python.run("r = submit_actions(['DOWN'] * 4, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
-  python.close();
-  assert.match(out.text, /^3 review required: 3 times the same action DOWN was sent against the same board/);
-});
-
-test("consecutive non-acting python calls without a work/ write eventually freeze for a landing review", async () => {
-  const { python } = await session({ review: true });
-  for (let call = 0; call < 8; call += 1) await python.run("pass");
-  const frozen = await python.run("try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'no action and no work' in str(e))");
-  python.close();
-  assert.match(frozen.text, /^frozen: True/);
-});
-
-test("the first GAME_OVER on a level freezes acting until a review", async () => {
-  const bridge = new FakeBridge();
-  (bridge as any).act = async function (payload: { action: string }) {
-    this.used += 1;
-    if (payload.action === "RESET") this.row = 6;
-    const frame = this.frame();
-    if (payload.action !== "RESET") frame.state = "GAME_OVER";
-    return frame;
-  };
-  const python = new LayeredPython(bridge as any, config({ review: true }));
-  await python.init();
-  const out = await python.run("r = submit_actions('UP')\nprint(r['stop_reason'])");
-  const frozen = await python.run([
-    "try:\n    submit_actions('RESET')\nexcept RuntimeError:\n    print('frozen')",
-    "review(layer='rule', diagnosis='UP is fatal from the start row', evidence=[1], change='none', test='RESET restores the frame')",
-    "print(submit_actions('RESET')['executed_count'])",
-  ].join("\n"));
-  python.close();
-  assert.match(out.text, /^game_over/);
-  assert.match(frozen.text, /^frozen\n1/);
-  assert.match(String((frozen.reviews?.[0] as any)?.trigger), /GAME_OVER number 1 on this level/);
+  assert.equal(first.acted?.steps?.every(fact => fact.claims_failed.length === 0 && fact.claims_held.length === 0), true);
+  assert.match(after.text, /^0 20/);
 });
 
 test("after GAME_OVER a non-RESET batch raises instead of spinning, and bridge actions leave a heartbeat", async () => {
@@ -554,47 +444,47 @@ test("work/startup.py runs once at kernel start and surfaces errors", async () =
   assert.match(bad.text, /alive/);
 });
 
-test("a stub world_model.py keeps the review frozen until predict beats copying the frame", async () => {
-  const { python } = await session({ review: true, reviewTriggers: ["game_over"] });
-  await python.run("submit_actions('UP')\nsubmit_actions(['DOWN'] * 4, stop_on_noop=False)");
+test("predict is executed by the host and echoes misses without blocking actions", async () => {
+  const { python } = await session();
+  await python.run("submit_actions('UP')\nsubmit_actions(['DOWN'] * 2, stop_on_noop=False)");
   const out = await python.run([
-    "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/world_model.py')",
-    "f = open('work/world_model.py', 'w')\nf.write('def predict(frame, action):\\n    return frame.grid\\n')\nf.close()",
-    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'copying the frame' in str(e))",
+    "f = open('work/model.py', 'w')\nf.write('def predict(frame, action):\\n    return frame.grid\\n')\nf.close()",
+    "print('loaded')",
+    "r = submit_actions('UP')\nprint(r['lines'][-1])",
     "code = 'def predict(frame, action):\\n    g = [row[:] for row in frame.grid]\\n    if action != \"UP\":\\n        return g\\n" +
       "    for r in range(len(g)):\\n        for c in range(len(g[0])):\\n            if g[r][c] == 2 and r > 0:\\n" +
       "                g[r-1][c] = 2\\n                g[r][c] = 0\\n                return g\\n    return g\\n'",
-    "f = open('work/world_model.py', 'w')\nf.write(code)\nf.close()",
+    "f = open('work/model.py', 'w')\nf.write(code)\nf.close()",
     "print(submit_actions('UP')['executed_count'])",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^frozen: True\n1/);
+  assert.match(out.text, /loaded model\.py \(predict\); back-test on 5 transitions: 0 accurate/);
+  assert.match(out.text, /\[predict: \d+ cells off\]/);
+  assert.match(out.text, /\n1$/);
 });
 
-test("a broken claims artifact keeps the review frozen until it loads", async () => {
-  const { python } = await session({ review: true });
+test("a broken claim reports its error and later actions are not blocked", async () => {
+  const { python } = await session();
   await python.run("submit_actions(['DOWN'] * 2, stop_on_noop=False)");
   const out = await python.run([
-    "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/claims/down_noop.py')",
     "f = open('work/claims/down_noop.py', 'w')\nf.write('def check(t)\\n    return None\\n')\nf.close()",
-    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'failed to load' in str(e))",
+    "print(submit_actions('UP')['executed_count'])",
     "f = open('work/claims/down_noop.py', 'w')\nf.write('def check(t):\\n    return None if t.action != \"DOWN\" else t.after_frame.grid == t.before_frame.grid\\n')\nf.close()",
     "print(submit_actions('UP')['executed_count'])",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^frozen: True\n1/);
+  assert.match(out.text, /claims\/down_noop failed to load: SyntaxError/);
+  assert.match(out.text, /\n1\n1$/);
 });
 
-test("a review landing in a never-applying claim stays frozen until its guard narrows", async () => {
-  const { python } = await session({ review: true });
+test("a never-applying claim is reported but does not block actions", async () => {
+  const { python } = await session();
   await python.run("submit_actions(['DOWN'] * 3, stop_on_noop=False)");
   const out = await python.run([
-    "review(layer='rule', diagnosis='d', evidence=[1], change='c', test='t', place='memory', artifact='work/claims/never.py')",
     "f = open('work/claims/never.py', 'w')\nf.write('def check(t):\\n    return None\\n')\nf.close()",
-    "try:\n    submit_actions('UP')\nexcept RuntimeError as e:\n    print('frozen:', 'never applies' in str(e))",
     "f = open('work/claims/never.py', 'w')\nf.write('def check(t):\\n    return None if t.action != \"DOWN\" else t.after_frame.grid == t.before_frame.grid\\n')\nf.close()",
     "print(submit_actions('UP')['executed_count'])",
   ].join("\n"));
   python.close();
-  assert.match(out.text, /^frozen: True\n1/);
+  assert.match(out.text, /\n1\n1$/);
 });
