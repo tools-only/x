@@ -26,6 +26,10 @@ const READ_ACT_SCRIPT: typeof SCRIPT = [
       "if 'UP' in valid_actions:\n    r = submit_actions('UP')\n    print('POST_ACT', current_frame.step, len(history), r['executed_count'])" },
   { code: "print('NEXT_TURN', initial_step, current_frame.step, len(history))\nsubmit_actions('RIGHT')" },
 ];
+const EVO_WRITE_SCRIPT: typeof SCRIPT = [
+  { code: "with open('work/claims/action_seen.py', 'w') as f: f.write('def check(t):\\n    return True if t.action == \\\"UP\\\" else None\\n')\nprint(submit_actions('UP')['lines'])" },
+  { code: "print('CLAIM_AFTER_ACTION', harness_state['claims']['action_seen']['support'])\nsubmit_actions('UP')" },
+];
 
 export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
   let step = 0;
@@ -35,7 +39,8 @@ export default function arcLayeredSmokeProvider(pi: ExtensionAPI) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple: scriptedProviderTransport((model, context) => {
       const stream = createAssistantMessageEventStream();
-      const script = process.env.ARC_LAYERED_SMOKE_SCRIPT === "read-act" ? READ_ACT_SCRIPT : SCRIPT;
+      const script = process.env.ARC_LAYERED_SMOKE_SCRIPT === "evo-write" ? EVO_WRITE_SCRIPT
+        : process.env.ARC_LAYERED_SMOKE_SCRIPT === "read-act" ? READ_ACT_SCRIPT : SCRIPT;
       const row = script[step] ?? { text: "done" };
       step += 1;
       const messages: any[] = context.messages ?? [], system = String(context.systemPrompt || getCurrentSystemPrompt(messages as any) || "");

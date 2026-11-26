@@ -64,6 +64,99 @@ class Transition:
         return "Transition(action=%r, after=%r)" % (self.action, self.after_frame)
 
 
+def _sync_work(req, rebuild=False):
+    ns = _S["ns"]
+    libs = _S.setdefault("lib", {})
+    sources = {item["name"]: item["source"] for item in req.get("lib") or []}
+    libs_changed = sources != {name: item["source"] for name, item in libs.items()}
+    if libs_changed:
+        for name, module in list(sys.modules.items()):
+            if str(getattr(module, "__file__", "")).startswith("work/lib/"):
+                sys.modules.pop(name)
+        for name, item in libs.items():
+            if ns.get(name) is item["module"]:
+                ns.pop(name, None)
+        libs.clear()
+        for item in req.get("lib") or []:
+            name = item["name"]
+            entry = {"source": item["source"], "module": None, "error": None, "doc": ""}
+            try:
+                entry["module"] = ns[name] = _load("work/lib/%s.py" % name, item["source"])
+                entry["doc"] = _doc(entry["module"].__doc__)
+                _note("loaded lib/%s as `%s`%s" % (name, name, ": " + entry["doc"] if entry["doc"] else ""))
+            except BaseException as exc:
+                entry["error"] = "%s: %s" % (type(exc).__name__, exc)
+                _note("lib/%s failed to load: %s" % (name, entry["error"]))
+            libs[name] = entry
+    store = _S.setdefault("claims", {})
+    for claim in req.get("claims") or []:
+        cur = store.get(claim["name"])
+        if cur is not None and cur["source"] == claim["source"] and not libs_changed:
+            continue
+        fresh_claim = cur is None or cur.get("source") != claim["source"] or libs_changed
+        if cur is not None and fresh_claim:
+            _S.setdefault("claim_reset", set()).add(claim["name"])
+        name, entry = claim["name"], {"source": claim["source"], "fn": None, "error": None, "doc": ""}
+        try:
+            mod = _load("work/claims/%s.py" % name, claim["source"])
+            if callable(getattr(mod, "check", None)):
+                entry.update(fn=mod.check, doc=_doc(mod.__doc__ or mod.check.__doc__))
+            else:
+                entry["error"] = "defines no callable check(transition)"
+        except BaseException as exc:
+            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
+        store[name] = entry
+        if entry["error"]:
+            _note("claims/%s failed to load: %s" % (name, entry["error"]))
+        elif fresh_claim:
+            verdicts = [_judge_claim(name, entry, t) for t in _T]
+            _note("loaded claims/%s (back-test on %d transitions: applied %d, held %d, failed %d)" % (
+                name, len(verdicts), sum(v is not None for v in verdicts), verdicts.count(True), verdicts.count(False)))
+    supplied = {claim["name"] for claim in req.get("claims") or []}
+    for name in list(store):
+        if name not in supplied:
+            del store[name]
+    model = _S.setdefault("model", {"source": None})
+    model_source = req.get("model_source")
+    if model_source != model["source"] or libs_changed:
+        _S["model"] = model = {"source": model_source}
+        rebuild = True
+        if model_source:
+            try:
+                _S["model_module"] = mod = _load("work/model.py", model_source)
+                model.update({name: getattr(mod, name) for name in ("state_key", "predict", "is_fatal")
+                              if callable(getattr(mod, name, None))})
+                tested = correct = 0
+                by_level = {}
+                if "predict" in model:
+                    for transition in _T:
+                        forecast = _forecast(transition["before"], transition["action"])
+                        if "predict" not in forecast:
+                            continue
+                        off = _off(forecast["predict"], transition["after"]["grids"][-1], transition["before"]["grids"][-1])
+                        if off is not None:
+                            tested += 1
+                            correct += off == 0
+                            level = str(transition["before"]["raw"]["level"])
+                            row = by_level.setdefault(level, {"tested": 0, "correct": 0})
+                            row["tested"] += 1
+                            row["correct"] += off == 0
+                    model["tested"], model["correct"], model["by_level"] = tested, correct, by_level
+                _note("loaded model.py (%s)%s" % (", ".join(name for name in ("state_key", "predict", "is_fatal") if name in model)
+                     or "defines none of state_key, predict, is_fatal",
+                     "; back-test on %d transitions: %d accurate" % (tested, correct) if "predict" in model else ""))
+            except BaseException as exc:
+                model["error"] = "%s: %s" % (type(exc).__name__, exc)
+                _note("model.py failed to load: %s" % model["error"])
+    if model.get("source") and not model.get("error"):
+        ns["model"] = _S["model_module"]
+    else:
+        ns.pop("model", None)
+    if rebuild:
+        _rebuild()
+
+
+
 def _cells(value):
     return value._grids[-1] if isinstance(value, Frame) else value
 
@@ -365,7 +458,11 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         if first_name != "RESET":
             raise RuntimeError("the game is over: only RESET works now. Retrying other actions in a loop can never "
                                "succeed; submit_actions('RESET') first")
-    source = next((f.filename[9:-3] for f in traceback.extract_stack() if f.filename.startswith("work/lib/")), None)
+    source = next(("direct_lib/" + f.filename[9:-3] for f in traceback.extract_stack()
+                   if f.filename.startswith("work/lib/")), None)
+    if source is None and _S.get("called_lib"):
+        source = "assisted_lib/" + _S["called_lib"]
+    _S["called_lib"] = None
     lines, executed, reason, level_changed, reset = [], 0, None, False, False
     skipping = (skip_known_noops or _S.get("skip_noops")) and not force
     skipped, surprise = 0, False
@@ -494,12 +591,20 @@ def _forecast(entry, label):
     return out
 
 
-def _off(predicted, actual):
+def _off(predicted, actual, before=None):
     try:
+        if isinstance(predicted, dict):
+            if before is None or not predicted:
+                raise ValueError("sparse prediction needs changed cells")
+            changed = {(r, c) for r, row in enumerate(actual) for c, value in enumerate(row) if value != before[r][c]}
+            for (r, c), value in predicted.items():
+                if not (0 <= r < len(actual) and 0 <= c < len(actual[r]) and isinstance(value, int)):
+                    raise ValueError("invalid sparse prediction cell")
+            return sum(actual[r][c] != predicted[r, c] for r, c in predicted) + len(changed - predicted.keys())
         cells = _cells(predicted)
         return sum(1 for r, row in enumerate(actual) for c, value in enumerate(row) if cells[r][c] != -1 and cells[r][c] != value)
     except BaseException:
-        _note("model.predict must return a grid (rows of ints, -1 = don't care); got %s" % type(predicted).__name__)
+        _note("model.predict must return a grid or sparse changed-cell dict; got %s" % type(predicted).__name__)
         return None
 
 
@@ -510,7 +615,14 @@ def _observe(before, forecast, source):
                 death=after["raw"]["state"] == "GAME_OVER" and before["raw"]["state"] != "GAME_OVER",
                 level_up=after["raw"]["levels_completed"] != before["raw"]["levels_completed"], source=source,
                 fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[],
-                predict_off=_off(forecast["predict"], after["grids"][-1]) if "predict" in forecast else None)
+                predict_off=_off(forecast["predict"], after["grids"][-1], before["grids"][-1]) if "predict" in forecast else None)
+    if fact["predict_off"] is not None:
+        model = _S["model"]
+        model["tested"] = model.get("tested", 0) + 1
+        model["correct"] = model.get("correct", 0) + (fact["predict_off"] == 0)
+        row = model.setdefault("by_level", {}).setdefault(str(fact["level"]), {"tested": 0, "correct": 0})
+        row["tested"] += 1
+        row["correct"] += fact["predict_off"] == 0
     for name, claim in sorted((_S.get("claims") or {}).items()):
         if claim.get("fn"):
             verdict = _judge_claim(name, claim, t)
@@ -525,6 +637,11 @@ def _echo(fact):
     if fact["tries"]:
         out += "  [tried %d time%s before from this board%s]" % (
             fact["tries"], "s" if fact["tries"] > 1 else "", ", same result each time" if fact["same"] else "")
+    if fact["tries"] >= 2 and fact["same"]:
+        board = _key(_T[-1]["before"])
+        tried = sorted({action for key, action in _S["tries"] if key == board})
+        untried = sorted(action for action in _S["valid"] if action not in tried and action != "MOUSE")
+        out += "  [from this board: tried=%s; untried valid=%s]" % (tried, untried)
     if fact["predict_off"]:
         out += "  [predict: %d cells off]" % fact["predict_off"]
     if fact["death"]:
@@ -534,7 +651,8 @@ def _echo(fact):
     elif fact["fatal"]:
         out += "  [is_fatal flagged this action; it was not fatal]"
     for name in fact["claims_failed"]:
-        out += "  [claims/%s failed]" % name
+        witness = (_S.get("claim_outbox") or {}).get(name, {}).get("witness")
+        out += "  [claims/%s failed%s]" % (name, ": " + witness if witness else "")
     return out
 
 
@@ -564,7 +682,9 @@ class _WorkFile(io.StringIO):
         if not self.closed:
             data = self.getvalue()
             super().close()
-            _file("write", self._path, data)
+            updated = _file("write", self._path, data)
+            if updated is not None:
+                _sync_work(updated)
 
 
 def _open(path, mode="r", *args, **kwargs):
@@ -594,13 +714,18 @@ def _judge_claim(claim_name, claim, t):
     box = _S.setdefault("claim_outbox", {}).setdefault(claim_name, {"support": 0, "counter": 0, "checked": 0,
                                                                      "levels": [], "last_fail": None})
     box["checked"] += 1
+    level = t["before"]["raw"]["level"]
+    per_level = box.setdefault("by_level", {}).setdefault(str(level), {"support": 0, "counter": 0, "checked": 0})
+    per_level["checked"] += 1
     if verdict is True or verdict is False:
         box["support" if verdict else "counter"] += 1
-        level = t["after"]["raw"]["level"]
+        per_level["support" if verdict else "counter"] += 1
         if verdict and level not in box["levels"]:
             box["levels"].append(level)
         if not verdict:
             box["last_fail"] = t["after"]["raw"]["step"]
+            box["witness"] = "L%s step %s %s, %s cells changed" % (level, t["after"]["raw"]["step"],
+                t["action"], t["result"].get("changed_cells", "?"))
         return bool(verdict)
     return None
 
@@ -649,95 +774,24 @@ def _cell(req):
             exec(compile(req["startup_source"], "work/startup.py", "exec"), ns)
         except BaseException as exc:
             _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
-    store = _S.setdefault("claims", {})
-    for claim in req.get("claims") or []:
-        cur = store.get(claim["name"])
-        if cur is not None and cur["source"] == claim["source"]:
-            continue
-        fresh_claim = cur is None or cur.get("source") != claim["source"]
-        name, entry = claim["name"], {"source": claim["source"], "fn": None, "error": None, "doc": ""}
-        try:
-            mod = _load("work/claims/%s.py" % name, claim["source"])
-            if callable(getattr(mod, "check", None)):
-                entry.update(fn=mod.check, doc=_doc(mod.__doc__ or mod.check.__doc__))
-            else:
-                entry["error"] = "defines no callable check(transition)"
-        except BaseException as exc:
-            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
-        store[name] = entry
-        if entry["error"]:
-            _note("claims/%s failed to load: %s" % (name, entry["error"]))
-        elif fresh_claim:
-            verdicts = [_judge_claim(name, entry, t) for t in _T]
-            _note("loaded claims/%s (back-test on %d transitions: applied %d, held %d, failed %d)" % (
-                name, len(verdicts), sum(v is not None for v in verdicts), verdicts.count(True), verdicts.count(False)))
-    supplied = {claim["name"] for claim in req.get("claims") or []}
-    for name in list(store):
-        if name not in supplied:
-            del store[name]
-    libs = _S.get("lib") or {}
-    for name, item in libs.items():
-        if item.get("module"):
-            ns[name] = item["module"]
-    model = _S.setdefault("model", {"source": None})
-    model_source = req.get("model_source")
-    rebuild = bool(req["new_history"])
-    if model_source != model["source"]:
-        _S["model"] = model = {"source": model_source}
-        rebuild = True
-        if model_source:
-            try:
-                _S["model_module"] = mod = _load("work/model.py", model_source)
-                model.update({name: getattr(mod, name) for name in ("state_key", "predict", "is_fatal")
-                              if callable(getattr(mod, name, None))})
-                tested = correct = 0
-                if "predict" in model:
-                    for transition in _T:
-                        forecast = _forecast(transition["before"], transition["action"])
-                        if "predict" not in forecast:
-                            continue
-                        off = _off(forecast["predict"], transition["after"]["grids"][-1])
-                        if off is not None:
-                            tested += 1
-                            correct += off == 0
-                    model["tested"], model["correct"] = tested, correct
-                _note("loaded model.py (%s)%s" % (", ".join(name for name in ("state_key", "predict", "is_fatal") if name in model)
-                     or "defines none of state_key, predict, is_fatal",
-                     "; back-test on %d transitions: %d accurate" % (tested, correct) if "predict" in model else ""))
-            except BaseException as exc:
-                model["error"] = "%s: %s" % (type(exc).__name__, exc)
-                _note("model.py failed to load: %s" % model["error"])
-    if model.get("source"):
-        ns["model"] = _S["model_module"]
-    if rebuild:
-        _rebuild()
-    libs = _S.setdefault("lib", {})
-    for item in req.get("lib") or []:
-        name, cur = item["name"], libs.get(item["name"])
-        if cur is not None and cur["source"] == item["source"]:
-            if fresh and cur["module"]:
-                ns[name] = cur["module"]
-            continue
-        entry = {"source": item["source"], "module": None, "error": None, "doc": ""}
-        try:
-            entry["module"] = ns[name] = _load("work/lib/%s.py" % name, item["source"])
-            entry["doc"] = _doc(entry["module"].__doc__)
-            _note("loaded lib/%s as `%s`%s" % (name, name, ": " + entry["doc"] if entry["doc"] else ""))
-        except BaseException as exc:
-            entry["error"] = "%s: %s" % (type(exc).__name__, exc)
-            _note("lib/%s failed to load: %s" % (name, entry["error"]))
-        libs[name] = entry
-    for name in [name for name in libs if name not in {item["name"] for item in req.get("lib") or []}]:
-        if ns.get(name) is libs[name]["module"]:
-            ns.pop(name)
-        del libs[name]
+    _sync_work(req, bool(req["new_history"]))
     _bind()
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
     if startup_note:
         out.write(startup_note + "\n")
+    _S["called_lib"] = None
+
+    def record_lib_call(frame, event, arg):
+        if event == "call" and frame.f_code.co_name != "<module>":
+            path = frame.f_code.co_filename
+            if path.startswith("work/lib/") and path.endswith(".py"):
+                _S["called_lib"] = path[9:-3]
+
+    previous_profile = sys.getprofile()
     try:
+        sys.setprofile(record_lib_call)
         tree = ast.parse(req["code"], "<python>")
         last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
@@ -749,18 +803,22 @@ def _cell(req):
     except BaseException as problem:
         frames = [f for f in traceback.extract_tb(problem.__traceback__) if f.filename == "<python>"]
         error = "".join(traceback.format_list(frames)) + "%s: %s" % (type(problem).__name__, problem)
+    finally:
+        sys.setprofile(previous_profile)
     text = out.getvalue()
     if value is not None:
         shown = value if isinstance(value, str) else repr(value)
         text += ("" if not text or text.endswith("\n") else "\n") + shown
+    model, libs = _S["model"], _S["lib"]
     claim_errors = {name: c["error"] for name, c in (_S.get("claims") or {}).items() if c.get("error")}
     text = text + ("\n" + "\n".join(_S.get("notes") or []) if _S.get("notes") else "")
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
             "last_result": dict(_S["last_result"]), "steps": _S.pop("steps", []), "notes": _S.pop("notes", []),
-            "claims": {"counts": _S.pop("claim_outbox", {}), "errors": claim_errors,
+            "claims": {"counts": _S.pop("claim_outbox", {}), "reset": sorted(_S.pop("claim_reset", set())), "errors": claim_errors,
                        "docs": {name: c["doc"] for name, c in (_S.get("claims") or {}).items()}},
             "model": {"funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],
                       "tested": model.get("tested"), "correct": model.get("correct"),
+                      "by_level": model.get("by_level", {}),
                       "error": model.get("error")} if model.get("source") else None,
             "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()}}
 
