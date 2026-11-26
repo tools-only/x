@@ -685,10 +685,30 @@ test("unchecked_repeat stops identical no-progress bursts unless expect, force, 
   assert.match(stopped.text, /4 unchecked_repeat/);
   const forced = await python.run("r = submit_actions(['DOWN'] * 5, stop_on_noop=False, force=True)\nprint(r['executed_count'], r['stop_reason'])");
   assert.match(forced.text, /5 None/);
-  await python.run("submit_actions(['UP'] * 5)");
-  const backtrack = await python.run("r = submit_actions(['DOWN'] * 5, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
-  assert.match(backtrack.text, /5 None/);
   python.close();
+
+  const b2 = new FakeBridge();
+  (b2 as any).row = 10;
+  (b2 as any).frame = function () {
+    const g = Array.from({ length: 16 }, () => Array(16).fill(0));
+    g[this.row][8] = 2;
+    return { frames: [g], state: "NOT_FINISHED", levels_completed: 0, win_levels: 2,
+      agent_available_actions: ["RESET", "ACTION1", "ACTION2"],
+      action_budget: { total_used: this.used, total_maximum: 50, used: this.used, maximum: 30 },
+      observation_delta: { changed_cells: 2 } };
+  };
+  (b2 as any).act = async function (p: { action: string }) {
+    this.used += 1;
+    if (p.action === "ACTION1") this.row -= 1;
+    if (p.action === "ACTION2") this.row += 1;
+    return this.frame();
+  };
+  const p2 = new LayeredPython(b2 as any, config());
+  await p2.init();
+  await p2.run("submit_actions(['UP'] * 5)");
+  const backtrack = await p2.run("r = submit_actions(['DOWN'] * 5, stop_on_noop=False)\nprint(r['executed_count'], r['stop_reason'])");
+  p2.close();
+  assert.match(backtrack.text, /5 None/);
 });
 
 test("interiorStale tracks stale_steps despite border counter ticks and detects action_invariant 4x4 regions", async () => {
