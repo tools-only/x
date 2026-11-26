@@ -79,6 +79,7 @@ export class LayeredPython {
   private keyDeaths = new Map<string, number>();
   private sourceRepeats = new Map<string, number>();
   private levelStartBudgetLeft: number | undefined;
+  private capabilityUsage: Record<string, { loaded: number; invoked: number; action_producing: number }> = {};
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -135,11 +136,25 @@ export class LayeredPython {
       predictions: { expect_hits: this.expectHits, surprises: this.surprises, unchecked_batches: this.unchecked },
       ...(this.modelReport ? { model: this.modelReport } : {}),
       claims: this.claimStats,
+      capabilities: this.capabilitySummary(),
       errors: this.errors.slice(-5),
       artifacts: files.slice(0, 20),
       cost: { actions_used: state.actions_used, budget_left: state.budget_left ?? null,
         level_budget_left: state.level_budget_left ?? null, python_calls: this.calls },
     };
+  }
+
+  private capabilitySummary() {
+    const result: Record<string, unknown> = {};
+    for (const [name, stats] of Object.entries(this.capabilityUsage)) result[name] = stats;
+    for (const [name, stats] of Object.entries(this.claimStats)) {
+      const key = `claims/${name}`;
+      result[key] = { ...(result[key] as object ?? {}), loaded: 1, invoked: stats.checked,
+        action_producing: stats.support + stats.counter };
+    }
+    if (this.modelReport) result.model = { loaded: 1, invoked: this.modelReport.tested,
+      action_producing: this.modelReport.correct };
+    return result;
   }
 
   /** R7 proxy quantities for the always-on gradient line. */
@@ -324,6 +339,11 @@ export class LayeredPython {
     const notes = Array.isArray((run?.result as any)?.notes) ? (run?.result as any).notes.map(String) : [];
     const steps = Array.isArray((run?.result as any)?.steps) ? (run?.result as any).steps : [];
     if (steps.length) this.triage(steps);
+    for (const fact of steps) if (fact.source) {
+      const stats = this.capabilityUsage[fact.source] ??= { loaded: 1, invoked: 0, action_producing: 0 };
+      stats.invoked += 1;
+      if (fact.action) stats.action_producing += 1;
+    }
     if (notes.length) acted.notes = notes;
     if (steps.length) acted.steps = steps;
     return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),

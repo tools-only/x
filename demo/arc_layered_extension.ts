@@ -85,6 +85,18 @@ function readReviewCallback(root: string) {
   } catch { return ""; }
 }
 
+function readCapabilityContext(root: string) {
+  const work = join(root, "work"), lines: string[] = [];
+  for (const relative of ["GUIDE.md", "WORKING.md", "REVIEW.md"]) {
+    try { const text = readFileSync(join(work, relative), "utf8").trim(); if (text) lines.push(`${relative}: ${text.slice(-1200)}`); } catch {}
+  }
+  for (const directory of ["claims", "lib"]) {
+    try { const names = readdirSync(join(work, directory)).filter(name => name.endsWith(".py")).sort(); if (names.length) lines.push(`${directory}/: ${names.join(", ")}`); } catch {}
+  }
+  try { const model = readFileSync(join(work, "model.py"), "utf8"); lines.push(`model.py: ${["state_key", "predict", "is_fatal"].filter(name => new RegExp(`def\\s+${name}\\b|${name}\\s*=`).test(model)).join(", ") || "present"}`); } catch {}
+  return lines.join("\n");
+}
+
 function writeLevelReview(root: string, level: number, state: LayeredState, steps: StepFact[], notes: string[]) {
   const trajectory = steps.slice(-15).map(fact => `s${fact.step} ${fact.action} try${fact.tries}` +
     `${fact.same ? " same" : ""}${fact.death ? " DEATH" : ""}${fact.level_up ? " LEVEL_UP" : ""}` +
@@ -191,6 +203,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let trail: string[] = [];
   let lastReviewCallback = "";
   let lastReviewPath = "";
+  let capabilityContext = readCapabilityContext(options.root);
   try { memory = JSON.parse(readFileSync(join(store, "memory.json"), "utf8")); } catch {}
   try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
   lastReviewCallback = readReviewCallback(options.root);
@@ -252,6 +265,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     if (batch?.notes?.length) events.push(...batch.notes);
+    capabilityContext = readCapabilityContext(options.root);
+    if (capabilityContext) events.push(`CAPABILITIES (loaded from work/, not enforced):\n${capabilityContext}`);
     if (batch?.steps?.length) {
       const echoes = batch.steps.map(fact => `step ${fact.step}: ${fact.action}` +
         (fact.tries ? ` (repeat ${fact.tries})` : "") + (fact.predict_off ? ` (predict off ${fact.predict_off})` : "") +
@@ -325,6 +340,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         lastReviewPath = writeLevelReview(options.root, state.level, state, levelSteps, outcome.notes ?? []);
         levelSteps.length = 0;
         lastReviewCallback = readReviewCallback(options.root);
+        capabilityContext = readCapabilityContext(options.root);
       }
       const parts: Content = [{ type: "text", text: outcome.text }];
       for (const image of outcome.images) parts.push({ type: "image", mimeType: "image/png",
@@ -379,6 +395,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
         options.notebook ? NOTEBOOK_SECTIONS.filter(name => notebook[name]).map(name => `${name}: ${notebook[name]}`).join("\n") : "",
         lastReviewCallback ? `Last review callback: ${lastReviewCallback}` : "",
+        capabilityContext ? `Capabilities restored after eviction:\n${capabilityContext}` : "",
         `Progress: level ${state.level} of ${state.win_levels}, ${state.state}, ${state.actions_used} actions used` +
           `${state.budget_left === undefined ? "" : `, ${state.budget_left} budget left`}.`,
         trail.length ? `Recent action results:\n${trail.join("\n")}` : ""].filter(Boolean).join("\n\n");

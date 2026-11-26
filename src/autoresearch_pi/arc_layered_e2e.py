@@ -70,6 +70,22 @@ def _git_snapshot(root: Path) -> str | None:
         return None
 
 
+def _layered_evidence(root: Path) -> dict[str, Any]:
+    decisions = _read_jsonl(root / "harness" / "decisions.jsonl")
+    replays = sorted((root / "work" / "replay").glob("level_*.md")) if (root / "work" / "replay").is_dir() else []
+    return {
+        "decisions": len(decisions),
+        "repeated": sum(1 for row in decisions if row.get("same")),
+        "deaths": sum(1 for row in decisions if row.get("death")),
+        "level_ups": sum(1 for row in decisions if row.get("level_up")),
+        "prediction_off": sum(1 for row in decisions if row.get("predict_off")),
+        "claim_failures": sum(len(row.get("claims_failed") or []) for row in decisions),
+        "claim_holds": sum(len(row.get("claims_held") or []) for row in decisions),
+        "program_actions": sum(1 for row in decisions if row.get("source")),
+        "replays": [path.relative_to(root).as_posix() for path in replays],
+    }
+
+
 def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: str, pi_model: str, config: str = "api-research",
                         provider_extension: Path | None = None, agent_dir: Path | None = None, thinking: str | None = None,
                         max_actions: int | None = None, max_reported_tokens: int | None = None, wall_seconds: float = 3600.0,
@@ -269,6 +285,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         "work_snapshot": _git_snapshot(root),
         "sessions": max(1, sum(1 for _ in root.glob("session*.jsonl"))),
         "context_overflows": sum(1 for row in rows if row.get("kind") == "context_overflow"),
+        "evidence": _layered_evidence(root),
     })
     path = root / "summary.json"
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
