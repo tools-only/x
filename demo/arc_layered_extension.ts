@@ -25,6 +25,7 @@ const PALETTE: Array<[number, number, number, number]> = [
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
+  maxObserveCallsPerTurn?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
@@ -180,6 +181,30 @@ export function fold(input: any[], keepBlocks: number) {
   return { messages, folded };
 }
 
+/** Collapse pure-observation toolResults (no `[env]` line) once a later acting toolResult exists. */
+export function foldPreActionObservations(input: any[]) {
+  let lastActed = -1;
+  for (let i = input.length - 1; i >= 0; i -= 1) {
+    const m = input[i];
+    if (m.role === "toolResult" && Array.isArray(m.content)
+        && m.content.some((p: any) => p.type === "text" && /(?:^|\n)\[env\]/.test(p.text))) {
+      lastActed = i;
+      break;
+    }
+  }
+  if (lastActed <= 0) return { messages: input, folded: 0 };
+  let folded = 0;
+  const messages = input.map((message, index) => {
+    if (index >= lastActed || message.role !== "toolResult" || !Array.isArray(message.content)) return message;
+    const texts = message.content.filter((p: any) => p.type === "text").map((p: any) => p.text);
+    const joined = texts.join("\n");
+    if (!joined || /(?:^|\n)\[env\]/.test(joined) || joined.includes("[folded ")) return message;
+    folded += 1;
+    return { ...message, content: [{ type: "text", text: `[folded pre-action observe: ${joined.length} chars]` }] };
+  });
+  return { messages, folded };
+}
+
 /** Compaction (context level 3): everything before the last block becomes one deterministic summary message. */
 export function compactHistory(input: any[], summary: string) {
   const starts = input.flatMap((message, index) => message.role === "user" || message.role === "custom" ? [index] : []);
@@ -215,7 +240,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const levelSteps: StepFact[] = [];
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let rawEstimate = 0, rollThreshold = 0;
-  let actedThisTurn = false, endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
+  let actedThisTurn = false, observeCallsThisTurn = 0, observeLimitHitThisTurn = false, consecutiveObserveTurns = 0;
+  let endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
   let request: string | undefined;
@@ -225,6 +251,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 
   function content(batch: ActionBatch | null, nudge = false): Content {
     const state = python.state(), events: string[] = [];
+    if (nudge && consecutiveObserveTurns > 0)
+      events.push(`OBSERVE LIMIT: static inspection already ran ${consecutiveObserveTurns} turn(s) on this unchanged board without acting. Take a 1-step probe or plan now.`);
     if (batch?.level_changed) events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done. ` +
       "Write 2-3 lines of notes about what carries over. The latest frame is the starting board of the next level: carry the " +
       "mechanics you established forward as hypotheses, inspect unfamiliar elements (new elements often introduce the mechanic " +
@@ -322,12 +350,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     async execute(_id, params, signal) {
       if (actedThisTurn) return { details: {}, ...(endReason ? { terminate: true } : {}), content: [{ type: "text", text:
         "Not run: an earlier python call in this reply already acted. Read the new state message first." }] };
+      if (observeLimitHitThisTurn) return { details: {}, terminate: true, content: [{ type: "text", text:
+        "Not run: observation limit reached for this turn. Act on the next turn." }] };
       const from = Date.now(), outcome = await python.run(params.code, signal), batch = outcome.acted, state = python.state();
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
         level: state.level, step: state.step, images: outcome.images.length, metrics: outcome.metrics });
+      let terminate = false;
       if (batch) {
         actedThisTurn = true;
+        consecutiveObserveTurns = 0;
         idle = 0;
         segmentActions += batch.executed;
         trail.push(...batch.lines.slice(-3));
@@ -335,6 +367,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         endReason = batch.win ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget"
           : batch.level_changed ? "level_change" : batch.game_over ? "game_over" : "action";
         pending = batch;
+        terminate = true;
+      } else {
+        observeCallsThisTurn += 1;
       }
       for (const fact of outcome.steps ?? []) {
         write("decisions.jsonl", { t: new Date().toISOString(), ...fact, notes: outcome.notes ?? [], error: outcome.error ?? null });
@@ -346,10 +381,25 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         lastReviewCallback = readReviewCallback(options.root);
         capabilityContext = readCapabilityContext(options.root);
       }
-      const parts: Content = [{ type: "text", text: outcome.text }];
+      let resultText = outcome.text;
+      const observeLimit = options.maxObserveCallsPerTurn ?? 2;
+      if (!batch && observeLimit > 0) {
+        if (observeCallsThisTurn < observeLimit) {
+          resultText += `\n[observe ${observeCallsThisTurn}/${observeLimit}: no action taken; bundle remaining checks into ONE script and act next]`;
+        } else {
+          observeLimitHitThisTurn = true;
+          consecutiveObserveTurns += 1;
+          terminate = true;
+          resultText += `\n[observe ${observeCallsThisTurn}/${observeLimit}: observation limit reached for this turn. Static inspection cannot reveal new causality; act or run a 1-step probe on the next turn.]`;
+          log("observe_limit", { observe_calls: observeCallsThisTurn, consecutive_observe_turns: consecutiveObserveTurns,
+            level: state.level, step: state.step });
+        }
+      }
+      const parts: Content = [{ type: "text", text: resultText }];
       for (const image of outcome.images) parts.push({ type: "image", mimeType: "image/png",
         data: framePng(image.grid, image.scale ?? options.scale, options.gridLines).toString("base64") });
-      return { content: parts, details: { acted: batch }, ...(endReason ? { terminate: true } : {}) };
+      return { content: parts, details: { acted: batch, ...(observeLimitHitThisTurn ? { observe_limit: true } : {}) },
+        ...(terminate ? { terminate: true } : {}) };
     } });
 
   if (options.notebook) pi.registerTool({ name: "notebook", label: "notebook", executionMode: "sequential",
@@ -371,12 +421,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (!started) await python.init();
     started = true;
     segment += 1; segmentStart = Date.now(); segmentTokens = 0; segmentActions = 0; idle = 0;
+    actedThisTurn = false; observeCallsThisTurn = 0; observeLimitHitThisTurn = false;
     endReason = lastStop = undefined;
     const batch = pending;
     pending = null;
     return { systemPrompt: system, message: { customType: STATE_TYPE, content: content(batch), display: false } };
   });
-  pi.on("turn_start", () => { actedThisTurn = false; });
+  pi.on("turn_start", () => { actedThisTurn = false; observeCallsThisTurn = 0; observeLimitHitThisTurn = false; });
   pi.on("session_before_compact", () => ({ cancel: true }));
 
   pi.on("context", (event, ctx) => {
@@ -389,8 +440,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
       tokens_removed: result.removed, estimate_before: result.before, cap, target });
     const folding = fold(result.messages, options.foldAfter);
-    if (folding.folded) log("fold", { parts: folding.folded, keep_blocks: options.foldAfter });
-    let messages = folding.messages;
+    const preObs = foldPreActionObservations(folding.messages);
+    if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: options.foldAfter });
+    let messages = preObs.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;
     if (options.compactMargin > 0 && estimate > hardTarget) {
@@ -487,6 +539,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
+    maxObserveCallsPerTurn: Number(env.ARC_LAYERED_MAX_OBSERVE_CALLS ?? 2),
     flags: { expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
       work: env.ARC_LAYERED_WORK !== "0", model: env.ARC_LAYERED_MODEL !== "0", tags: env.ARC_LAYERED_TAGS === "1",
       claims: env.ARC_LAYERED_CLAIMS !== "0" } });

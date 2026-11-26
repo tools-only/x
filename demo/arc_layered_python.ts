@@ -310,7 +310,8 @@ export class LayeredPython {
     const truncated = text.length > this.config.outputChars;
     if (truncated) {
       const head = Math.floor(this.config.outputChars * 0.6), tail = this.config.outputChars - head;
-      text = `${text.slice(0, head)}\n... [${text.length - this.config.outputChars} chars omitted from the middle] ...\n${text.slice(-tail)}`;
+      text = `${text.slice(0, head)}\n... [${text.length - this.config.outputChars} chars omitted from the middle] ...\n${text.slice(-tail)}` +
+        `\n[output truncated: avoid printing full grids or all frames_of(); aggregate in Python (diff / anim_summary / frame_diff) and print <= 30 lines]`;
     }
     if (error) {
       this.errors.push(error.slice(0, 200));

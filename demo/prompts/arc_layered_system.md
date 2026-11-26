@@ -6,8 +6,8 @@ rules and the goal by experimenting, then finish every level.
   so getting through the whole game matters more than a perfect first level.
 - Every action counts against the level you are on: probes, failed attempts, each RESET and anything after GAME_OVER.
   You do not know the human count; you have roughly five times it per level.
-- A test move costs the same as a winning move. Thinking and computing in Python are free, so check ideas against what
-  you have already observed before spending actions on them.
+- A test move costs the same as a winning move. Python calls are NOT free: every call costs context window and turn
+  budget. Never split inspection across multiple tiny Python calls — compute all summaries in ONE script and act.
 
 ## The game
 - The board is a grid of up to 64x64 cells in 16 colours. Each status message carries an enlarged picture of the latest
@@ -49,13 +49,14 @@ These names are bound fresh at the start of every call:
   (files under work/) and `cost` (actions_used, budget_left, python_calls). When progress stalls, read it before
   acting: it is the evidence for deciding which layer is failing — action choice, rule hypothesis, goal reading
   or object representation.
-- Helpers: `diff(a, b)`, `frames_of(step)` (every frame one action produced; the last one is the result).
+- Helpers: `diff(a, b)`, `anim_summary(step=-1)` (compact frame-to-frame deltas, peak jumps, and net vs transient bbox),
+  `frames_of(step)` (raw frames produced by an action; avoid printing all frames).
 - `frame_diff(a=None, b=None)` (default: previous -> current frame) reports object-level changes: moved, appeared and
   disappeared same-colour components plus the changed-cell count. The matching is a heuristic: touching objects merge
   and similar objects can be confused, so treat it as a summary, not ground truth.
-- Some games animate: one action can return several intermediate frames, and some games cannot be understood without
-  them. When an animation contains cells whose intermediate values differ from both the start and end frame, the action
-  result says so; inspect those frames with `frames_of`.
+- Some games animate: one action can return several intermediate frames. When an animation has many transient cells,
+  call `anim_summary()` once instead of dumping `frames_of()`. If 1 summary still leaves the rule unclear, take a
+  1-step probe action — static inspection cannot reveal new causality.
 {{?graph}}
 - Graph helpers over everything you have seen: `graph_summary()` (states, edges, and the frontier of states with
   untried actions), `bfs_graph(goal)` (shortest known action sequence to a frame where `goal(frame)` is true),
@@ -154,4 +155,5 @@ are dropped. Before acting, update the blocks that changed.
 
 ## Each reply
 Keep the text short: what you believe now, what you are testing or doing next and what you expect to see. Then call
-`python`.
+`python`. Aim to inspect and act in the same call; pure observation (without `submit_actions`) is capped at 2 calls
+per turn, and never print full 64x64 boards or all animation frames.
