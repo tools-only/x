@@ -38,6 +38,8 @@ from .arc_thin_e2e import (
 from .arc_blind_policy import run_arc_blind_policy
 from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
 from .terminal_bench_e2e import run_terminal_bench_e2e
+from .ale_bench_e2e import run_ale_bench_e2e
+from .ale_bench_evolution import run_evolution
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -315,6 +317,21 @@ def main(argv: list[str] | None = None) -> int:
     terminal.add_argument("--timeout", type=float, default=3600.0)
     terminal.add_argument("--model", default=None)
     terminal.add_argument("--context-compaction", action="store_true")
+    ale = sub.add_parser("ale-bench-e2e", help="run one ALE-Bench problem with public iteration and optional private evaluation")
+    ale.add_argument("--root", type=Path, default=None)
+    ale.add_argument("--problem-id", required=True)
+    ale.add_argument("--code", type=Path, required=True, help="source file submitted to ALE-Bench")
+    ale.add_argument("--code-language", default="cpp23")
+    ale.add_argument("--full", action="store_true", help="use the full dataset instead of Lite")
+    ale.add_argument("--public-rounds", type=int, default=1)
+    ale.add_argument("--no-private", action="store_true")
+    evolve = sub.add_parser("ale-bench-evolve", help="run a bounded Agent-owned ALE-Bench public refinement loop")
+    evolve.add_argument("--root", type=Path, default=None)
+    evolve.add_argument("--problem-id", required=True)
+    evolve.add_argument("--code", type=Path, required=True)
+    evolve.add_argument("--candidate", action="append", default=[], help="candidate source file, in Agent decision order")
+    evolve.add_argument("--code-language", default="cpp23")
+    evolve.add_argument("--full", action="store_true")
     args = parser.parse_args(argv)
     if args.jev_routing is not None:
         os.environ[JEV_ROUTING_ENV] = args.jev_routing
@@ -595,6 +612,33 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "ale-bench-e2e":
+        root = (args.root or paths.runs_dir / f"ale-bench-{args.problem_id}").resolve()
+        artifact = run_ale_bench_e2e(
+            root, problem_id=args.problem_id, code=args.code.read_text(encoding="utf-8"),
+            code_language=args.code_language, lite_version=not args.full,
+            public_rounds=args.public_rounds, private_eval=not args.no_private,
+        )
+        print(artifact.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.command == "ale-bench-evolve":
+        root = (args.root or paths.runs_dir / f"ale-bench-evolve-{args.problem_id}").resolve()
+        candidates = [Path(item).read_text(encoding="utf-8") for item in args.candidate]
+        cursor = 0
+        def next_candidate(source, public, history):
+            nonlocal cursor
+            if cursor >= len(candidates):
+                return None
+            value = candidates[cursor]
+            cursor += 1
+            return value
+        artifact = run_evolution(
+            root, problem_id=args.problem_id, initial_code=args.code.read_text(encoding="utf-8"),
+            agent_step=next_candidate, code_language=args.code_language, lite_version=not args.full,
+            max_iterations=len(candidates),
+        )
+        print(artifact.read_text(encoding="utf-8"), end="")
+        return 0
     return 0
 
 
