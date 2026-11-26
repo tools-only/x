@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {RequestTrace, usageRecord} from '../demo/arc_thin_requests.ts';
+import {RequestTrace, usageRecord} from '../demo/arc_request_trace.ts';
 
 test('request telemetry distinguishes prepared/stream/settlement and preserves unknown aborted costs', () => {
   const rows:any[]=[]; const trace=new RequestTrace(row => rows.push(row));

@@ -46,7 +46,7 @@ import { planNativeMemoryUpdate } from "./arc_thin_native_memory.ts";
 import { NativeLoopGuard } from "./arc_thin_native_loop.ts";
 import { metaTrialFacts } from "./arc_thin_meta_trial.ts";
 import { SelfHarnessPhaseLoop } from "./arc_thin_phase_loop.ts";
-import { RequestTrace, usageRecord } from "./arc_thin_requests.ts";
+import { RequestTrace, usageRecord } from "./arc_request_trace.ts";
 import { migrateWorkspace } from "./arc_thin_migration.ts";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";

@@ -4,7 +4,9 @@
 
 ## layer 路径纠正（本分支主方案）
 
-2026-11-26 用户选择：只保留 layer 及其相关机制；Python namespace 固定跨调用持久。已移除 `ARC_LAYERED_NAMESPACE_RESET` 分支及对应 guest 参数。清理其余 ARC 入口前需先拆出 layer runner 正在从 `arc_thin_e2e.py` 和 `arc_agi_3_e2e.py` 导入的 bridge、Pi 与预算公共函数；`arc_layered_extension.ts` 还直接使用 `arc_thin_ch_view.ts` 和 `arc_thin_requests.ts`。这些是当前依赖，不表示要保留 thin 的 Agent 路线。
+2026-11-26 用户选择：只保留 layer 及其相关机制；Python namespace 固定跨调用持久。已移除 `ARC_LAYERED_NAMESPACE_RESET` 分支及对应 guest 参数。layer runner 的 bridge、Pi 与预算支持代码已拆到 `arc_layered_support.py`，不再导入旧 runner；layer extension 不再导入 thin 的观测模块，请求追踪改为共用的 `arc_request_trace.ts`。原有 `arc_layered_smoke_provider.ts` 已独立提供 layer 诊断，不需要 thin provider。
+
+依赖拆分的验证：`tests/test_arc_layered_evolution.py` 2/2；`arc_layered_extension.test.ts` 与请求追踪测试 21/23，两个失败是原有 review freeze 和 compaction 断言。使用实际 Pi 0.87、production ARC bridge、mock ARC SDK、现有 layer provider 跑 `tmp/layered-detached-existing-20261126`：2 次 provider request、2 个 bridge 动作，`budget_exhausted`，无 provider 错误。功能与确定性全链路可达；真实 provider 自主采用和净收益仍未验证。旧 thin/runtime 文件尚未物理删除；CLI 和 PPT demo 仍引用其中若干模块，删除前需按调用方分别处理。
 
 此前记录和交付结论针对 `arc_thin_extension.ts` / SelfRoot，不能代表主方案 `arc_layered_extension.ts`。主方案已通过 `arc_layered_prelude.py` 把 `current_frame`、`history`、`valid_actions` 等变量绑定在常驻 CPython namespace；`submit_actions` 在同一个 Python cell 中经 bridge 行动并刷新变量。Pi 模型仍在 Python 进程之外；需要执行任意 Python 读取或计算时仍有一次 `python` 工具调用，这与 Duck 的模型/沙箱边界一致。消息中直接附带状态概览和图像，可不调用工具读取这些已呈现内容；不能把“模型直接读进程变量”作为已实现能力。
 

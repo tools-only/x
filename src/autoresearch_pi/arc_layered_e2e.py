@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any
 
 from .arc_agi_3_adapter import resolve_model_settings
-from .arc_agi_3_e2e import _arc_terminal_or_budget_exhausted, _pi_cli_version, _post_json, _read_jsonl, _resolve_pi_cli, _wait_for_bridge
-from .arc_thin_e2e import (PROJECT_ROOT, PERSISTED_EVENTS, _append_events, _bridge_state, _budget_tokens, _provider_admission_stop, _reported_tokens,
-                           _request_accounting, _start_bridge, _stop_bridge, _write_models_json)
+from .arc_layered_support import (PROJECT_ROOT, PERSISTED_EVENTS, _append_events, _arc_terminal_or_budget_exhausted,
+                                  _bridge_state, _budget_tokens, _pi_cli_version, _post_json, _provider_admission_stop,
+                                  _read_jsonl, _reported_tokens, _request_accounting, _resolve_pi_cli, _start_bridge,
+                                  _stop_bridge, _wait_for_bridge, _write_models_json)
 from .pi_kernel import PiKernel
 from .project import load_project_dotenv
 
