@@ -12,6 +12,7 @@ from typing import Any
 
 from .arc_agi_3_adapter import resolve_model_settings
 from .pi_kernel import PiKernel
+from .project import load_project_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -43,7 +44,8 @@ def run_kernelbench_e2e(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not (root / "task.triton").is_file() or not (root / "reference.py").is_file():
         raise FileNotFoundError("prepared task must contain task.triton and reference.py")
-    settings = resolve_model_settings(os.environ)
+    env = load_project_dotenv(PROJECT_ROOT)
+    settings = resolve_model_settings(env)
     selected_model = model or settings["model"]
     selected_provider = provider or "openai"
     node, cli = _pi_cli()
@@ -56,7 +58,6 @@ def run_kernelbench_e2e(
             "baseUrl": settings["base_url"], "apiKey": settings["api_key"], "api": settings["pi_api"],
             "models": [{"id": selected_model, "name": selected_model, "reasoning": True, "input": ["text"], "contextWindow": settings["context_window"]}],
         }}}, indent=2) + "\n", encoding="utf-8")
-    env = os.environ.copy()
     env.update({"PI_CODING_AGENT_DIR": str(agent_dir), "KERNELBENCH_RUN_ROOT": str(root),
                 "KERNELBENCH_SERVER_URL": server_url.rstrip("/"),
                 "KERNELBENCH_BACKEND": os.environ.get("KERNELBENCH_BACKEND", "cuda")})
