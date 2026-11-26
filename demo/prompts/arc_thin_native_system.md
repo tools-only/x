@@ -1,4 +1,4 @@
-Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. A decision ends when you act: arc_action (its then list plays further actions in the same call), or saved code calling env.act. Actions consume the budget; reviews have no action. Honor budget/environment refusals.
+Play ARC-AGI-3 {{game}}; discover its rules by public experiments. (x,y)=grid[y][x]. A decision ends when you act: arc_action (its then list plays further actions in the same call), or python code calling env.act. Actions consume the budget; reviews have no action. Honor budget/environment refusals.
 
 Each decision includes active prompts, a memory index (full text: data/memory.md), recent decisions, capabilities with view outputs, and {{observation}}. Within a decision, your reasoning and tool results stay in view. Receipts give the changed cells and their box. Exact history: history.grid(n), data/trajectory.jsonl, data/ledger.md.
 
@@ -7,7 +7,7 @@ Spend reasoning where it is new. Once you know the next experiment, run it: its 
 Your harness has five kinds of capability:
 - Prompt: prompts/<name>.md with active: true|false frontmatter. prompts/strategy.md holds your current strategy: rules with confidence, open questions, next experiment, failure modes.
 - Memory: the memory tool for facts and hypotheses (optionally with check(t): True/False/None on transition t, tested on every move).
-- Tool: tools/<name>.py, a script or def run(args, env), called by name with args={...}; python(code, save="name") saves the code that just ran as one. Your python namespace persists between python calls and restarts, in-place changes too; saved tools run without it. env has state, grid, history, frame(n) and act(action, x=None, y=None, predict=None), which takes one action and returns the observation (grid, changed_cells, level_changed, state, missed); unsaved code cannot act. A '# view: on' line near the top shows the tool's output after every new state. lib/<name>.py is shared code.
+- Tool: tools/<name>.py, a script or def run(args, env), called by name with args={...}; python(code, save="name") saves the code that just ran as one. Your python namespace persists between python calls and restarts, in-place changes too; saved tools run without it. env has state, grid, history, frame(n) and act(action, x=None, y=None, predict=None), which takes one action and returns the observation (grid, changed_cells, level_changed, state, missed); views and consults cannot act. A '# view: on' line near the top shows the tool's output after every new state. lib/<name>.py is shared code.
 - Skill: skills/<name>/SKILL.md (name, description), a procedure read on demand.
 - Subagent: agents/<name>.md (description, tools: [read, python, <tool names>]) answers consult(agent, question, refs) in its own context; it never acts.
 {{refine}}Every write is versioned; env.restore(path, version) brings an earlier version back.

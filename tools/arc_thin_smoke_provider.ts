@@ -293,20 +293,21 @@ const REUSE_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: cellCode(5) }], ['python', { code: cellCode(6) }]] },
   { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', note: 'reuse 5' }]] },
 ];
-// Activation: saved code acts in a closed loop (python save= runs env.act and stops itself when a prediction misses;
-// the saved tool does it again), unsaved code cannot act, the agent writes its guidance for refinements and starts
-// one itself, and repeated python work makes a refinement save a tool; a later decision is told what changed.
+// Activation: python code acts in a closed loop (python save= runs env.act and stops itself when a prediction misses;
+// the saved tool does it again, and an unsaved snippet acts the same way), the agent writes its guidance for
+// refinements and starts one itself, and repeated python work makes a refinement save a tool; a later decision is told what changed.
 const actCode = (predict: string) => `out = []\nfor a in ('ACTION1', 'ACTION4'):\n    obs = env.act(a, predict=${predict})\n` +
   `    out.append(obs['n'])\n    if obs['missed']: break\nout`;
 const ACTIVATION_SCRIPT: Step[] = [
   { kind: 'decide', calls: [['python', { code: `# Probe two moves.\n${actCode('{"level_changed": False}')}`, save: 'probe' }]] },
   { kind: 'decide', calls: [['probe', { args: {} }]] },
+  // An unsaved snippet acts through the same closed loop; acting ends the decision.
+  { kind: 'decide', calls: [['python', { code: actCode('{"level_changed": False}') }]] },
   // Reasoning stays within the decision; what python defines stays for later calls.
-  { kind: 'decide', think: 'THINK_MARK_DECISION3', calls: [['python', { code: actCode('{"level_changed": False}') }],
-    ['python', { code: 'def plus_one(v):\n    return v + 1\nkept_value = 41' }],
+  { kind: 'decide', think: 'THINK_MARK_DECISION3', calls: [['python', { code: 'def plus_one(v):\n    return v + 1\nkept_value = 41' }],
     ['write', { path: 'prompts/refine.md', content: '---\nactive: false\n---\nREFINE_GUIDE_MARK prefer goal tests.' }]] },
   // Coordinates on an action that takes none are ignored, and the receipt says so.
-  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', x: 5, y: 5, note: 'unsaved code did not act' }]] },
+  { kind: 'decide', calls: [['arc_action', { action: 'ACTION1', x: 5, y: 5, note: 'coordinates ignored probe' }]] },
   { kind: 'decide', calls: [['python', { code: actCode('{"level_changed": True}'), save: 'miss' }]] },
   { kind: 'decide', calls: [['python', { code: cellCode(1) }], ['python', { code: cellCode(2) }], ['python', { code: cellCode(3) }],
     ['python', { code: 'plus_one(kept_value)' }]] },

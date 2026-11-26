@@ -278,7 +278,8 @@ def build_report(root: Path) -> dict[str, Any]:
     total = accounting["known_tokens_lower_bound"] if accounting else sum(
         k["input"] + k["cache_read"] + k["cache_write"] + k["output"] for k in by_kind.values())
     refined = [r for r in _rows(harness / "refiner.jsonl") if r.get("kind") == "edit"]
-    categories["tool"]["actions"] = sum(1 for r in trajectory if r.get("via"))
+    # Ephemeral python acting (via "python") is offload but not a saved component's action.
+    categories["tool"]["actions"] = sum(1 for r in trajectory if r.get("via") and r.get("via") != "python")
     by_component: dict[str, int] = {}
     for row in trajectory:
         if row.get("via"):
@@ -326,7 +327,7 @@ def render(report: dict[str, Any]) -> str:
     for f in r["families"][:5]:
         lines.append(f"  family `{f['gist']}` ×{f['calls']} (level {f['level']}, at actions {f['actions'][:8]})")
     o = report["offload"]
-    lines.append(f"offload: {o['actions_from_components']} actions from saved code ({o['share_of_actions']:.0%}); "
+    lines.append(f"offload: {o['actions_from_components']} actions from code ({o['share_of_actions']:.0%}); "
                  f"{o['replaying_calls']} replaying vs {o['creating_calls']} creating calls; refiner edits {o['refiner_edits']} "
                  f"({o['refiner_edits_loaded']} loaded)")
     lines.append("categories (created -> used): " + "; ".join(

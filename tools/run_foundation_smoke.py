@@ -185,17 +185,16 @@ elif script == "activation":
     parent = parent_requests
     trajectory = [json.loads(s) for s in (root / "harness/trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
     via = [r.get("via") for r in trajectory]
-    # Saved code acts in a closed loop: python save= takes two actions through env.act, the saved tool takes them
-    # again, unsaved code cannot act, and code that sees its prediction miss stops itself after one action.
-    assert via[:5] == ["tools/probe.py"] * 4 + [None], via
-    assert via[5] == "tools/miss.py" and via[6] != "tools/miss.py", via
+    # Python code acts in a closed loop: python save= takes two actions through env.act, the saved tool takes them
+    # again, an unsaved snippet acts as python, and code that sees its prediction miss stops itself after one action.
+    assert via[:7] == ["tools/probe.py"] * 4 + ["python"] * 2 + [None], via
+    assert via[7] == "tools/miss.py" and via[8] != "tools/miss.py", via
     assert "ACTED 2 action(s). This decision ends." in shown_history, shown_history[:3000]
     assert "ACTED 1 action(s). This decision ends." in shown_history
-    assert "only saved code acts" in text
     played = [json.loads(s) for s in (root / "harness/played_actions.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert [(r["via"], r["missed"]) for r in played] == [("tools/probe.py", False)] * 4 + [("tools/miss.py", True)], played
+    assert [(r["via"], r["missed"]) for r in played] == [("tools/probe.py", False)] * 4 + [("python", False)] * 2 + [("tools/miss.py", True)], played
     # Factual receipts: the change count, and coordinates the action ignores are dropped and named.
-    assert trajectory[4]["action"] == "ACTION1" and trajectory[4].get("ignored_xy") is True and "x" not in trajectory[4], trajectory[4]
+    assert trajectory[6]["action"] == "ACTION1" and trajectory[6].get("ignored_xy") is True and "x" not in trajectory[6], trajectory[6]
     assert "(x,y ignored: ACTION1 takes no coordinates)" in shown_history and "changed=" in shown_history
     # One arc_action carries a planned sequence: three actions in one decision.
     sequences = [json.loads(s) for s in (root / "harness/action_sequences.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -248,8 +247,8 @@ elif script == "activation":
         usage = (root / "harness/usage.jsonl").read_text(encoding="utf-8")
         assert '"kind":"refiner"' in usage
     report = json.loads((root / "reuse_report.json").read_text(encoding="utf-8"))
-    assert report["offload"]["actions_from_components"] == 5 and report["offload"]["replaying_calls"] >= 1, report["offload"]
-    assert report["offload"]["actions_by_component"] == {"tools/probe.py": 4, "tools/miss.py": 1}, report["offload"]
+    assert report["offload"]["actions_from_components"] == 7 and report["offload"]["replaying_calls"] >= 1, report["offload"]
+    assert report["offload"]["actions_by_component"] == {"tools/probe.py": 4, "python": 2, "tools/miss.py": 1}, report["offload"]
     categories = report["categories"]
     assert categories["tool"]["created"] >= 2 and categories["tool"]["used"] >= 1 and categories["tool"]["actions"] == 5, categories
     assert categories["prompt"]["created"] == (2 if defaults else 1), categories["prompt"]

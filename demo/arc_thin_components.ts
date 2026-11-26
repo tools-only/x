@@ -154,7 +154,7 @@ def _grid(rows):
     return [[int(c, 16) for c in row] for row in rows] if isinstance(rows, list) and rows and isinstance(rows[0], str) else rows
 
 class _Env:
-    """What saved code works with: the state and its history, and act(), which takes one action through the same
+    """What python code works with: the state and its history, and act(), which takes one action through the same
     boundary as arc_action and returns what came back, so the code decides whether to go on (closed loop)."""
     def __init__(self):
         self.state = _state
@@ -171,7 +171,7 @@ class _Env:
         if _session_flags.get('loading'):
             raise PermissionError('no action while the python session is restored')
         if not _req.get('allow_act'):
-            raise PermissionError('only saved code acts: run this with python(save="name") or call a saved tool')
+            raise PermissionError('this execution cannot act: it is read-only (a view or a consult)')
         call = {'action': str(action).upper()}
         if x is not None and y is not None: call.update(x=int(x), y=int(y))
         if predict is not None: call['predict'] = predict

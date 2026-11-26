@@ -38,21 +38,22 @@ const runtimeFor = (played: Played[], options: { levelAt?: number; quiet?: boole
 const LOOP = '# Walk until nothing changes.\nseen = []\nfor a in ("ACTION1", "ACTION4", "ACTION1"):\n    obs = env.act(a)\n' +
   '    seen.append(obs["changed_cells"])\n    if obs["changed_cells"] == 0: break\n{"seen": seen, "bias": args.get("bias", 0)}';
 
-test('saved code acts in a closed loop: python(save=) saves the code as a tool and runs it; unsaved code cannot act', async () => {
+test('python code acts in a closed loop: an unsaved snippet acts as python; save= also keeps it as a tool; readonly never acts', async () => {
   const played: Played[] = [];
   const { workspace, binder, runtime, registered, tools } = runtimeFor(played);
   try {
     const unsaved: any = await runtime.python(LOOP);
-    assert.equal(played.length, 0);
-    assert.match(unsaved.content[0].text, /only saved code acts/);
-    assert.notEqual(unsaved.terminate, true);
+    // The code saw the second observation (nothing changed) and stopped itself: two actions, not three.
+    assert.match(unsaved.content[0].text, /"seen":\[3,0\]/);
+    assert.match(unsaved.content[0].text, /ACTED 2 action\(s\)\. This decision ends\.\n#1 ACTION1 → changed\n#2 ACTION4 → changed/);
+    assert.equal(unsaved.terminate, true);
+    assert.deepEqual(played.map(p => [p.call.action, p.via]), [['ACTION1', 'python'], ['ACTION4', 'python']]);
     const saved: any = await runtime.python(LOOP, undefined, false, 'walk');
     assert.match(saved.content[0].text, /tools\/walk\.py → tool walk v1: saved · loaded/);
-    // The code saw the second observation (nothing changed) and stopped itself: two actions, not three.
     assert.match(saved.content[0].text, /"seen":\[3,0\]/);
-    assert.match(saved.content[0].text, /ACTED 2 action\(s\)\. This decision ends\.\n#1 ACTION1 → changed\n#2 ACTION4 → changed/);
+    assert.match(saved.content[0].text, /ACTED 2 action\(s\)\. This decision ends\.\n#3 ACTION1 → changed\n#4 ACTION4 → changed/);
     assert.equal(saved.terminate, true);
-    assert.deepEqual(played.map(p => [p.call.action, p.via]), [['ACTION1', 'tools/walk.py'], ['ACTION4', 'tools/walk.py']]);
+    assert.deepEqual(played.slice(2).map(p => [p.call.action, p.via]), [['ACTION1', 'tools/walk.py'], ['ACTION4', 'tools/walk.py']]);
     assert.equal(workspace.read('tools/walk.py').trim(), LOOP);
     assert.ok(registered.includes('walk') && tools.active.includes('walk'));
     // The saved tool takes a dict of arguments and is callable without a rewrite.
@@ -63,11 +64,11 @@ test('saved code acts in a closed loop: python(save=) saves the code as a tool a
     const called: any = await (runtime as any).call(component, { args: { bias: 2 } });
     assert.match(called.content[0].text, /"bias":2/);
     assert.equal(called.terminate, true);
-    assert.equal(played.length, 4);
+    assert.equal(played.length, 6);
     // A read-only (subagent) call never acts.
     const readonly: any = await (runtime as any).call(component, { args: {} }, undefined, true);
-    assert.match(readonly.content[0].text, /only saved code acts/);
-    assert.equal(played.length, 4);
+    assert.match(readonly.content[0].text, /cannot act/);
+    assert.equal(played.length, 6);
     await assert.rejects(runtime.python('1', undefined, false, 'Bad Name'), /save must be a lowercase name/);
   } finally { runtime.close(); }
 });

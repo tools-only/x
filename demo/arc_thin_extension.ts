@@ -1827,8 +1827,8 @@ export default function arcThinExtension(pi: ExtensionAPI) {
 			label: "Python",
 			description: native
 				? "Run Python once. Names: state, grid, prev_grid, history (history.grid(n)), artifacts, args. Returns what you print and the " +
-					"value of a final expression. save=\"name\" also keeps this code as tools/name.py, callable later as the tool name(args={...}); " +
-					"saved code may return {\"actions\": [...]} to act."
+					"value of a final expression. env.act(action) takes a real action in a closed loop and ends this decision. " +
+					"save=\"name\" also keeps this code as tools/name.py, callable later as the tool name(args={...})."
 				: "Run Python once (nothing is saved). Names available: state (same keys as a skill's state), history " +
 					"(history.grid(n), history.transitions()), grid, prev_grid, artifacts, skill(name, **args) to call a saved skill. " +
 					"Returns what you print and the value of a final expression. Standard library only; no files or network.",

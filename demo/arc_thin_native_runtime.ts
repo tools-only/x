@@ -14,7 +14,7 @@ type Host = { pi: ExtensionAPI; workspace: Workspace; binder: Binder; state(): R
   level(): number; actionCount(): number; decision?(): number; log(file: string, row: any): void; usage(kind: string, message: any): void;
   wrap(name: string, fn: (args: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<any>): any;
   artifacts?(result: NativeResult, component: Component, n: number): NativeResult;
-  /** Take one action for saved code through the environment boundary (closed loop: env.act in the code). */
+  /** Take one action for python code through the environment boundary (closed loop: env.act in the code). */
   act?(call: ActCall, via: string): Promise<ActOutcome>;
   receipt?(body: string): string; modelResult?(create:(onResponse:(response:any)=>void)=>any):Promise<any>;
   /** Keep the python namespace between python calls (default true). */
@@ -245,15 +245,16 @@ export class NativeRuntime {
       ...acted.lines].join('\n'), !result.ok), terminate: true };
   }
   /**
-   * One-off python. With `save`, the code is first saved as it is under tools/<save>.py and this run is its first
-   * call: saving costs no rewrite, and only saved code may act. Calls that share a session run one at a time.
+   * One-off python. With `save`, the code is also kept under tools/<save>.py as a callable component. Calls that
+   * share a session run one at a time.
    */
   async python(code: string, signal?: AbortSignal, readonly = false, save?: string, session: PythonSession | undefined = this.session) {
     return session ? session.exclusive(() => this.runPython(code, signal, readonly, save, session)) : this.runPython(code, signal, readonly, save, undefined);
   }
   private async runPython(code: string, signal: AbortSignal | undefined, readonly: boolean, save: string | undefined, session: PythonSession | undefined) {
     const saveReceipts: string[] = [];
-    let via: string | undefined;
+    let via: string | undefined = readonly ? undefined : 'python';
+    let savedTool: string | undefined;
     if (save !== undefined && !readonly) {
       if (!SAVE_NAME.test(save)) throw Error('save must be a lowercase name like route_to (letters, digits, _)');
       const path = `tools/${save}.py`;
@@ -264,7 +265,7 @@ export class NativeRuntime {
       await this.host.binder.scan(this.host.level()); this.register();
       const names = new Set(this.toolNames());
       this.host.pi.setActiveTools([...new Set([...this.host.pi.getActiveTools(), ...names])]);
-      if (!/NOT loaded/.test(receipt ?? '')) via = path;
+      if (!/NOT loaded/.test(receipt ?? '')) { savedTool = path; via = path; }
     }
     const snap = this.snapshot(); const started = Date.now();
     const kit = kitOf(this.host.binder.versionMap());
@@ -275,7 +276,7 @@ export class NativeRuntime {
     const outcome = session?.commit(result.session);
     const sessionNotes = [outcome?.receipt ?? '',
       // A saved tool runs without the session: say so when the code just saved relies on it.
-      via && result.session?.uses?.length ? `(${via} uses names from the python session: ${result.session.uses.join(', ').slice(0, 200)}. ` +
+      savedTool && result.session?.uses?.length ? `(${savedTool} uses names from the python session: ${result.session.uses.join(', ').slice(0, 200)}. ` +
         'A saved tool runs without the session, so define them inside it or pass them in args.)' : ''].filter(Boolean).join('\n');
     if (outcome?.event) this.host.log('python_session.jsonl', { event: outcome.event, version: outcome.version, readonly, decision: this.decision(), n: this.host.actionCount(),
       chars: result.session?.chars ?? result.session?.over?.chars, raw_bytes: result.session?.raw_bytes ?? result.session?.over?.raw_bytes,
