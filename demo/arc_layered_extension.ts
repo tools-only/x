@@ -11,6 +11,7 @@ import { RequestTrace, usageRecord } from "./arc_request_trace.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
 import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
 import { LayeredComponents, type Kind } from "./arc_layered_components.ts";
+import { boardInventory, recordFrameColorChanges } from "./arc_layered_inventory.ts";
 
 export const STATE_TYPE = "arc-layered-state";
 export const MEMORY_TYPE = "arc-layered-memory";
@@ -29,6 +30,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   noImage?: boolean;
   harnessProfile?: boolean;
   consult?: boolean;
+  boardInventory?: boolean;
   maxLengthRecoveries?: number;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
@@ -293,6 +295,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const maxLengthRecoveries = options.maxLengthRecoveries ?? Number(env.ARC_LAYERED_MAX_LENGTH_RECOVERIES ?? 2);
   let endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
+  const boardInventoryEnabled = options.boardInventory ?? Boolean(options.harnessProfile);
+  const levelChangedColors = new Set<number>();
   let lastSkillIndex = "";
   const consultsByLevel = new Map<number, number>();
   try {
@@ -426,8 +430,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 
   function content(batch: ActionBatch | null, nudge = false): Content {
     const state = python.state(), events: string[] = [];
+    const isFreshBoard = !shownFrame || shownLevel !== state.level || Boolean(batch?.reset);
+    if (isFreshBoard) levelChangedColors.clear();
+    else if (shownFrame && state.frame !== shownFrame) recordFrameColorChanges(shownFrame, state.frame, levelChangedColors);
     if (consecutiveLengthStops > 0) {
       events.push(`LENGTH RECOVERY (${consecutiveLengthStops}/${maxLengthRecoveries}): the previous reply hit the output token limit before calling a tool. Output minimal reasoning and call python or reflect_component now.`);
+    }
+    let inventoryShown = false;
+    if (boardInventoryEnabled && isFreshBoard) {
+      const inv = boardInventory(state.frame);
+      if (inv.line) { events.push(inv.line); inventoryShown = true; }
     }
     if (components) {
       for (const kind of ["memory", "prompt"] as const) for (const item of components.list(kind)) {
@@ -443,6 +455,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         const ep = effortProgressSummary();
         if (ep) events.push(ep);
         if (state.action_invariant) events.push(`INVARIANT: ${state.action_invariant} — do not mistake this drift for action-specific progress.`);
+        if (boardInventoryEnabled) {
+          const inv = boardInventory(state.frame, levelChangedColors);
+          if (inv.line && !inventoryShown) { events.push(inv.line); inventoryShown = true; }
+          if (inv.unchanged.length) events.push(`Unchanged symbols since attempt start: ${inv.unchanged.join(", ")}.`);
+        }
         events.push(`STALL: ${state.stale_steps} steps without a new state${regionStall ? " or repeated failure/clicks" : ""}; consult("reframer", ...) is available.`);
       }
       if (batch?.level_changed) {
@@ -532,6 +549,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         if (ep && !events.includes(ep)) events.push(ep);
         if (state.action_invariant && !events.some(e => e.startsWith("INVARIANT:")))
           events.push(`INVARIANT: ${state.action_invariant} — do not mistake this drift for action-specific progress.`);
+        if (boardInventoryEnabled && !inventoryShown) {
+          const inv = boardInventory(state.frame, levelChangedColors);
+          if (inv.line) { events.push(inv.line); inventoryShown = true; }
+          if (inv.unchanged.length && !events.some(e => e.startsWith("Unchanged symbols")))
+            events.push(`Unchanged symbols since attempt start: ${inv.unchanged.join(", ")}.`);
+        }
         events.push(`STUCK: ${state.stale_steps} steps without a new state. Test 2 competing hypotheses in Memory (H1 vs H2) with expect= or use consult("reframer", ...) if blocked.`);
       } else {
         const rounds = Math.floor(state.stale_steps / options.stuckAfter);
@@ -786,7 +809,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             state.budget_left !== undefined ? `run budget ${state.budget_left}` : "",
           ].filter(Boolean).join(", ");
           const stateLine = `State: level ${state.level}/${state.win_levels}, step ${state.step}, ${state.state}${budget ? `, ${budget}` : ""}\nValid actions (propose ONLY from this set): ${valid}`;
-          const briefing = `Question: ${params.question.slice(0, 500)}\n${stateLine}\nFalsified: ${falsified}\n${causal}Trajectory: ${trajectory}${textFrame ? `\n${textFrame}` : "\nThe attached image shows the current frame."}`.slice(0, 9000);
+          const inv = boardInventoryEnabled ? boardInventory(state.frame, levelChangedColors) : null;
+          const invBlock = inv?.line
+            ? `${inv.line}${inv.unchanged.length ? `\nUnchanged symbols since attempt start: ${inv.unchanged.join(", ")}` : ""}\n`
+            : "";
+          const briefing = `Question: ${params.question.slice(0, 500)}\n${stateLine}\n${invBlock}Falsified: ${falsified}\n${causal}Trajectory: ${trajectory}${textFrame ? `\n${textFrame}` : "\nThe attached image shows the current frame."}`.slice(0, 9000);
           const userContent: Content = [{ type: "text", text: briefing }, ...(useImage ? [{
             type: "image" as const, mimeType: "image/png",
             data: framePng(state.frame, options.scale, options.gridLines).toString("base64"),
@@ -1052,6 +1079,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
     noImage: env.ARC_LAYERED_NO_IMAGE === "1",
     harnessProfile: env.ARC_LAYERED_PROFILE === "qwen27b-harness", consult: env.ARC_LAYERED_CONSULT !== "0",
+    boardInventory: env.ARC_LAYERED_PROFILE === "qwen27b-harness" && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? (qwen27b ? 4 : 0)),

@@ -641,3 +641,33 @@ test("memory-coupled adaptive folding relaxes foldAfter while memory is empty", 
   handlers.context({ messages: msgs }, { model: { contextWindow: 128000 } });
   assert.equal(rows("fold").at(-1).keep_blocks, 4);
 });
+
+test("boardInventory appears on fresh board and consult in harnessProfile and can be disabled", async () => {
+  const { handlers, tools, game, python, call } = setup({ harnessProfile: true });
+  game.frame = Array.from({ length: 16 }, () => Array(16).fill(0));
+  game.frame[4][5] = 7;
+  game.frame[2][2] = 8;
+  const first = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(first, /Board inventory.*P=1\/1@\(5,4\)-\(5,4\).*R=1\/1@\(2,2\)-\(2,2\)/);
+
+  const nextFrame = game.frame.map((r: number[]) => [...r]);
+  nextFrame[2][2] = 0; nextFrame[2][3] = 8;
+  game.frame = nextFrame;
+  python.next = batch({ executed: 1, actions: ["UP"] });
+  await call();
+  const second = textOf((await handlers.before_agent_start({})).message.content);
+  assert.doesNotMatch(second, /Board inventory/);
+
+  let briefing = "";
+  const ctx: any = { model: { id: "same-model" }, modelRegistry: {
+    streamSimple: (_m: any, input: any) => {
+      briefing = input.messages[0].content[0].text;
+      return { result: async () => ({ content: [{ type: "text", text: "ok" }], stopReason: "stop", usage: { input: 10, output: 5, totalTokens: 15 } }) };
+    } } };
+  await tools.consult.execute("id", { name: "reframer", question: "What is untested?" }, undefined, undefined, ctx);
+  assert.match(briefing, /Board inventory.*P=1\/1@\(5,4\)-\(5,4\)/);
+  assert.match(briefing, /Unchanged symbols since attempt start: P/);
+
+  const off = setup({ harnessProfile: true, boardInventory: false });
+  assert.doesNotMatch(textOf((await off.handlers.before_agent_start({})).message.content), /Board inventory/);
+});

@@ -178,6 +178,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
             "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
             "consult_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_CONSULT") != "0",
+            "board_inventory_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_BOARD_INVENTORY") != "0",
             "no_image": pi_env.get("ARC_LAYERED_NO_IMAGE") == "1",
             "fresh_level_session": fresh_level_session, "command": command,
             "pi_version": _pi_cli_version(Path(cli)),
