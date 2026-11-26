@@ -50,7 +50,7 @@ def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: 
     kernel: PiKernel | None = None
     try:
         ready_path = root / "bridge-ready.json"
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 300
         while not ready_path.is_file() and time.monotonic() < deadline:
             if bridge.poll() is not None: raise RuntimeError("ALE bridge exited before ready")
             time.sleep(0.1)
