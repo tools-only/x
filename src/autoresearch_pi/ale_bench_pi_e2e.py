@@ -1,0 +1,62 @@
+"""Run one ALE-Bench problem inside a real Pi RPC session."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+from .ale_bench_bridge_server import serve
+from .arc_layered_support import _resolve_pi_cli, _write_models_json
+from .arc_agi_3_adapter import resolve_model_settings
+from .pi_kernel import PiKernel
+from .project import load_project_dotenv
+
+
+def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: str = "yibu",
+                         model: str = "qwen3.8-27b", lite_version: bool = True,
+                         max_public: int = 8, max_output_tokens: int = 12000,
+                         wall_seconds: float = 1800.0) -> Path:
+    root = root.resolve()
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("ALE-Bench Pi run root must be empty")
+    root.mkdir(parents=True, exist_ok=True)
+    env = load_project_dotenv(Path(__file__).resolve().parents[2])
+    bridge_command = [str(Path(os.sys.executable)), "-m", "autoresearch_pi.ale_bench_bridge_server", "--root", str(root), "--problem-id", problem_id, "--max-public", str(max_public)]
+    if not lite_version:
+        bridge_command.append("--full")
+    bridge = subprocess.Popen(bridge_command, cwd=str(root), env={**env, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}, stdout=subprocess.DEVNULL, stderr=(root / "bridge-stderr.log").open("w", encoding="utf-8"), text=True)
+    kernel: PiKernel | None = None
+    try:
+        ready_path = root / "bridge-ready.json"
+        deadline = time.monotonic() + 60
+        while not ready_path.is_file() and time.monotonic() < deadline:
+            if bridge.poll() is not None: raise RuntimeError("ALE bridge exited before ready")
+            time.sleep(0.1)
+        ready = json.loads(ready_path.read_text(encoding="utf-8"))
+        agent_dir = root / ".pi-agent"
+        agent_dir.mkdir()
+        settings = resolve_model_settings(env)
+        _write_models_json(agent_dir, provider, model, {**settings, "input_modalities": ["text"]})
+        node, cli = _resolve_pi_cli()
+        pi_env = {**env, "PI_CODING_AGENT_DIR": str(agent_dir), "ALE_RUN_ROOT": str(root),
+                  "ALE_BRIDGE_URL": f"http://127.0.0.1:{ready['port']}", "ALE_BRIDGE_TOKEN": ready["token"],
+                  "ALE_PROBLEM_ID": problem_id, "ALE_MAX_OUTPUT_TOKENS": str(max_output_tokens)}
+        extension = Path(__file__).resolve().parents[2] / "demo" / "ale_bench_pi_extension.ts"
+        command = [node, cli, "--mode", "rpc", "--provider", provider, "--model", model,
+                   "--session", str(root / "session.jsonl"), "--no-extensions", "--no-skills", "--no-prompt-templates",
+                   "--no-context-files", "--no-builtin-tools", "--extension", str(extension)]
+        kernel = PiKernel(command, cwd=str(root), env=pi_env, timeout=120.0, deadline=time.monotonic() + wall_seconds).start()
+        kernel.prompt(prompt)
+        kernel.wait_for_agent_events(timeout=wall_seconds, idle_timeout=300.0)
+        status = json.loads(__import__("urllib.request").request.urlopen(__import__("urllib.request").request.Request(f"http://127.0.0.1:{ready['port']}/status", headers={"X-ALE-Token": ready["token"]})).read())
+        (root / "pi-summary.json").write_text(json.dumps({"problem_id": problem_id, "status": status}, indent=2), encoding="utf-8")
+        return root / "ale_bench.json"
+    finally:
+        if kernel is not None: kernel.close()
+        bridge.terminate()
+        bridge.wait(timeout=10)

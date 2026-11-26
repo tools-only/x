@@ -25,13 +25,13 @@
 
 ## 实现与验证
 
-- 改动入口：`src/autoresearch_pi/ale_bench_bridge.py`、`src/autoresearch_pi/ale_bench_e2e.py`、`src/autoresearch_pi/ale_bench_evolution.py`、CLI `ale-bench-e2e`/`ale-bench-evolve`、对应测试，以及 `demo/cognitive_components.ts`。
+- 改动入口：`src/autoresearch_pi/ale_bench_bridge.py`、`src/autoresearch_pi/ale_bench_bridge_server.py`、`src/autoresearch_pi/ale_bench_e2e.py`、`src/autoresearch_pi/ale_bench_evolution.py`、`src/autoresearch_pi/ale_bench_pi_e2e.py`、CLI `ale-bench-e2e`/`ale-bench-evolve`/`ale-bench-pi-e2e`、对应测试，以及 `demo/ale_bench_pi_extension.ts`。
 - 上游事实：Lite 问题为 `ahc008`, `ahc011`, `ahc015`, `ahc016`, `ahc024`, `ahc025`, `ahc026`, `ahc027`, `ahc039`, `ahc046`。上游 Result 的 absolute score 只计 accepted cases，编译错误或内部错误为零，relative score 需所有 case 都有 relative 值。Lite 切换 seeds、standings 和 relative result 数据，不改变 Result 计算算法。
 - 功能检查：`python -m pytest tests/test_ale_bench_bridge.py tests/test_ale_bench_e2e.py tests/test_ale_bench_evolution.py`。
 
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
-| 功能正确 | 通过（待本地命令确认） | Python test doubles | 覆盖投影、Lite 十题、artifact、关闭路径 |
+| 功能正确 | 通过（7 tests） | Python test doubles | 覆盖投影、Lite 十题、artifact、关闭路径 |
 | 全链路可达 | 未验证 | ALE-Bench Docker/HF environment | 需安装 ale-bench、CairoSVG、Docker 镜像后执行 CLI |
 | 自主采用 | 未验证 | 未运行真实 Pi/provider | 本次无 Agent 自主选择证据 |
 | 净收益 | 未验证 | 未运行对照实验 | 无成本或任务质量结论 |
@@ -39,5 +39,5 @@
 ## 交付决定
 
 - 已支持：Lite 十题校验、公开评测、case_eval 诊断、单次终态私有评测、脱敏 artifact、CLI，以及 Agent 回调驱动的有限公共评测演化、attempt 谱系和最佳源码选择。`cognitive_components.ts` 提供从 Qwen harness 抽出的版本化组件存储核。
-- 未支持：真实 Docker/HF 评测验证、Pi 原生 extension coding loop、上下文 evict/fold、consult、动态 `work/lib` 挂载、跨任务批处理和 leaderboard 访问。`ale-bench-evolve` 的候选文件模式是接线诊断，不是自主模型实验。
-- 剩余验证：在具备上游 Docker 与数据缓存的环境运行一个 Lite problem 的 public_eval 和 private_eval，确认版本兼容与资源限制。A 的 adapter/runtime 边界和 D 的 public/private context 连续性仍属于开放待办，本次只落实字段隔离和单一 Session artifact。
+- 未支持：真实 Docker/HF 评测验证、上下文 evict/fold、consult、动态 `work/lib` 挂载、跨任务批处理和 leaderboard 访问。Pi 原生 extension coding loop 已接入，但尚未在真实 ALE-Bench 环境运行。`ale-bench-evolve` 的候选文件模式是接线诊断，不是自主模型实验。
+- 剩余验证：在具备上游 Docker 与数据缓存的环境运行一个 Lite problem 的 Pi runner、public_eval 和 private_eval，确认版本兼容与资源限制。当前环境未提供 `ale_bench`、Docker 镜像或 Hugging Face 数据缓存，因此真实上游链路未验证。A 的 adapter/runtime 边界和 D 的 public/private context 连续性仍属于开放待办，本次只落实字段隔离和单一 Session artifact。

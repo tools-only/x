@@ -40,6 +40,7 @@ from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
 from .terminal_bench_e2e import run_terminal_bench_e2e
 from .ale_bench_e2e import run_ale_bench_e2e
 from .ale_bench_evolution import run_evolution
+from .ale_bench_pi_e2e import run_ale_bench_pi_e2e
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -332,6 +333,16 @@ def main(argv: list[str] | None = None) -> int:
     evolve.add_argument("--candidate", action="append", default=[], help="candidate source file, in Agent decision order")
     evolve.add_argument("--code-language", default="cpp23")
     evolve.add_argument("--full", action="store_true")
+    ale_pi = sub.add_parser("ale-bench-pi-e2e", help="run one ALE-Bench problem through the Pi coding Agent")
+    ale_pi.add_argument("--root", type=Path, default=None)
+    ale_pi.add_argument("--problem-id", required=True)
+    ale_pi.add_argument("--prompt", required=True)
+    ale_pi.add_argument("--provider", default="yibu")
+    ale_pi.add_argument("--model", default="qwen3.8-27b")
+    ale_pi.add_argument("--full", action="store_true")
+    ale_pi.add_argument("--max-public", type=int, default=8)
+    ale_pi.add_argument("--max-output-tokens", type=int, default=12000)
+    ale_pi.add_argument("--wall-seconds", type=float, default=1800.0)
     args = parser.parse_args(argv)
     if args.jev_routing is not None:
         os.environ[JEV_ROUTING_ENV] = args.jev_routing
@@ -636,6 +647,15 @@ def main(argv: list[str] | None = None) -> int:
             root, problem_id=args.problem_id, initial_code=args.code.read_text(encoding="utf-8"),
             agent_step=next_candidate, code_language=args.code_language, lite_version=not args.full,
             max_iterations=len(candidates),
+        )
+        print(artifact.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.command == "ale-bench-pi-e2e":
+        root = (args.root or paths.runs_dir / f"ale-bench-pi-{args.problem_id}").resolve()
+        artifact = run_ale_bench_pi_e2e(
+            root, problem_id=args.problem_id, prompt=args.prompt, provider=args.provider,
+            model=args.model, lite_version=not args.full, max_public=args.max_public,
+            max_output_tokens=args.max_output_tokens, wall_seconds=args.wall_seconds,
         )
         print(artifact.read_text(encoding="utf-8"), end="")
         return 0

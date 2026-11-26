@@ -16,7 +16,7 @@ class Result:
 class Session:
     def __init__(self): self.closed = False; self.private_calls = 0
     def public_eval(self, code, code_language="cpp23"): return Result()
-    def case_eval(self, cases, code, code_language="cpp23"): return Result()
+    def case_eval(self, input_str, code, code_language="cpp23"): return Result()
     def private_eval(self, code, code_language="cpp23"):
         self.private_calls += 1
         return Result(), 4, 0.8

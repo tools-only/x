@@ -16,7 +16,7 @@ LITE_PROBLEM_IDS = (
 
 class SessionLike(Protocol):
     def public_eval(self, code: str, code_language: str = "cpp23") -> Any: ...
-    def case_eval(self, cases: Any, code: str, code_language: str = "cpp23") -> Any: ...
+    def case_eval(self, input_str: str, code: str, code_language: str = "cpp23") -> Any: ...
     def private_eval(self, code: str, code_language: str = "cpp23") -> Any: ...
     def close(self) -> Any: ...
 
@@ -63,9 +63,9 @@ class AleBenchBridge:
         self._require_open()
         return _result_summary(self.session.public_eval(code, code_language=code_language))
 
-    def case_eval(self, cases: Any, code: str, code_language: str = "cpp23") -> dict[str, Any]:
+    def case_eval(self, input_str: str, code: str, code_language: str = "cpp23") -> dict[str, Any]:
         self._require_open()
-        return _result_summary(self.session.case_eval(cases, code, code_language))
+        return _result_summary(self.session.case_eval(input_str=input_str, code=code, code_language=code_language))
 
     def private_eval(self, code: str, code_language: str = "cpp23") -> dict[str, Any]:
         self._require_open()
