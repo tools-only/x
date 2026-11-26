@@ -58,6 +58,10 @@ def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: 
         agent_dir = root / ".pi-agent"
         agent_dir.mkdir()
         settings = resolve_model_settings(env)
+        if provider == "az":
+            settings["base_url"] = env.get("OPENAI_API_BASE")
+            settings["api_key"] = env.get("OPENAI_API_KEY")
+            settings["pi_api"] = "openai-completions"
         _write_models_json(agent_dir, provider, model, {**settings, "input_modalities": ["text"]})
         node, cli = _resolve_pi_cli()
         pi_env = {**env, "PI_CODING_AGENT_DIR": str(agent_dir), "ALE_RUN_ROOT": str(root),
