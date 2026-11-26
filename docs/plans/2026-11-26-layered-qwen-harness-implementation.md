@@ -44,3 +44,21 @@ Agent 自行调用 `reflect_component` 定义/修订/恢复 Memory、Skill、Pro
 - **增量 `NO_IMAGE` 与点击去重修复**：`ARC_LAYERED_NO_IMAGE=1` 仅在首帧、换关或 `RESET` 后发送完整十六进制网格，常规增量步只发送 `Changed cells` 与 `Touched components`；`mouse_tries` 改为按 `(board_key, region)` 独立计数（仅在 `RESET` 或换关时清空全部，不再因单次有变化动作清空其他盘面的无效点击计数）。
 - **Layer 0 `segment()` 性能优化**：将 `children` 孔洞判定由每个块全图 64×64 flood-fill 优化为外扩 1 格局部 `bbox` flood-fill，并增加按帧内容缓存；在 193 个连通块（129 个嵌套子块）的 64×64 稠密测试帧上，结果与 `a791d63` 逐字段完全一致，冷耗时由 640.67 ms 降至 31.95 ms（20.1×），缓存命中 0.78 ms。
 - **本轮验证范围**：`tests/arc_layered_python.test.ts` 定向 12/12 通过、`tests/arc_layered_components.test.ts` 1/1 通过、`tests/test_arc_layered_evolution.py` 2/2 通过、`py_compile` 与 `git diff --check` 通过。本机环境未安装 `node_modules`（缺少 `typebox` 与本地 Pi 依赖），因此修改后的 `tests/arc_layered_extension.test.ts` 与带 Pi 的 scripted smoke 尚未在本机复跑；需在已安装依赖的环境中补跑 `tests/arc_layered_extension.test.ts` 后再启动真实 Qwen 3.8 27B 对照。
+
+## 2026-11-26 对齐设计指南补齐四底座与组件生命周期闭环
+
+依据独立设计指南（`meta_harness_self_evolution_guide.md`）对本分支尚未闭环的底座与组件机制完成补齐：
+
+1. **底座 2（组件生命周期分桶、见证与过时标记）**：
+   - 在 `demo/arc_layered_components.ts` 新增持久化 `stats.json`，按关卡 `by_level` 与 `total` 记录 `invocations` / `ok` / `action_producing` / `reads` / `failures`、来源关号 `defined_level` / `updated_level`、连续失败次数与 1 行客观见证（`last_failure_witness`）及语法/发布连续失败计数。
+   - 在 `demo/arc_layered_extension.ts` 将 `reflect_component`、`read_component`、`publishTools()`、bound `tool` 调用、Python `direct_lib`/`assisted_lib` 调用与 `consult` 全部接入上述统计；切关时在 `harnessProfile` 中显式报告 `Carried from earlier levels (unverified on L<N>)`，对连续 3 次发布/执行失败或当关 0 使用达 12 步的 `tool`/`skill` 发送一次性中性 `COMPONENT NOTICE`；工具调用失败响应附加 1 行具体见证。
+2. **底座 3（同轮挂载回显、旁路拒写与四类天然边界统一供给）**：
+   - `publishTools()` 改为在同一个 `python` 工具返回中回显 `[tool mounted: ...]` 或 `[tool publish failed: ...]`，闭合“写代码 → 验证 → 挂载 → 回显”。
+   - 在 `demo/arc_layered_prelude.py` 的 `_open()` 与 `demo/arc_layered_python.ts` 的 `file()` 中拦截绕过 `reflect_component` 读写 `harness/components/` 的尝试（包括未使用 `with` 块直接 `open().write()` 的情况），给出明确指导错误。
+   - `LEVEL COMPLETE` 与 `GAME_OVER` 在 `harnessProfile` 下直接内联紧凑全关轨迹/组件战绩摘要与死前致败步/重复死亡事实，分别指向沉淀 `Skills`/`Tools` 与记录 `Memory.Falsified`。
+3. **底座 1 & 4（裁剪预算校准、投入-进展比、对称防空转与 `length` 有界恢复）**：
+   - `context` hook 将 `recoveryText` 自身 token 估算纳入 `evict` 上限预留（`effectiveCap = cap - recoveryReserve`），并刷新 `recoveryText` 使动态 `Memory`/`Prompt`/`Skills` 只注入决策 head 而不与旧版重复。
+   - `STALL` 与 `STUCK` 在 `harnessProfile` 模式下附加最近 12 步窗口的客观 `EFFORT/PROGRESS` 行（`new_states` / `same_repeats` / `repeat_mouse_regions` / `tool_uses` / `py_errors` / `truncated`）。
+   - `src/autoresearch_pi/arc_layered_e2e.py` 新增 `_classify_segment_activity()`：通过 `layered.jsonl` 增量游标识别 `component_change` / `read_component` / `consult(ok)` / `tool_published` / 合法 `work/` 改动，连续最多 2 次建设性无动作 segment 不计入 `idle_segments`，防止误杀组件整理与问询回合；`summary.json` 汇总 `components`、`subagents` 与 `length_truncations`，CLI 新增 `--no-image` 快捷参数。
+   - 补齐 `length` 截断有界恢复：连续 `length` 在第 1 次恢复注入 `LENGTH RECOVERY` 简短行动提示并在 `before_provider_request` 中关闭思考开关/适度放宽单次输出上限（`<= 8192`），达到上限次数后以 `segment_end.reason = "length_exhausted"` 通知 runner 终止为 `stop_reason = "length_truncation"`，避免无限重发或退化为 `idle`。
+- **最新验证（本次提交前）**：`git diff --check`、`py_compile`、`tests/test_arc_layered_evolution.py`（3/3）、`tests/arc_layered_components.test.ts`（2/2）、`tests/arc_layered_python.test.ts` 定向（13/13，含绕过写拦截负例）以及 Node 22 `stripTypeScriptTypes` 对全量修改 `.ts` 文件的语法转换均通过；`tests/arc_layered_extension.test.ts`、scripted Pi smoke 与真实 Qwen 3.8 27B 运行仍受本机缺少 `node_modules` 与未授权预算限制保持未验证。

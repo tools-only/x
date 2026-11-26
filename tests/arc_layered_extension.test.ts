@@ -516,3 +516,90 @@ test("foldPreActionObservations collapses pure-observe results before an acting 
   assert.equal(out[3].content[0].text, "ok\n[env] executed 1 (UP)");
   assert.equal(out[5].content[0].text, "latest observe");
 });
+
+test("same-turn tool mount feedback, failure notices, stale notice, and carried unverified list work in harnessProfile", async () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-m2-"));
+  const { handlers, tools, python, game, call } = setup({ root, harnessProfile: true });
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  python.run = async () => {
+    mkdirSync(join(root, "work", "lib"), { recursive: true });
+    writeFileSync(join(root, "work", "lib", "scan.py"), "def scan():\n    return 1\n");
+    writeFileSync(join(root, "work", "lib", "bad.py"), "def bad(:\n");
+    return { text: "wrote libs", truncated: false, acted: null, images: [], metrics: {} };
+  };
+  const mounted = textOf((await call()).content);
+  assert.match(mounted, /\[tool mounted: scan v1/);
+  assert.match(mounted, /\[tool publish failed: work\/lib\/bad\.py/);
+
+  await tools.reflect_component.execute("id", { op: "define", kind: "skill", name: "unused_sk", body: "steps", summary: "unused summary" });
+  python.run = async () => ({ text: "ValueError: boom", error: "ValueError: boom", acted: null, images: [], metrics: {}, truncated: false });
+  writeFileSync(join(root, "work", "lib", "flaky.py"), "def flaky():\n    raise ValueError('boom')\n");
+  await handlers.before_agent_start({});
+  for (let i = 0; i < 3; i += 1) {
+    handlers.turn_start();
+    const errRes = await tools.flaky.execute("id", {});
+    assert.equal(errRes.isError, true);
+  }
+  game.actions_used = 15;
+  python.run = async () => ({ text: "ok", truncated: false, acted: batch({ executed: 1, actions: ["UP"], level_changed: true, steps: [{
+    step: 1, action: "UP", tries: 0, same: false, last_try: null, new: true, level: 1, changed: true, death: false, level_up: true,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false }] }), images: [], metrics: {} });
+  handlers.turn_start();
+  await call();
+  game.level = 2; game.levels_completed = 1;
+  const lvl2Text = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(lvl2Text, /Carried from earlier levels \(unverified on L2\)/);
+  assert.match(lvl2Text, /COMPONENT NOTICE: tool\/flaky v1 failed 3 consecutive times/);
+  assert.match(lvl2Text, /LEVEL COMPLETE: 1 of 3/);
+  assert.match(lvl2Text, /Consolidate reusable patterns into Skill/);
+  const staleRes = textOf((await handlers.before_agent_start({})).message.content);
+  assert.doesNotMatch(staleRes, /unused_sk.*has 0 reads/);
+  await tools.reflect_component.execute("id", { op: "define", kind: "skill", name: "l2_unused", body: "steps", summary: "l2 unused" });
+  game.actions_used = 30;
+  const onceStale = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(onceStale, /COMPONENT NOTICE: skill\/l2_unused v1 has 0 reads across 15 actions/);
+  const twiceStale = textOf((await handlers.before_agent_start({})).message.content);
+  assert.doesNotMatch(twiceStale, /l2_unused v1 has 0 reads/);
+
+  game.state = "GAME_OVER";
+  python.run = async () => ({ text: "dead", truncated: false, acted: batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 31, action: "DOWN", tries: 0, same: false, last_try: null, new: false, level: 2, changed: false, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: 12 }] }), images: [], metrics: {} });
+  handlers.turn_start();
+  await call();
+  const deathText = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(deathText, /Fatal transition: step 31, action DOWN \(REPEATS death at step 12\)/);
+  assert.match(deathText, /Memory's Falsified section via reflect_component/);
+});
+
+test("stall includes effort/progress line and length truncation performs bounded recovery", async () => {
+  const { handlers, game, python, rows, call } = setup({ harnessProfile: true, outputTokens: 4096, maxLengthRecoveries: 2 });
+  await handlers.before_agent_start({});
+  game.stale_steps = 12;
+  python.run = async () => ({ text: "ok", truncated: true, acted: batch({ executed: 1, actions: ["MOUSE(x=0,y=0)"], steps: [{
+    step: 1, action: "MOUSE(x=0,y=0)", tries: 1, same: true, last_try: 0, new: false, level: 1, changed: false, death: false,
+    level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, region_tries: 4 }] }),
+    images: [], metrics: {} });
+  handlers.turn_start();
+  await call();
+  const stallText = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(stallText, /EFFORT\/PROGRESS \(last 1 actions\): new_states=0, same_repeats=1, repeat_mouse_regions=1/);
+  assert.match(stallText, /STALL: 12 steps/);
+
+  handlers.message_end(say("thinking too long", { stopReason: "length" }));
+  assert.equal(handlers.agent_before_settle(settle), undefined);
+  handlers.agent_settled();
+  assert.equal(rows("segment_end").at(-1).reason, "length");
+
+  const opened = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(opened, /LENGTH RECOVERY \(1\/2\)/);
+  const adapted = handlers.before_provider_request({ payload: { enable_thinking: true, reasoning_effort: "high", max_tokens: 4096 } }, { model: { maxTokens: 16384 } });
+  assert.equal(adapted.enable_thinking, false);
+  assert.equal(adapted.reasoning_effort, "none");
+  assert.equal(adapted.max_tokens, 8192);
+
+  handlers.message_end(say("still cut off", { stopReason: "length" }));
+  handlers.agent_settled();
+  assert.equal(rows("segment_end").at(-1).reason, "length_exhausted");
+});

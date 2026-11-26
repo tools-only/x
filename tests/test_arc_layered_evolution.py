@@ -33,3 +33,18 @@ def test_git_snapshot_is_none_without_files_and_never_raises(tmp_path):
     (work / "notes.py").write_text("VALUE = 1\n", encoding="utf-8")
     snapshot = _git_snapshot(tmp_path)
     assert snapshot is None or (isinstance(snapshot, str) and len(snapshot) >= 7)
+
+
+def test_classify_segment_activity_decouples_constructive_work_and_length():
+    from autoresearch_pi.arc_layered_e2e import _classify_segment_activity
+
+    assert _classify_segment_activity({"actions": 1, "reason": "action"}, [], 0, 0) == "acted"
+    assert _classify_segment_activity({"actions": 0, "reason": "length"}, [], 0, 0) == "length"
+    assert _classify_segment_activity({"actions": 0, "reason": "length_exhausted"}, [], 0, 0) == "length_exhausted"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "component_change"}], 0, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "consult", "ok": True}], 0, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "tool_published"}], 0, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "read_component"}], 0, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [], 1, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "observe_limit"}], 0, 0) == "observe_limit"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [], 0, 0) == "idle"

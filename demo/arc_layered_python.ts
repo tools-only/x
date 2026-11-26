@@ -17,7 +17,7 @@ export type ActionBatch = { executed: number; actions: string[]; lines: string[]
 export type StepFact = { step: number; action: string; tries: number; same: boolean; last_try: number;
   new: boolean; level: number; changed: boolean; death: boolean; level_up: boolean;
   source: string | null; fatal: boolean; claims_failed: string[]; claims_held: string[];
-  predict_off: number | null; same_death: boolean; region_tries?: number; ineffective_regions?: number };
+  predict_off: number | null; same_death: boolean | number | null; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[] };
@@ -266,7 +266,10 @@ export class LayeredPython {
   }
 
   private file(request: KernelRequest) {
-    const relative = String(request.path).replace(/\\/g, "/").replace(/^(\.\/|\/)?work\//, "");
+    const clean = String(request.path).replace(/\\/g, "/");
+    if (/(?:^|\/)harness\/components(?:\/|$)/i.test(clean) || (clean.includes("components/") && !clean.startsWith("work/")))
+      return { error: `direct writes to component storage are blocked (${request.path}); use reflect_component(op, kind, name, ...)` };
+    const relative = clean.replace(/^(\.\/|\/)?work\//, "");
     const target = resolve(this.workDir, relative);
     if (!target.startsWith(this.workDir + sep)) return { error: `only files under work/ are available: ${request.path}` };
     if (request.op === "read") return existsSync(target) ? { data: readFileSync(target, "utf8") } : { error: `no such file: ${request.path}`, missing: true };

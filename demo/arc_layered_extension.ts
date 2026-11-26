@@ -29,6 +29,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   noImage?: boolean;
   harnessProfile?: boolean;
   consult?: boolean;
+  maxLengthRecoveries?: number;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
   maxObserveCallsPerTurn?: number;
@@ -280,9 +281,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
   lastReviewCallback = readReviewCallback(options.root);
   const levelSteps: StepFact[] = [];
+  const WINDOW_SIZE = 12;
+  const recentSteps: StepFact[] = [];
+  const recentCalls: Array<{ errors: number; truncated: number; tools: number }> = [];
+  let finishedLevelDigest = "", finishedDeathDigest = "";
+  const staleNoticed = new Set<string>();
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let rawEstimate = 0, rollThreshold = 0, evictAnchorIndex = 0;
   let actedThisTurn = false, observeCallsThisTurn = 0, observeLimitHitThisTurn = false, consecutiveObserveTurns = 0;
+  let consecutiveLengthStops = 0, currentRequestOutputTokens = options.outputTokens;
+  const maxLengthRecoveries = options.maxLengthRecoveries ?? Number(env.ARC_LAYERED_MAX_LENGTH_RECOVERIES ?? 2);
   let endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
   let lastSkillIndex = "";
@@ -294,7 +302,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (row.kind === "consult" && row.attempted === true) consultsByLevel.set(row.level, (consultsByLevel.get(row.level) ?? 0) + 1);
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const safeState = (): LayeredState => {
+    try { return python.state(); }
+    catch { return { level: 1, levels_completed: 0, win_levels: 0, state: "NOT_FINISHED", step: 0, actions_used: 0, valid_actions: [], frame: [], stale_steps: 0, unchecked_batches: 0, mini_review: null }; }
+  };
   const registeredTools = new Set<string>();
+  const lastPublishError = new Map<string, string>();
   let pythonBin: string | undefined;
   function checkPythonSyntax(source: string): string | null {
     for (const bin of pythonBin ? [pythonBin] : ["python3", "python"]) {
@@ -305,10 +318,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
     return null;
   }
-  function publishTools() {
-    if (!components) return;
+  function publishTools(): { published: Array<{ name: string; version: number }>; failed: Array<{ name: string; error: string }> } {
+    const published: Array<{ name: string; version: number }> = [];
+    const failed: Array<{ name: string; error: string }> = [];
+    if (!components) return { published, failed };
     const dir = join(options.root, "work", "lib");
-    if (!existsSync(dir)) return;
+    if (!existsSync(dir)) return { published, failed };
+    const st = safeState();
     for (const file of readdirSync(dir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name))) {
       const name = file.slice(0, -3), source = readFileSync(join(dir, file), "utf8");
       const match = new RegExp(`^def\\s+(${name}|run)\\s*\\(\\s*([^)\\n]*)\\)\\s*(?:->[^:\\n]+)?\\s*:`, "m").exec(source);
@@ -319,12 +335,23 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const singleArg = /^[a-zA-Z_]\w*(?:\s*:[^=]+)?(?:\s*=.*)?$/.test(trimmedArgs);
       if (!zeroArg && !singleArg) continue;
       const syntaxErr = checkPythonSyntax(source);
-      if (syntaxErr) { log("tool_publish_failed", { name, error: syntaxErr }); continue; }
+      if (syntaxErr) {
+        if (lastPublishError.get(name) !== `${source.length}:${syntaxErr}`) {
+          lastPublishError.set(name, `${source.length}:${syntaxErr}`);
+          components.recordPublishFailure(name, st.level, st.step, syntaxErr);
+          log("tool_publish_failed", { name, error: syntaxErr });
+          failed.push({ name, error: syntaxErr });
+        }
+        continue;
+      }
+      lastPublishError.delete(name);
       const entrySummary = zeroArg ? `${fn}()` : fn;
       const active = components.current("tool", name);
       if (!active || active.body !== source || active.summary !== entrySummary) {
         const saved = components.reflect(active ? "redefine" : "define", "tool", name, source, entrySummary);
+        components.recordChange("tool", name, st.level, st.step);
         log("tool_published", { name, version: saved.version, hash: saved.hash });
+        published.push({ name, version: saved.version });
       }
       if (registeredTools.has(name)) continue;
       registeredTools.add(name);
@@ -334,6 +361,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           : `Agent-authored Python function work/lib/${file} (${fn}(args)); pass one args object.`,
         parameters: Type.Object({ args: Type.Optional(Type.Object({})) }),
         async execute(_id, params, signal) {
+          consecutiveLengthStops = 0;
           const current = components.current("tool", name)!;
           const latest = readFileSync(join(dir, file), "utf8");
           if (createHash("sha256").update(latest).digest("hex") !== current.hash)
@@ -345,12 +373,23 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             ? `${name}.${fnName}()`
             : `${name}.${fnName}(__import__('json').loads(__import__('base64').b64decode('${encoded}').decode()))`;
           const result = await pythonTool.execute(_id, { code: `print(repr(${callExpr}))` }, signal);
+          const acted = Boolean((result as any).details?.acted);
           const ok = !(result as any).isError && !(result as any).details?.error &&
-            (!(result as any).terminate || Boolean((result as any).details?.acted));
-          log("bound_invocation", { name, version: current.version, ok, action_producing: Boolean((result as any).details?.acted) });
-          return ok ? result : { ...result, isError: true };
+            (!(result as any).terminate || acted);
+          const callState = safeState();
+          const firstLine = ((result as any).content?.find((p: any) => p.type === "text")?.text ?? "").split("\n")[0]?.slice(0, 120) || "error";
+          const witness = ok ? undefined : `L${callState.level} s${callState.step} ${name}: ${firstLine}`;
+          const stats = components.recordInvocation("tool", name, callState.level, callState.step, { ok, action_producing: acted, witness });
+          recentCalls.push({ errors: ok ? 0 : 1, truncated: 0, tools: 1 });
+          if (recentCalls.length > WINDOW_SIZE) recentCalls.shift();
+          log("bound_invocation", { name, version: current.version, ok, action_producing: acted, level: callState.level, step: callState.step });
+          if (ok) return result;
+          const note = `\n[L${callState.level} s${callState.step} tool/${name} failed${stats.consecutive_failures >= 3 ? ` (${stats.consecutive_failures}x consecutive — fix or retire)` : ""}: ${firstLine}]`;
+          const parts = Array.isArray((result as any).content) ? (result as any).content : [{ type: "text", text: firstLine }];
+          return { ...result, isError: true, content: parts.map((p: any, idx: number) => idx === 0 && p.type === "text" ? { ...p, text: p.text + note } : p) };
         } });
     }
+    return { published, failed };
   }
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
   let request: string | undefined;
@@ -358,8 +397,38 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const softLimit = () => Date.now() - segmentStart >= options.segmentSeconds * 1000 ? "soft_time"
     : segmentTokens >= options.segmentTokens ? "soft_tokens" : undefined;
 
+  function effortProgressSummary(): string {
+    const winSteps = recentSteps.slice(-WINDOW_SIZE);
+    const winCalls = recentCalls.slice(-WINDOW_SIZE);
+    if (!winSteps.length && !winCalls.length) return "";
+    const newStates = winSteps.filter(f => f.new).length;
+    const repeats = winSteps.filter(f => f.same).length;
+    const mouseRegions = winSteps.filter(f => (f.region_tries ?? 0) >= 2).length;
+    const tools = winCalls.reduce((s, c) => s + c.tools, 0);
+    const errors = winCalls.reduce((s, c) => s + c.errors, 0);
+    const truncated = winCalls.reduce((s, c) => s + c.truncated, 0);
+    return `EFFORT/PROGRESS (last ${winSteps.length} actions): new_states=${newStates}, same_repeats=${repeats}, repeat_mouse_regions=${mouseRegions}, tool_uses=${tools}, py_errors=${errors}, truncated=${truncated}.`;
+  }
+
+  function formatLevelComponentSummary(finishedLevel: number): string {
+    if (!components) return "";
+    const lines: string[] = [];
+    for (const item of components.list()) {
+      if (item.kind !== "tool" && item.kind !== "skill" && item.kind !== "subagent") continue;
+      const st = components.stats(item.kind, item.name);
+      if (!st) continue;
+      const cur = st.by_level[String(finishedLevel)] ?? { invocations: 0, ok: 0, action_producing: 0, reads: 0, failures: 0 };
+      if (item.kind === "skill") lines.push(`skill/${item.name}: L${finishedLevel} reads=${cur.reads}, total=${st.total.reads}`);
+      else lines.push(`${item.kind}/${item.name}: L${finishedLevel} ${cur.ok}/${cur.invocations} ok, total ${st.total.ok}/${st.total.invocations} ok`);
+    }
+    return lines.length ? `Component stats: ${lines.join("; ")}` : "";
+  }
+
   function content(batch: ActionBatch | null, nudge = false): Content {
     const state = python.state(), events: string[] = [];
+    if (consecutiveLengthStops > 0) {
+      events.push(`LENGTH RECOVERY (${consecutiveLengthStops}/${maxLengthRecoveries}): the previous reply hit the output token limit before calling a tool. Output minimal reasoning and call python or reflect_component now.`);
+    }
     if (components) {
       for (const kind of ["memory", "prompt"] as const) for (const item of components.list(kind)) {
         events.push(`${kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}`);
@@ -368,9 +437,50 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const index = skills.map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; ");
       if (index && (index !== lastSkillIndex || batch?.level_changed)) events.push("SKILLS: " + index);
       lastSkillIndex = index;
-      const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || fact.same_death);
-      if (options.consult !== false && (state.stale_steps >= 12 || regionStall))
+      const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || (fact.same_death !== null && fact.same_death !== undefined && fact.same_death !== false));
+      const stalled = options.consult !== false && (state.stale_steps >= 12 || regionStall);
+      if (stalled) {
+        const ep = effortProgressSummary();
+        if (ep) events.push(ep);
         events.push(`STALL: ${state.stale_steps} steps without a new frame${regionStall ? " or repeated failure/clicks" : ""}; consult("reframer", ...) is available.`);
+      }
+      if (batch?.level_changed) {
+        const carried: string[] = [];
+        for (const item of components.list()) {
+          const st = components.stats(item.kind, item.name);
+          const cur = st?.by_level[String(state.level)];
+          const curUsed = (cur?.invocations ?? 0) + (cur?.reads ?? 0);
+          if (st && st.updated_level < state.level && curUsed === 0) {
+            const past = item.kind === "skill" ? `${st.total.reads} past reads` : `${st.total.ok}/${st.total.invocations} past ok`;
+            carried.push(`${item.kind}/${item.name} (${past})`);
+          }
+        }
+        if (carried.length) events.push(`Carried from earlier levels (unverified on L${state.level}): ${carried.slice(0, 8).join(", ")}.`);
+      }
+      const notices: string[] = [];
+      for (const item of components.list()) {
+        const st = components.stats(item.kind, item.name);
+        if (!st) continue;
+        if (st.consecutive_failures >= 3) {
+          notices.push(`COMPONENT NOTICE: ${item.kind}/${item.name} v${item.version} failed ${st.consecutive_failures} consecutive times (${st.last_failure_witness ?? "see logs"}). Revise, restore, or retire.`);
+        } else if ((item.kind === "tool" || item.kind === "skill") && st.updated_level === state.level) {
+          const cur = st.by_level[String(state.level)];
+          const curCount = item.kind === "skill" ? (cur?.reads ?? 0) : (cur?.invocations ?? 0);
+          const since = state.actions_used - (st.last_used_step ?? st.updated_step);
+          const noticeKey = `${item.kind}/${item.name}@v${item.version}:L${state.level}`;
+          if (curCount === 0 && since >= 12 && !staleNoticed.has(noticeKey)) {
+            staleNoticed.add(noticeKey);
+            notices.push(`COMPONENT NOTICE: ${item.kind}/${item.name} v${item.version} has 0 ${item.kind === "skill" ? "reads" : "uses"} across ${since} actions — keep if deliberate, or revise/retire.`);
+          }
+        }
+      }
+      for (const [key, st] of Object.entries(components.allStats())) {
+        if (st.consecutive_publish_failures >= 3 && key.startsWith("tool/")) {
+          const tName = key.slice(5);
+          notices.push(`COMPONENT NOTICE: work/lib/${tName}.py failed syntax/publish ${st.consecutive_publish_failures}x (${st.last_publish_error ?? "syntax error"}).`);
+        }
+      }
+      if (notices.length) events.push(...notices.slice(0, 2));
     }
     if (contextWarning) {
       events.push(options.harnessProfile
@@ -380,14 +490,31 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
     if (nudge && consecutiveObserveTurns > 0)
       events.push(`OBSERVE LIMIT: static inspection already ran ${consecutiveObserveTurns} turn(s) on this unchanged board without acting. Take a 1-step probe or plan now.`);
-    if (batch?.level_changed) events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done. ` +
-      "Write 2-3 lines of notes about what carries over. The latest frame is the starting board of the next level: carry the " +
-      "mechanics you established forward as hypotheses, inspect unfamiliar elements (new elements often introduce the mechanic " +
-      "this level needs), and reassess whether the goal is still the same.");
-    if (state.state === "GAME_OVER") events.push("GAME_OVER: this attempt FAILED (a fatal action or a depleted budget); completed " +
-      "levels are kept and only RESET is possible now. Before resetting, diagnose the cause: the latest frame is the death frame, " +
-      "`history[-1].action` was the fatal action and `history[-2].frame` was the board just before it. The game is deterministic: " +
-      "replaying the sequence that just failed will fail again, so change the plan before the fatal point and record the cause.");
+    if (batch?.level_changed) {
+      if (options.harnessProfile) {
+        events.push((`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done.\n` +
+          (finishedLevelDigest ? finishedLevelDigest + "\n" : "") +
+          `Consolidate reusable patterns into Skill (reflect_component kind="skill") or Tool (work/lib/<name>.py), and refresh Memory hypotheses for L${state.level}.`).slice(0, 2400));
+        finishedLevelDigest = "";
+      } else {
+        events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done. ` +
+          "Write 2-3 lines of notes about what carries over. The latest frame is the starting board of the next level: carry the " +
+          "mechanics you established forward as hypotheses, inspect unfamiliar elements (new elements often introduce the mechanic " +
+          "this level needs), and reassess whether the goal is still the same.");
+      }
+    }
+    if (state.state === "GAME_OVER") {
+      if (options.harnessProfile && finishedDeathDigest) {
+        events.push((`GAME_OVER: this attempt FAILED (only RESET is valid now).\n${finishedDeathDigest}\n` +
+          "Record the falsified rule/cause in Memory's Falsified section via reflect_component before or after RESET.").slice(0, 1200));
+        finishedDeathDigest = "";
+      } else {
+        events.push("GAME_OVER: this attempt FAILED (a fatal action or a depleted budget); completed " +
+          "levels are kept and only RESET is possible now. Before resetting, diagnose the cause: the latest frame is the death frame, " +
+          "`history[-1].action` was the fatal action and `history[-2].frame` was the board just before it. The game is deterministic: " +
+          "replaying the sequence that just failed will fail again, so change the plan before the fatal point and record the cause.");
+      }
+    }
     if (state.state === "WIN") events.push("WIN: the game is finished.");
     if (state.budget_left !== undefined && state.budget_left <= Math.max(5, 0.1 * (state.actions_used + state.budget_left)))
       events.push(`BUDGET: ${state.budget_left} actions left.`);
@@ -397,15 +524,21 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         "ends when they are gone. If the level looks lost, stop re-trying routes: spend the rest on deliberate probes and bank " +
         "what you learned as work/claims/ files - knowledge survives this level, unspent actions do not.");
     if (options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter) {
-      const rounds = Math.floor(state.stale_steps / options.stuckAfter);
-      events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and review in full: name the ` +
-        "failing layer (action choice, rule hypothesis, goal reading or object representation), the evidence for it, the change " +
-        "that follows, and a test that tells the new reading from the old. Move up (re-read the goal and overall structure) or " +
-        "down (inspect transitions and intermediate frames) before acting again."
-        : rounds >= 2 ? `STUCK: ${state.stale_steps} steps without a new state. Enumerate 2-3 alternative framings of the game, ` +
-          "rule out the ones your recorded transitions already contradict, then act within the survivor."
-        : `STUCK: ${state.stale_steps} steps without a new state. Before acting: which layer is failing — action choice, ` +
-          "rule hypothesis, goal reading, or object representation? `harness_state` has the evidence.");
+      if (options.harnessProfile) {
+        const ep = effortProgressSummary();
+        if (ep && !events.includes(ep)) events.push(ep);
+        events.push(`STUCK: ${state.stale_steps} steps without a new state. Test 2 competing hypotheses in Memory (H1 vs H2) or use consult("reframer", ...) if blocked.`);
+      } else {
+        const rounds = Math.floor(state.stale_steps / options.stuckAfter);
+        events.push(rounds >= 4 ? `STUCK: ${state.stale_steps} steps without a new state. Stop and review in full: name the ` +
+          "failing layer (action choice, rule hypothesis, goal reading or object representation), the evidence for it, the change " +
+          "that follows, and a test that tells the new reading from the old. Move up (re-read the goal and overall structure) or " +
+          "down (inspect transitions and intermediate frames) before acting again."
+          : rounds >= 2 ? `STUCK: ${state.stale_steps} steps without a new state. Enumerate 2-3 alternative framings of the game, ` +
+            "rule out the ones your recorded transitions already contradict, then act within the survivor."
+          : `STUCK: ${state.stale_steps} steps without a new state. Before acting: which layer is failing — action choice, ` +
+            "rule hypothesis, goal reading, or object representation? `harness_state` has the evidence.");
+      }
     }
     if (flags.expect && (state.unchecked_batches ?? 0) >= 3) {
       events.push(`Unchecked: your last ${state.unchecked_batches} action batches carried no expect; without a prediction a ` +
@@ -422,16 +555,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       })).join(", ") + ".");
     if (batch?.steps?.some(fact => fact.claims_held.length)) events.push(`Claims held: ` +
       batch.steps.flatMap(fact => fact.claims_held).join(", ") + ".");
-    if (batch?.level_changed && lastReviewPath) events.push(`LEVEL REVIEW: ${lastReviewPath}` +
+    if (!options.harnessProfile && batch?.level_changed && lastReviewPath) events.push(`LEVEL REVIEW: ${lastReviewPath}` +
       (lastReviewCallback ? `\nCarry forward: ${lastReviewCallback}` : "") +
       "\nBefore acting on the new level: which attribution failed, what artifact fixes it, and what probe proves that?");
-    if (batch?.game_over && !batch.level_changed && lastReviewPath) events.push(`DEATH REVIEW: ${lastReviewPath}` +
+    if (!options.harnessProfile && batch?.game_over && !batch.level_changed && lastReviewPath) events.push(`DEATH REVIEW: ${lastReviewPath}` +
       "\nBefore RESET: was this memory, model, method or tool failure? Write the one artifact that prevents a repeat.");
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     if (batch?.notes?.length) events.push(...batch.notes);
     const evidence = python.capabilitySnapshot?.();
-    if (!options.harnessProfile && batch?.level_changed && evidence) {
+    if (batch?.level_changed && evidence) {
       const carried = Object.entries(evidence.claims).filter(([, claim]) => claim.checked > 0)
         .map(([name]) => `claims/${name} (0 checked on L${state.level})`);
       if (evidence.model?.tested) carried.push(`model.py (0 checked on L${state.level})`);
@@ -522,12 +655,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     description: "Run Python in the game kernel. submit_actions([...]) inside the code is the only way to act.",
     parameters: Type.Object({ code: Type.String({ description: "Python code to run" }) }),
     async execute(_id: string, params: { code: string }, signal?: AbortSignal) {
+      consecutiveLengthStops = 0;
       if (actedThisTurn) return { details: {}, ...(endReason ? { terminate: true } : {}), content: [{ type: "text", text:
         "Not run: an earlier python call in this reply already acted. Read the new state message first." }] };
       if (observeLimitHitThisTurn) return { details: {}, terminate: true, content: [{ type: "text", text:
         "Not run: observation limit reached for this turn. Act on the next turn." }] };
       const from = Date.now(), outcome = await python.run(params.code, signal), batch = outcome.acted, state = python.state();
-      publishTools();
+      const pub = publishTools();
       capabilitiesDirty ||= !!outcome.notes?.some(note => /^(?:loaded |claims\/|lib\/|model\.py)/.test(note));
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
@@ -547,17 +681,43 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       } else {
         observeCallsThisTurn += 1;
       }
+      let libCallsInRun = 0;
       for (const fact of outcome.steps ?? []) {
         write("decisions.jsonl", { t: new Date().toISOString(), ...fact, notes: outcome.notes ?? [], error: outcome.error ?? null });
         levelSteps.push(fact);
+        recentSteps.push(fact);
+        if (recentSteps.length > WINDOW_SIZE) recentSteps.shift();
+        const m = fact.source && /^(?:direct_lib|assisted_lib)\/([a-z][a-z0-9_]*)$/.exec(fact.source);
+        if (m) {
+          libCallsInRun += 1;
+          components?.recordInvocation("tool", m[1], fact.level, fact.step, { ok: !outcome.error, action_producing: true });
+        }
       }
+      recentCalls.push({ errors: outcome.error ? 1 : 0, truncated: outcome.truncated ? 1 : 0, tools: libCallsInRun });
+      if (recentCalls.length > WINDOW_SIZE) recentCalls.shift();
       if (batch && (batch.level_changed || batch.game_over) && levelSteps.length) {
+        if (batch.level_changed) {
+          const traj = compressedTrajectory(levelSteps).slice(0, 1400);
+          const compSummary = formatLevelComponentSummary(levelSteps[0].level);
+          finishedLevelDigest = [traj, compSummary].filter(Boolean).join("\n");
+        }
+        if (batch.game_over && !batch.level_changed) {
+          const dead = [...levelSteps].reverse().find(f => f.death) ?? levelSteps.at(-1)!;
+          const tail = levelSteps.slice(-3).map(f => `s${f.step} ${f.action}${f.death ? " DEATH" : ""}`).join(" -> ");
+          const repeatNote = typeof dead.same_death === "number" ? ` (REPEATS death at step ${dead.same_death})`
+            : dead.same_death ? " (REPEATS earlier death)" : "";
+          finishedDeathDigest = `Fatal transition: step ${dead.step}, action ${dead.action}${repeatNote}; trail: ${tail}.`;
+        }
         lastReviewPath = writeLevelReview(options.root, levelSteps[0].level, state, levelSteps, outcome.notes ?? []);
         levelSteps.length = 0;
         lastReviewCallback = readReviewCallback(options.root);
         capabilityContext = readCapabilityContext(options.root);
       }
       let resultText = outcome.text;
+      for (const p of pub.published)
+        resultText += `\n[tool mounted: ${p.name} v${p.version} — callable directly or via import ${p.name}]`;
+      for (const f of pub.failed)
+        resultText += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
       const observeLimit = options.maxObserveCallsPerTurn ?? 2;
       if (!batch && observeLimit > 0) {
         if (observeCallsThisTurn < observeLimit) {
@@ -584,6 +744,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       description: "Ask a same-model, single-turn, non-acting agent for a clean-context explanation when stalled.",
       parameters: Type.Object({ name: Type.String(), question: Type.String(), include_trajectory: Type.Optional(Type.Boolean()) }),
       async execute(_id, params, signal, _onUpdate, ctx) {
+        consecutiveLengthStops = 0;
         const state = python.state(), used = consultsByLevel.get(state.level) ?? 0;
         if (used >= 2) return { details: {}, isError: true, content: [{ type: "text", text: "consult limit: two per level" }] };
         const role = params.name === "reframer" ? "Give two mutually exclusive explanations and one discriminating next probe. Cite observed facts."
@@ -609,15 +770,22 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             systemPrompt: role, messages: [{ role: "user", content: [{ type: "text", text: briefing }], timestamp: Date.now() }], tools: [] } as any,
             { signal: controller.signal, reasoning: "off", maxTokens: 1500 } as any).result();
           const answer = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
+          const ok = reply.stopReason !== "error" && reply.stopReason !== "aborted";
           write("usage.jsonl", { decision, kind: "subagent", name: params.name, model: ctx.model.id,
             ...usageRecord(reply), ms: Date.now() - started, stop_reason: reply.stopReason });
           usageRecorded = true;
-          log("consult", { name: params.name, level: state.level, step: state.step, ok: reply.stopReason !== "error" && reply.stopReason !== "aborted", ms: Date.now() - started });
-          if (reply.stopReason === "error" || reply.stopReason === "aborted") throw Error(reply.errorMessage ?? reply.stopReason);
+          components.recordInvocation("subagent", params.name, state.level, state.step,
+            { ok, witness: ok ? undefined : `L${state.level} s${state.step} consult(${params.name}): ${reply.errorMessage ?? reply.stopReason}` });
+          log("consult", { name: params.name, level: state.level, step: state.step, ok, ms: Date.now() - started });
+          if (!ok) throw Error(reply.errorMessage ?? reply.stopReason);
           return { details: {}, content: [{ type: "text", text: answer.slice(0, 6000) }] };
         } catch (error) {
-          if (!usageRecorded) write("usage.jsonl", { decision, kind: "subagent", name: params.name, model: ctx.model?.id ?? null,
-            ms: Date.now() - started, status: controller.signal.aborted ? "timeout_or_abort" : "error", reported_usage: null });
+          if (!usageRecorded) {
+            write("usage.jsonl", { decision, kind: "subagent", name: params.name, model: ctx.model?.id ?? null,
+              ms: Date.now() - started, status: controller.signal.aborted ? "timeout_or_abort" : "error", reported_usage: null });
+            components.recordInvocation("subagent", params.name, state.level, state.step,
+              { ok: false, witness: `L${state.level} s${state.step} consult(${params.name}): ${String(error).slice(0, 100)}` });
+          }
           log("consult", { name: params.name, level: state.level, step: state.step, ok: false, error: String(error) });
           return { details: {}, isError: true, content: [{ type: "text", text: `consult unavailable: ${String(error)}` }] };
         } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
@@ -630,9 +798,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
         name: Type.String(), body: Type.Optional(Type.String()), summary: Type.Optional(Type.String()), version: Type.Optional(Type.Number()) }),
       async execute(_id, params) {
+        consecutiveLengthStops = 0;
         try {
           const item = components.reflect(params.op, params.kind as Kind, params.name, params.body, params.summary, params.version);
-          log("component_change", { op: params.op, kind: item.kind, name: item.name, version: item.version });
+          const st = safeState();
+          components.recordChange(item.kind, item.name, st.level, st.step);
+          log("component_change", { op: params.op, kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step });
           return { details: {}, content: [{ type: "text", text: `${item.kind}/${item.name} v${item.version} active` }] };
         } catch (error) { return { details: {}, isError: true, content: [{ type: "text", text: String(error) }] }; }
       } });
@@ -641,11 +812,14 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       parameters: Type.Object({ kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
         name: Type.String(), version: Type.Optional(Type.Number()) }),
       async execute(_id, params) {
+        consecutiveLengthStops = 0;
         try {
           const item = params.version ? components.read(params.kind as Kind, params.name, params.version)
             : components.current(params.kind as Kind, params.name);
           if (!item) throw Error("no active component");
-          log("read_component", { kind: item.kind, name: item.name, version: item.version });
+          const st = safeState();
+          components.recordRead(item.kind, item.name, st.level, st.step);
+          log("read_component", { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step });
           return { details: {}, content: [{ type: "text", text: `${item.kind}/${item.name} v${item.version}\n${item.body}` }] };
         } catch (error) { return { details: {}, isError: true, content: [{ type: "text", text: String(error) }] }; }
       } });
@@ -684,28 +858,27 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const window = (ctx.model?.contextWindow ?? 128000);
     const cap = Math.min(options.contextCap || window - 32000, window - options.outputTokens - 8192);
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
-    const result = evict(event.messages, cap, target, extraBlocks, evictAnchorIndex);
+    const recoveryReserve = recoveryText ? estimateTokens({ role: "user", content: [{ type: "text", text: recoveryText }] }) : 0;
+    const effectiveCap = Math.max(2048, cap - recoveryReserve);
+    const result = evict(event.messages, effectiveCap, Math.min(target, effectiveCap), extraBlocks, evictAnchorIndex);
     evictAnchorIndex = result.cut;
     extraBlocks = Math.max(0, extraBlocks - result.blocks);
-    if (result.blocks) {
+    if (result.cut > 0) {
       const state = python.state();
       const carry = options.harnessProfile && components
-        ? [components.list().filter(item => item.kind === "memory" || item.kind === "prompt")
-            .map(item => `${item.kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}`).join("\n"),
-          components.list("skill").map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; "),
-          components.list("tool").map(item => `tool/${item.name}`).join(", ")].filter(Boolean).join("\n")
+        ? components.list("tool").map(item => `tool/${item.name} v${item.version}`).join(", ")
         : readCapabilityContext(options.root);
       recoveryText = ["Earlier context was trimmed. Current work files and recent action results:",
         carry, `Level ${state.level}, step ${state.step}, ${state.state}.`, ...trail.slice(-6)].filter(Boolean).join("\n");
-      warningAnchor = -1;
-    } else if (result.before - result.removed >= cap * 0.85 && warningAnchor !== evictAnchorIndex) {
+      if (result.blocks) warningAnchor = -1;
+    } else if (result.before - result.removed >= effectiveCap * 0.85 && warningAnchor !== evictAnchorIndex) {
       contextWarning = true;
       warningAnchor = evictAnchorIndex;
     }
     rawEstimate = result.before;
     rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
-      tokens_removed: result.removed, estimate_before: result.before, cap, target });
+      tokens_removed: result.removed, estimate_before: result.before, cap: effectiveCap, target });
     const folding = fold(result.messages, options.foldAfter);
     const preObs = foldPreActionObservations(folding.messages);
     if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: options.foldAfter });
@@ -762,7 +935,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (!options.outputTokens) return;
     const key = ctx.model?.api?.includes("responses") ? "max_output_tokens" : "max_completion_tokens" in payload ? "max_completion_tokens" : "max_tokens";
     for (const name of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) delete payload[name];
-    payload[key] = options.outputTokens;
+    let limit = options.outputTokens;
+    if (consecutiveLengthStops >= 1) {
+      if ("enable_thinking" in payload) payload.enable_thinking = false;
+      if ("reasoning_effort" in payload) payload.reasoning_effort = "none";
+      const bumped = Math.min(8192, Math.max(options.outputTokens, options.outputTokens * 2));
+      limit = Math.min(bumped, ctx.model?.maxTokens ?? bumped);
+      log("length_recovery", { attempt: consecutiveLengthStops, output_tokens: limit });
+    }
+    currentRequestOutputTokens = limit;
+    payload[key] = limit;
     return payload;
   });
   pi.on("after_provider_response", event => { if (request) requests.headers(request, event.status); });
@@ -775,6 +957,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     lastStop = message.stopReason;
     segmentTokens += (message.usage?.input ?? 0) + (message.usage?.output ?? 0);
     write("usage.jsonl", { decision, kind: "agent", ...usageRecord(message), model: message.model, request_id: requests.idFor(message) ?? null });
+    if (message.stopReason === "length") {
+      consecutiveLengthStops += 1;
+      log("length_truncation", { consecutive: consecutiveLengthStops, output_tokens: currentRequestOutputTokens, max_recoveries: maxLengthRecoveries });
+    } else if (message.stopReason === "stop") {
+      consecutiveLengthStops = 0;
+    }
     if (message.stopReason === "error" && /context (window|length)|maximum context|too long|too many tokens/i.test(message.errorMessage ?? "")) {
       extraBlocks += 1;
       lastStop = "context_overflow";
@@ -797,7 +985,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     return { continue: true, entries: [...event.entries, { type: "custom_message", customType: STATE_TYPE,
       content: content(null, true), display: false }] };
   });
-  pi.on("agent_settled", () => log("segment_end", { reason: endReason ?? lastStop ?? "aborted", actions: segmentActions, tokens: segmentTokens,
+  pi.on("agent_settled", () => log("segment_end", {
+    reason: endReason ?? (lastStop === "length" && consecutiveLengthStops >= maxLengthRecoveries ? "length_exhausted" : lastStop ?? "aborted"),
+    actions: segmentActions, tokens: segmentTokens,
     raw_estimate: rawEstimate, ...(rollThreshold > 0 ? { roll_threshold: rollThreshold, session_oversized: rawEstimate > rollThreshold } : {}) }));
   pi.on("session_shutdown", () => python.close());
 }

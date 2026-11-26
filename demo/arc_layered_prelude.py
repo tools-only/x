@@ -812,6 +812,12 @@ class _WorkFile(io.StringIO):
 def _open(path, mode="r", *args, **kwargs):
     if "b" in mode:
         raise ValueError("work/ supports text files only")
+    clean = str(path).replace("\\", "/").lstrip("./")
+    if "components/" in clean or clean.endswith("/components") or clean == "components":
+        import posixpath
+        norm = posixpath.normpath(clean)
+        if not (norm == "work" or norm.startswith("work/")) or "harness/components" in norm:
+            raise PermissionError("direct writes to component storage are blocked (%s); use reflect_component(op, kind, name, ...)" % path)
     if "r" in mode and "+" not in mode:
         return io.StringIO(_file("read", path))
     initial = ""

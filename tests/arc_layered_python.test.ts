@@ -666,3 +666,15 @@ test("segment() accurately finds nested children on complex frames", async () =>
   python.close();
   assert.match(out.text, /^2 0/);
 });
+
+test("python file operations block direct bypass writes into harness/components", async () => {
+  const { python } = await session();
+  const out = await python.run([
+    "try:",
+    "    open('../harness/components/memory/x/v1.json', 'w').write('{}')",
+    "except PermissionError as exc:",
+    "    print('BLOCKED', exc)",
+  ].join("\n"));
+  python.close();
+  assert.match(out.text, /BLOCKED direct writes to component storage are blocked.*reflect_component/);
+});
