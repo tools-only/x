@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from .jit_adapter import JitAdapter
+from .kernelbench_adapter import TASKS as KERNELBENCH_TASKS, evaluate_kernelbench_candidate, prepare_kernelbench_task
 from .jev_routing import JEV_ROUTING_ENV
 from .meta_harness_demo import run_demo
 from .officebench_e2e import (
@@ -315,6 +316,15 @@ def main(argv: list[str] | None = None) -> int:
     terminal.add_argument("--timeout", type=float, default=3600.0)
     terminal.add_argument("--model", default=None)
     terminal.add_argument("--context-compaction", action="store_true")
+    kernel_prepare = sub.add_parser("kernelbench-prepare", help="prepare one Dream-RSI KernelBench task workspace")
+    kernel_prepare.add_argument("--root", type=Path, required=True)
+    kernel_prepare.add_argument("--dream-root", type=Path, required=True)
+    kernel_prepare.add_argument("--task", choices=tuple(KERNELBENCH_TASKS), required=True)
+    kernel_eval = sub.add_parser("kernelbench-eval", help="evaluate candidate.py on a Dream-RSI GPU server")
+    kernel_eval.add_argument("--root", type=Path, required=True)
+    kernel_eval.add_argument("--server-url", default="http://127.0.0.1:8010")
+    kernel_eval.add_argument("--timeout", type=float, default=3000.0)
+    kernel_eval.add_argument("--backend", choices=("cuda", "triton"), default="cuda")
     args = parser.parse_args(argv)
     if args.jev_routing is not None:
         os.environ[JEV_ROUTING_ENV] = args.jev_routing
@@ -595,6 +605,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "kernelbench-prepare":
+        path = prepare_kernelbench_task(args.root, task=args.task, dream_root=args.dream_root)
+        print(path.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.command == "kernelbench-eval":
+        if args.timeout <= 0:
+            parser.error("--timeout must be positive")
+        path = evaluate_kernelbench_candidate(args.root, server_url=args.server_url, timeout=args.timeout, backend=args.backend)
+        value = json.loads(path.read_text(encoding="utf-8"))
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return 2 if value["evaluation_status"] == "infrastructure_error" else 0
     return 0
 
 
