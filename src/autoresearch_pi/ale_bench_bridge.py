@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -53,6 +54,13 @@ class AleBenchBridge:
     def start(cls, problem_id: str, *, lite_version: bool = True, num_workers: int | None = None) -> "AleBenchBridge":
         if not problem_id or (lite_version and problem_id not in LITE_PROBLEM_IDS):
             raise ValueError(f"unsupported ALE-Bench problem for selected dataset: {problem_id!r}")
+        # ALE-Bench currently calls os.getgid while preparing its Docker build
+        # helper. Windows has no getgid. A neutral group id is sufficient for
+        # Docker Desktop and keeps the upstream API otherwise unchanged.
+        if not hasattr(os, "getgid"):
+            os.getgid = lambda: 0  # type: ignore[attr-defined]
+        if not hasattr(os, "getuid"):
+            os.getuid = lambda: 0  # type: ignore[attr-defined]
         module = importlib.import_module("ale_bench")
         kwargs: dict[str, Any] = {"problem_id": problem_id, "lite_version": lite_version}
         if num_workers is not None:

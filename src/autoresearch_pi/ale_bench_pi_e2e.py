@@ -29,7 +29,8 @@ def run_ale_bench_pi_e2e(root: Path, *, problem_id: str, prompt: str, provider: 
     bridge_command = [str(Path(os.sys.executable)), "-m", "autoresearch_pi.ale_bench_bridge_server", "--root", str(root), "--problem-id", problem_id, "--max-public", str(max_public), "--max-case", str(max_case)]
     if not lite_version:
         bridge_command.append("--full")
-    bridge = subprocess.Popen(bridge_command, cwd=str(root), env={**env, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}, stdout=subprocess.DEVNULL, stderr=(root / "bridge-stderr.log").open("w", encoding="utf-8"), text=True)
+    bridge_env = {**env, "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "PYTHONUTF8": "1"}
+    bridge = subprocess.Popen(bridge_command, cwd=str(root), env=bridge_env, stdout=subprocess.DEVNULL, stderr=(root / "bridge-stderr.log").open("w", encoding="utf-8"), text=True)
     kernel: PiKernel | None = None
     try:
         ready_path = root / "bridge-ready.json"
