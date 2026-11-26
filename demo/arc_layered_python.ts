@@ -12,12 +12,12 @@ export type LayeredState = { level: number; levels_completed: number; win_levels
   valid_actions: string[]; frame: number[][];
   stale_steps: number; unchecked_batches: number; mini_review: string | null };
 export type ActionBatch = { executed: number; actions: string[]; lines: string[]; stop_reason?: string;
-  level_changed: boolean; game_over: boolean; win: boolean; surprise?: boolean; expect_hits?: string | null;
+  level_changed: boolean; game_over: boolean; win: boolean; reset?: boolean; surprise?: boolean; expect_hits?: string | null;
   steps?: StepFact[]; notes?: string[] };
 export type StepFact = { step: number; action: string; tries: number; same: boolean; last_try: number;
   new: boolean; level: number; changed: boolean; death: boolean; level_up: boolean;
   source: string | null; fatal: boolean; claims_failed: string[]; claims_held: string[];
-  predict_off: number | null; same_death: boolean };
+  predict_off: number | null; same_death: boolean; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[] };
@@ -67,13 +67,16 @@ export class LayeredPython {
   private repeatedSequences = 0;
   private surprises = 0;
   private modelReport: { tested: number; correct: number; error?: string } | null = null;
-  private claimStats: Record<string, { support: number; counter: number; checked: number; levels: number[]; last_fail?: number | null }> = {};
+  private claimStats: Record<string, { support: number; counter: number; checked: number; levels: number[];
+    by_level: Record<string, { support: number; counter: number; checked: number }>; last_fail?: number | null; witness?: string }> = {};
   private unchecked = 0;
   private expectHits: string | null = null;
   private errors: string[] = [];
   private calls = 0;
   private batchHadExpect = false;
   private miniReview: string | null = null;
+  private consecutivePythonErrors = 0;
+  private failedFileEdits = new Map<string, number>();
   private miniReviewsThisLevel = 0;
   private keyTries = new Map<string, number>();
   private keyDeaths = new Map<string, number>();
@@ -118,6 +121,12 @@ export class LayeredPython {
       level_budget_left: budget.maximum == null ? undefined : budget.maximum - (budget.used ?? 0),
       valid_actions: this.valid(raw).map(name => NATURAL[name] ?? name), frame: raw.frames.at(-1), stale_steps: this.stale,
       unchecked_batches: this.unchecked, mini_review: this.miniReview };
+  }
+
+  takeMiniReview() {
+    const review = this.miniReview;
+    this.miniReview = null;
+    return review;
   }
 
   /** Evidence about the run itself, bound as the read-only `harness_state` variable at the start of every call. */
@@ -165,6 +174,10 @@ export class LayeredPython {
       surprises: this.surprises, unchecked_batches: this.unchecked, repeated_sequences: this.repeatedSequences,
       expect_hits: this.expectHits,
       model: this.modelReport ? `${this.modelReport.correct}/${this.modelReport.tested}` : undefined };
+  }
+
+  capabilitySnapshot() {
+    return { claims: this.claimStats, model: this.modelReport };
   }
 
   private scanClaims(): Array<{ name: string; source: string }> {
@@ -264,6 +277,9 @@ export class LayeredPython {
     if (used + bytes > WORK_BYTES) return { error: `work/ is limited to ${WORK_BYTES} bytes in total` };
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, data, "utf8");
+    if (/^(?:model\.py|(?:claims|lib)\/[^/]+\.py)$/.test(relative)) {
+      return { data: { model_source: this.scanModelSource(), claims: this.scanClaims(), lib: this.scanLib() } };
+    }
     return { data: null };
   }
 
@@ -284,6 +300,7 @@ export class LayeredPython {
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
     let run: { result: Record<string, any>; metrics: Record<string, number> } | undefined;
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
+    let failedEditNote = "";
     try {
       run = await this.kernel.run(request, onRequest, signal);
       error = run.result.error ?? undefined;
@@ -291,15 +308,31 @@ export class LayeredPython {
       images = Array.isArray(run.result.images) ? run.result.images : [];
       if (run.result.last_result) this.lastResult = run.result.last_result;
       metrics = { ...run.metrics };
+      for (const note of run.result.notes ?? []) {
+        const match = /^(claims\/[^ ]+|lib\/[^ ]+|model\.py) (?:failed to load|loaded)/.exec(note);
+        if (!match) continue;
+        const failed = note.includes("failed to load") || /back-test on [1-9]\d* transitions: applied 0/.test(note);
+        const count = failed ? (this.failedFileEdits.get(match[1]) ?? 0) + 1 : 0;
+        this.failedFileEdits.set(match[1], count);
+        if (count === 3) failedEditNote = match[1];
+      }
       const modelReport = (run.result as any).model;
       if (modelReport) this.modelReport = modelReport;
+      for (const name of (run.result as any).claims?.reset ?? []) delete this.claimStats[name];
       const claimReport = (run.result as any).claims?.counts ?? {};
       for (const [name, counts] of Object.entries<any>(claimReport)) {
-        const current = this.claimStats[name] ??= { support: 0, counter: 0, checked: 0, levels: [] };
+        const current = this.claimStats[name] ??= { support: 0, counter: 0, checked: 0, levels: [], by_level: {} };
         current.support += Number(counts.support ?? 0);
         current.counter += Number(counts.counter ?? 0);
         current.checked += Number(counts.checked ?? 0);
         current.last_fail = counts.last_fail ?? current.last_fail ?? null;
+        current.witness = counts.witness ?? current.witness;
+        for (const [level, row] of Object.entries<any>(counts.by_level ?? {})) {
+          const bucket = current.by_level[level] ??= { support: 0, counter: 0, checked: 0 };
+          bucket.support += Number(row.support ?? 0);
+          bucket.counter += Number(row.counter ?? 0);
+          bucket.checked += Number(row.checked ?? 0);
+        }
         for (const level of counts.levels ?? []) if (!current.levels.includes(level)) current.levels.push(level);
       }
     } catch (problem) {
@@ -317,6 +350,11 @@ export class LayeredPython {
       this.errors.push(error.slice(0, 200));
       this.errors = this.errors.slice(-5);
     }
+    this.consecutivePythonErrors = batch.executed ? 0 : error ? this.consecutivePythonErrors + 1 : 0;
+    if (this.consecutivePythonErrors >= 2)
+      text += `\n[cost note] ${this.consecutivePythonErrors} consecutive Python errors without an action. Check the error or restore the last working file.`;
+    if (!batch.executed && failedEditNote)
+      text += `\n[cost note] ${failedEditNote} has failed three consecutive edits. Review the error before revising it again.`;
     if (attempted) {
       const state = this.state();
       text += `\n[env] executed ${batch.executed}${batch.actions.length ? ` (${batch.actions.join(" ")})` : ""}` +

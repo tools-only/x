@@ -33,7 +33,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
   maxObserveCallsPerTurn?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
-type Python = Pick<LayeredPython, "init" | "run" | "state" | "close"> & Partial<Pick<LayeredPython, "gradient">>;
+type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMiniReview"> & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -100,7 +100,7 @@ function readReviewCallback(root: string) {
 function readCapabilityContext(root: string) {
   const work = join(root, "work"), lines: string[] = [];
   for (const relative of ["GUIDE.md", "WORKING.md", "REVIEW.md"]) {
-    try { const text = readFileSync(join(work, relative), "utf8").trim(); if (text) lines.push(`${relative}: ${text.slice(-1200)}`); } catch {}
+    try { const text = readFileSync(join(work, relative), "utf8").trim(); if (text) lines.push(`${relative}: ${relative === "WORKING.md" ? text.slice(-1600) : text.slice(0, 2400)}`); } catch {}
   }
   for (const directory of ["claims", "lib"]) {
     try { const names = readdirSync(join(work, directory)).filter(name => name.endsWith(".py")).sort(); if (names.length) lines.push(`${directory}/: ${names.join(", ")}`); } catch {}
@@ -155,7 +155,7 @@ function writeLevelReview(root: string, level: number, state: LayeredState, step
   const model = steps.filter(fact => fact.predict_off !== null).map(fact => `predict off ${fact.predict_off} at s${fact.step}`);
   const method = [...new Set(steps.filter(fact => fact.source).map(fact => fact.source!))];
   const tool = notes.filter(note => !note.includes("claims/")).map(note => note.slice(0, 120));
-  const list = (name: string, values: string[]) => `## ${name}\n${values.length ? values.slice(-12).map(value => `- ${value}`).join("\n") : "- none"}`;
+  const list = (name: string, values: string[]) => `## ${name}\n${values.length ? values.slice(-4).map(value => `- ${value}`).join("\n") : "- none"}`;
   const directory = join(root, "work", "replay");
   mkdirSync(directory, { recursive: true });
   const path = join(directory, `level_${level}.md`);
@@ -169,7 +169,7 @@ function writeLevelReview(root: string, level: number, state: LayeredState, step
     "1. Which attribution actually caused the repeated or fatal transitions?",
     "2. What one executable artifact would prevent that failure or encode the successful pattern?",
     "3. What is the next safe probe, and what observation would falsify it?", ""].join("\n");
-  writeFileSync(path, body, "utf8");
+  writeFileSync(path, body.slice(0, 3000), "utf8");
   return "work/replay/" + `level_${level}.md`;
 }
 
@@ -180,23 +180,23 @@ export function estimateTokens(message: any): number {
 }
 
 /** A block is a user-role message plus the assistant and tool turns after it, so a call never loses its result.
- * Hysteresis: nothing is removed until the estimate passes `cap`; then whole blocks go until `target`, so the
- * remaining prefix stays byte-identical across many requests and provider prefix caching keeps working. */
-export function evict(input: any[], cap: number, target: number, extraBlocks: number) {
+ * Hysteresis keeps the previous cut until the retained estimate passes cap, then drops whole blocks to target. */
+export function evict(input: any[], cap: number, target: number, extraBlocks: number, anchor = 0) {
   const lastState = input.findLastIndex(message => message.role === "custom" && message.customType === STATE_TYPE);
   const messages = input.map((message, index) => index === lastState || message.role !== "custom" || message.customType !== STATE_TYPE ? message
     : { ...message, content: message.content.filter((part: any) => part.type !== "image") });
   const starts = messages.flatMap((message, index) => message.role === "user" || message.role === "custom" ? [index] : []);
   const sizes = messages.map(estimateTokens), before = sizes.reduce((sum, size) => sum + size, 0);
-  let cut = 0, removed = 0, blocks = 0;
-  if (before > cap || extraBlocks > 0)
-    for (const next of starts.filter(start => start > 0 && start <= lastState)) {
+  let cut = Math.min(anchor, Math.max(0, messages.length - 1));
+  let removed = sizes.slice(0, cut).reduce((sum, size) => sum + size, 0), blocks = 0;
+  if (before - removed > cap || extraBlocks > 0)
+    for (const next of starts.filter(start => start > cut && start <= lastState)) {
       if (before - removed <= target && blocks >= extraBlocks) break;
       removed = sizes.slice(0, next).reduce((sum, size) => sum + size, 0);
       cut = next;
       blocks += 1;
     }
-  return { messages: messages.slice(cut), blocks, removed, before };
+  return { messages: messages.slice(cut), blocks, removed, before, cut };
 }
 
 /** Folding (context level 2): old tool results collapse to their `[env]` line; images are stripped. Pairing stays intact. */
@@ -275,12 +275,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let lastReviewCallback = "";
   let lastReviewPath = "";
   let capabilityContext = readCapabilityContext(options.root);
+  let shownCapabilities = "", recoveryText = "", contextWarning = false, warningAnchor = -1, capabilitiesDirty = false;
   try { memory = JSON.parse(readFileSync(join(store, "memory.json"), "utf8")); } catch {}
   try { notebook = JSON.parse(readFileSync(join(store, "notebook.json"), "utf8")); } catch {}
   lastReviewCallback = readReviewCallback(options.root);
   const levelSteps: StepFact[] = [];
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
-  let rawEstimate = 0, rollThreshold = 0;
+  let rawEstimate = 0, rollThreshold = 0, evictAnchorIndex = 0;
   let actedThisTurn = false, observeCallsThisTurn = 0, observeLimitHitThisTurn = false, consecutiveObserveTurns = 0;
   let endReason: string | undefined, lastStop: string | undefined, pending: ActionBatch | null = null;
   let shownFrame: number[][] | null = null, shownLevel = 0;
@@ -294,34 +295,56 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   const registeredTools = new Set<string>();
+  let pythonBin: string | undefined;
+  function checkPythonSyntax(source: string): string | null {
+    for (const bin of pythonBin ? [pythonBin] : ["python3", "python"]) {
+      const res = spawnSync(bin, ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: source, encoding: "utf8" });
+      if (res.error && (res.error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      pythonBin = bin;
+      return res.status === 0 ? null : (res.stderr?.trim().slice(0, 300) || `exit ${res.status}`);
+    }
+    return null;
+  }
   function publishTools() {
     if (!components) return;
     const dir = join(options.root, "work", "lib");
     if (!existsSync(dir)) return;
     for (const file of readdirSync(dir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name))) {
       const name = file.slice(0, -3), source = readFileSync(join(dir, file), "utf8");
-      const entry = new RegExp(`^def\\s+(${name}|run)\\s*\\(args\\)\\s*:`, "m").exec(source)?.[1];
-      if (!entry) continue;
-      const valid = spawnSync("python", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: source, encoding: "utf8" });
-      if (valid.status !== 0) { log("tool_publish_failed", { name, error: valid.stderr?.slice(0, 300) }); continue; }
+      const match = new RegExp(`^def\\s+(${name}|run)\\s*\\(\\s*([^)\\n]*)\\)\\s*(?:->[^:\\n]+)?\\s*:`, "m").exec(source);
+      if (!match) continue;
+      const [, fn, rawArgs] = match;
+      const trimmedArgs = rawArgs.trim();
+      const zeroArg = trimmedArgs === "";
+      const singleArg = /^[a-zA-Z_]\w*(?:\s*:[^=]+)?(?:\s*=.*)?$/.test(trimmedArgs);
+      if (!zeroArg && !singleArg) continue;
+      const syntaxErr = checkPythonSyntax(source);
+      if (syntaxErr) { log("tool_publish_failed", { name, error: syntaxErr }); continue; }
+      const entrySummary = zeroArg ? `${fn}()` : fn;
       const active = components.current("tool", name);
-      if (!active || active.body !== source) {
-        const saved = components.reflect(active ? "redefine" : "define", "tool", name, source, entry);
+      if (!active || active.body !== source || active.summary !== entrySummary) {
+        const saved = components.reflect(active ? "redefine" : "define", "tool", name, source, entrySummary);
         log("tool_published", { name, version: saved.version, hash: saved.hash });
       }
       if (registeredTools.has(name)) continue;
       registeredTools.add(name);
       pi.registerTool({ name, label: name, executionMode: "sequential",
-        description: `Agent-authored Python function work/lib/${file}; pass one args object.`,
-        parameters: Type.Object({ args: Type.Object({}) }),
+        description: zeroArg
+          ? `Agent-authored Python function work/lib/${file} (${fn}()); pass {} or omit args.`
+          : `Agent-authored Python function work/lib/${file} (${fn}(args)); pass one args object.`,
+        parameters: Type.Object({ args: Type.Optional(Type.Object({})) }),
         async execute(_id, params, signal) {
           const current = components.current("tool", name)!;
           const latest = readFileSync(join(dir, file), "utf8");
           if (createHash("sha256").update(latest).digest("hex") !== current.hash)
             return { details: {}, isError: true, content: [{ type: "text", text: "tool source changed; wait for the next publication boundary" }] };
-          const fn = current.summary;
-          const encoded = Buffer.from(JSON.stringify(params.args)).toString("base64");
-          const result = await pythonTool.execute(_id, { code: `print(repr(${name}.${fn}(__import__('json').loads(__import__('base64').b64decode('${encoded}').decode()))))` }, signal);
+          const isZeroArg = current.summary.endsWith("()");
+          const fnName = isZeroArg ? current.summary.slice(0, -2) : current.summary;
+          const encoded = Buffer.from(JSON.stringify(params.args ?? {})).toString("base64");
+          const callExpr = isZeroArg
+            ? `${name}.${fnName}()`
+            : `${name}.${fnName}(__import__('json').loads(__import__('base64').b64decode('${encoded}').decode()))`;
+          const result = await pythonTool.execute(_id, { code: `print(repr(${callExpr}))` }, signal);
           const ok = !(result as any).isError && !(result as any).details?.error &&
             (!(result as any).terminate || Boolean((result as any).details?.acted));
           log("bound_invocation", { name, version: current.version, ok, action_producing: Boolean((result as any).details?.acted) });
@@ -345,7 +368,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const index = skills.map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; ");
       if (index && (index !== lastSkillIndex || batch?.level_changed)) events.push("SKILLS: " + index);
       lastSkillIndex = index;
-      if (options.consult !== false && state.stale_steps >= 12) events.push(`STALL: ${state.stale_steps} steps without a new frame; consult("reframer", ...) is available.`);
+      const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || fact.same_death);
+      if (options.consult !== false && (state.stale_steps >= 12 || regionStall))
+        events.push(`STALL: ${state.stale_steps} steps without a new frame${regionStall ? " or repeated failure/clicks" : ""}; consult("reframer", ...) is available.`);
+    }
+    if (contextWarning) {
+      events.push(options.harnessProfile
+        ? "Context is near the configured limit. Save current findings in Memory via reflect_component."
+        : "Context is near the configured limit. Save current findings in work/WORKING.md.");
+      contextWarning = false;
     }
     if (nudge && consecutiveObserveTurns > 0)
       events.push(`OBSERVE LIMIT: static inspection already ran ${consecutiveObserveTurns} turn(s) on this unchanged board without acting. Take a 1-step probe or plan now.`);
@@ -380,10 +411,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`Unchecked: your last ${state.unchecked_batches} action batches carried no expect; without a prediction a ` +
         "wrong belief costs actions instead of becoming a signal.");
     }
-    if (state.mini_review) events.push(`MINI REVIEW: ${state.mini_review}. Name the failing attribution (memory/model/method/tool), ` +
+    const miniReview = python.takeMiniReview();
+    if (miniReview) events.push(`MINI REVIEW: ${miniReview}. Name the failing attribution (memory/model/method/tool), ` +
       "write the smallest executable fix or one-line decision rule into work/, then continue. Nothing is frozen.");
     if (batch?.steps?.some(fact => fact.claims_failed.length)) events.push(`Claims failed: ` +
-      batch.steps.flatMap(fact => fact.claims_failed).join(", ") + ". Treat the next applicable transition as evidence, not as a reason to stop.");
+      batch.steps.flatMap(fact => fact.claims_failed.map(name => {
+        const stats = python.capabilitySnapshot?.().claims[name];
+        const prior = Object.entries(stats?.by_level ?? {}).some(([level, row]) => Number(level) < fact.level && row.support > 0);
+        return `${name} on L${fact.level}${prior ? " (held on an earlier level)" : ""}${stats?.witness ? `: ${stats.witness}` : ""}`;
+      })).join(", ") + ".");
     if (batch?.steps?.some(fact => fact.claims_held.length)) events.push(`Claims held: ` +
       batch.steps.flatMap(fact => fact.claims_held).join(", ") + ".");
     if (batch?.level_changed && lastReviewPath) events.push(`LEVEL REVIEW: ${lastReviewPath}` +
@@ -394,8 +430,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (batch?.surprise) events.push("SURPRISE: the last action did not match expect. Revisit the model before acting again.");
     if (batch?.expect_hits) events.push(`Expectations: ${batch.expect_hits} recent predictions held.`);
     if (batch?.notes?.length) events.push(...batch.notes);
+    const evidence = python.capabilitySnapshot?.();
+    if (!options.harnessProfile && batch?.level_changed && evidence) {
+      const carried = Object.entries(evidence.claims).filter(([, claim]) => claim.checked > 0)
+        .map(([name]) => `claims/${name} (0 checked on L${state.level})`);
+      if (evidence.model?.tested) carried.push(`model.py (0 checked on L${state.level})`);
+      if (carried.length) events.push(`Carried from earlier levels: ${carried.join(", ")}`);
+    }
     capabilityContext = options.harnessProfile ? "" : readCapabilityContext(options.root);
-    if (capabilityContext) events.push(`CAPABILITIES (loaded from work/, not enforced):\n${capabilityContext}`);
+    if (capabilityContext && (capabilityContext !== shownCapabilities || batch?.level_changed || capabilitiesDirty))
+      events.push(`CAPABILITIES (loaded from work/, not enforced):\n${capabilityContext}`);
+    shownCapabilities = capabilityContext;
+    capabilitiesDirty = false;
     if (batch?.steps?.length) {
       const echoes = batch.steps.map(fact => `step ${fact.step}: ${fact.action}` +
         (fact.tries ? ` (repeat ${fact.tries})` : "") + (fact.predict_off ? ` (predict off ${fact.predict_off})` : "") +
@@ -432,7 +478,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         parts.push({ type: "image", mimeType: "image/png", data: framePng(mask, options.scale, options.gridLines).toString("base64") });
       }
     }
-    if (options.noImage && shownFrame && shownLevel === state.level) {
+    if (options.noImage && shownFrame && shownLevel === state.level && !batch?.reset) {
       const changed: string[] = [];
       const seeds: Array<[number, number]> = [];
       for (let y = 0; y < state.frame.length; y += 1) for (let x = 0; x < state.frame[y].length; x += 1)
@@ -456,15 +502,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         objects.push(`${color.toString(16)}:${count}@(${left},${top})–(${right},${bottom})`);
       }
       diffNote = `\nChanged cells (${changed.length}): ${changed.slice(0, 96).join(" ")}${changed.length > 96 ? " …" : ""}` +
-        `\nTouched components (${objects.length}): ${objects.slice(0, 12).join(" ")}${objects.length > 12 ? " …" : ""}`;
+        `\nTouched components (${objects.length}): ${objects.slice(0, 12).join(" ")}${objects.length > 12 ? " …" : ""}` +
+        "\nFull board is available in python via current_frame.grid / .ascii.";
     }
+    const sendFullTextFrame = Boolean(options.noImage && (!shownFrame || shownLevel !== state.level || batch?.reset));
     shownFrame = state.frame;
     shownLevel = state.level;
     const text = [nudge ? template.nudge : "", template.state.replace(/\{\{(\w+)\}\}/g, (_, key) => values[key]) + diffNote,
-      options.noImage ? `Frame ${state.frame[0]?.length ?? 0}x${state.frame.length}:\n${state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n")}` : "",
+      sendFullTextFrame ? `Frame ${state.frame[0]?.length ?? 0}x${state.frame.length}:\n${state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n")}` : "",
       options.reminder ? template.reminder : ""].join("\n").replace(/\n{2,}/g, "\n").trim();
     const message = { type: "text" as const, text: text.replace(/\{\{(\w+)\}\}/g, (_, key) => values[key] ?? "")
-      .replace(options.noImage ? "The image shows the latest frame." : "\0", "The text frame below shows the latest frame.") };
+      .replace(options.noImage ? "The image shows the latest frame." : "\0",
+        sendFullTextFrame ? "The text frame below shows the latest frame." : "The delta above summarizes the latest frame.") };
     return options.noImage ? [message] : [message, { type: "image", mimeType: "image/png",
       data: framePng(state.frame, options.scale, options.gridLines).toString("base64") }, ...parts];
   }
@@ -479,6 +528,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         "Not run: observation limit reached for this turn. Act on the next turn." }] };
       const from = Date.now(), outcome = await python.run(params.code, signal), batch = outcome.acted, state = python.state();
       publishTools();
+      capabilitiesDirty ||= !!outcome.notes?.some(note => /^(?:loaded |claims\/|lib\/|model\.py)/.test(note));
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
         level: state.level, step: state.step, images: outcome.images.length, metrics: outcome.metrics });
@@ -502,7 +552,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         levelSteps.push(fact);
       }
       if (batch && (batch.level_changed || batch.game_over) && levelSteps.length) {
-        lastReviewPath = writeLevelReview(options.root, state.level, state, levelSteps, outcome.notes ?? []);
+        lastReviewPath = writeLevelReview(options.root, levelSteps[0].level, state, levelSteps, outcome.notes ?? []);
         levelSteps.length = 0;
         lastReviewCallback = readReviewCallback(options.root);
         capabilityContext = readCapabilityContext(options.root);
@@ -547,9 +597,14 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         let usageRecorded = false;
         try {
           const frame = state.frame.map(row => row.map(cell => cell.toString(16)).join("")).join("\n");
-          const falsified = components.current("memory", "current")?.body.match(/Falsified[^\n]*(?:\n[^\n]*)?/i)?.[0] ?? "";
+          const memories = components.list("memory");
+          const falsifiedParts = memories.flatMap(item => {
+            const match = /(?:^|\n)(?:#+\s*)?Falsified[^\n]*(?:\n(?!(?:#+\s*)?(?:Confirmed|Competing|Next)\b)[^\n]*)*/i.exec(item.body);
+            return match ? [`[${item.name}] ${match[0].trim()}`] : [];
+          });
+          const falsified = (falsifiedParts.join("\n") || memories.map(item => `[${item.name}] ${item.body}`).join("\n")).slice(0, 800);
           const trajectory = params.include_trajectory === false ? "" : compressedTrajectory(levelSteps).slice(-900);
-          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified.slice(0, 500)}\nTrajectory: ${trajectory}\nFrame:\n${frame}`.slice(0, 9000);
+          const briefing = `Question: ${params.question.slice(0, 500)}\nFalsified: ${falsified}\nTrajectory: ${trajectory}\nFrame:\n${frame}`.slice(0, 9000);
           const reply: any = await ctx.modelRegistry.streamSimple(ctx.model, {
             systemPrompt: role, messages: [{ role: "user", content: [{ type: "text", text: briefing }], timestamp: Date.now() }], tools: [] } as any,
             { signal: controller.signal, reasoning: "off", maxTokens: 1500 } as any).result();
@@ -629,7 +684,24 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const window = (ctx.model?.contextWindow ?? 128000);
     const cap = Math.min(options.contextCap || window - 32000, window - options.outputTokens - 8192);
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
-    const result = evict(event.messages, cap, target, extraBlocks);
+    const result = evict(event.messages, cap, target, extraBlocks, evictAnchorIndex);
+    evictAnchorIndex = result.cut;
+    extraBlocks = Math.max(0, extraBlocks - result.blocks);
+    if (result.blocks) {
+      const state = python.state();
+      const carry = options.harnessProfile && components
+        ? [components.list().filter(item => item.kind === "memory" || item.kind === "prompt")
+            .map(item => `${item.kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}`).join("\n"),
+          components.list("skill").map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; "),
+          components.list("tool").map(item => `tool/${item.name}`).join(", ")].filter(Boolean).join("\n")
+        : readCapabilityContext(options.root);
+      recoveryText = ["Earlier context was trimmed. Current work files and recent action results:",
+        carry, `Level ${state.level}, step ${state.step}, ${state.state}.`, ...trail.slice(-6)].filter(Boolean).join("\n");
+      warningAnchor = -1;
+    } else if (result.before - result.removed >= cap * 0.85 && warningAnchor !== evictAnchorIndex) {
+      contextWarning = true;
+      warningAnchor = evictAnchorIndex;
+    }
     rawEstimate = result.before;
     rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
@@ -637,7 +709,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const folding = fold(result.messages, options.foldAfter);
     const preObs = foldPreActionObservations(folding.messages);
     if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: options.foldAfter });
-    let messages = preObs.messages;
+    let messages = recoveryText ? [{ role: "user", content: [{ type: "text", text: recoveryText }] }, ...preObs.messages] : preObs.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;
     if (options.compactMargin > 0 && estimate > hardTarget) {
@@ -732,6 +804,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 
 export default function arcLayeredExtension(pi: ExtensionAPI) {
   const env = process.env, root = env.ARC_RUN_ROOT ?? process.cwd(), local = env.ARC_LAYERED_CONFIG === "kaggle-local";
+  const qwen27b = env.ARC_LAYERED_PROFILE === "qwen27b" || env.ARC_LAYERED_PROFILE === "qwen27b-harness";
   const maxActionsPerCall = 16;
   const stuckAfter = Number(env.ARC_LAYERED_STUCK_AFTER ?? 8);
   if (env.PI_PROVIDER_MAX_REPORTED_TOKENS) {
@@ -747,13 +820,14 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
     miniReview: { maxPerLevel: Number(env.ARC_LAYERED_MINI_REVIEWS_PER_LEVEL ?? 2) } });
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
-    outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? 12000),
-    contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? 131072), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? 57344),
-    diffImage: env.ARC_LAYERED_DIFF_IMAGE !== "0", noImage: env.ARC_LAYERED_NO_IMAGE === "1",
+    outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? (qwen27b ? 4096 : 12000)),
+    contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? (qwen27b ? 40960 : 131072)), contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? (qwen27b ? 20480 : 57344)),
+    diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
+    noImage: env.ARC_LAYERED_NO_IMAGE === "1",
     harnessProfile: env.ARC_LAYERED_PROFILE === "qwen27b-harness", consult: env.ARC_LAYERED_CONSULT !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
-    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
+    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? (qwen27b ? 4 : 0)),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
     maxObserveCallsPerTurn: Number(env.ARC_LAYERED_MAX_OBSERVE_CALLS ?? 2),

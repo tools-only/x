@@ -14,7 +14,7 @@ function setup(overrides: Record<string, unknown> = {}) {
     appendEntry: (type: string, data: any) => entries.push({ type, data }) };
   const game: any = { level: 1, levels_completed: 0, win_levels: 3, state: "NOT_FINISHED", step: 0, actions_used: 0, budget_left: 40,
     valid_actions: ["UP", "RESET"], frame: grid, stale_steps: 0 };
-  const python: any = { next: null, runs: 0, init: async () => game, state: () => game, close() {},
+  const python: any = { next: null, runs: 0, init: async () => game, state: () => game, takeMiniReview: () => { const review = game.mini_review; game.mini_review = null; return review; }, close() {},
     async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {},
       ...(this.reviews ? { reviews: this.reviews } : {}) }; } };
   const root = (overrides.root as string) ?? mkdtempSync(join(tmpdir(), "layered-"));
@@ -36,6 +36,7 @@ test("the run opens with the replaced system prompt and a state message with an 
   const { handlers, tool } = setup();
   const opened = await handlers.before_agent_start({});
   assert.match(opened.systemPrompt, /submit_actions/);
+  assert.ok(opened.systemPrompt.length <= 5500);
   assert.doesNotMatch(opened.systemPrompt, /\{\{/);
   assert.equal(opened.message.customType, STATE_TYPE);
   assert.match(textOf(opened.message.content), /Level 1 of 3 \| NOT_FINISHED \| step 0 \| actions used 0 \| run budget left 40/);
@@ -45,7 +46,7 @@ test("the run opens with the replaced system prompt and a state message with an 
   assert.deepEqual(handlers.session_before_compact(), { cancel: true });
 });
 
-test("text observation mode sends a complete frame and no PNG", async () => {
+test("text observation mode sends a complete frame initially and delta-only on subsequent steps", async () => {
   const { handlers, game, python, call } = setup({ noImage: true });
   game.frame[0][0] = 3;
   const opened = await handlers.before_agent_start({});
@@ -58,6 +59,7 @@ test("text observation mode sends a complete frame and no PNG", async () => {
   const next = await handlers.before_agent_start({});
   assert.equal(next.message.content.length, 1);
   assert.match(textOf(next.message.content), /Changed cells \(1\): 0,0:3→4/);
+  assert.doesNotMatch(textOf(next.message.content), /Frame 64x64:/);
 });
 
 test("harness profile reflects memory and injects its active version", async () => {
@@ -93,14 +95,19 @@ test("a conforming work library function is published and bound", async () => {
   const root = mkdtempSync(join(tmpdir(), "layered-tool-"));
   mkdirSync(join(root, "work", "lib"), { recursive: true });
   writeFileSync(join(root, "work", "lib", "count.py"), "def count(args):\n    return len(args)\n");
+  writeFileSync(join(root, "work", "lib", "ping.py"), "def ping():\n    return 'pong'\n");
   const { handlers, tools, python, rows } = setup({ root, harnessProfile: true });
   await handlers.before_agent_start({});
   assert.ok(tools.count);
+  assert.ok(tools.ping);
   assert.match(readFileSync(join(root, "harness", "components", "tool", "count", "v1.json"), "utf8"), /def count/);
   const invoked = await tools.count.execute("id", { args: { a: 1 } });
+  const pinged = await tools.ping.execute("id", {});
   assert.match(textOf(invoked.content), /ok/);
-  assert.equal(python.runs, 1);
+  assert.match(textOf(pinged.content), /ok/);
+  assert.equal(python.runs, 2);
   assert.equal(rows("bound_invocation")[0].ok, true);
+  assert.equal(rows("bound_invocation")[1].ok, true);
   const failed = setup({ root: mkdtempSync(join(tmpdir(), "layered-failed-tool-")), harnessProfile: true });
   mkdirSync(join(failed.root, "work", "lib"), { recursive: true });
   writeFileSync(join(failed.root, "work", "lib", "broken.py"), "def broken(args):\n    raise ValueError('bad input')\n");
@@ -113,6 +120,7 @@ test("a conforming work library function is published and bound", async () => {
 test("consult uses the parent model once without action tools and enforces the level limit", async () => {
   const { handlers, tools, rows } = setup({ harnessProfile: true });
   await handlers.before_agent_start({});
+  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "notes", body: "Confirmed: x\nFalsified: UP does nothing" });
   const model = { id: "same-model" };
   let calls = 0;
   const ctx: any = { model, modelRegistry: {
@@ -122,6 +130,7 @@ test("consult uses the parent model once without action tools and enforces the l
       assert.equal(selected, model);
       assert.deepEqual(input.tools, []);
       assert.equal(options.maxTokens, 1500);
+      assert.match(input.messages[0].content[0].text, /Falsified: \[notes\] Falsified: UP does nothing/);
       return { result: async () => ({ content: [{ type: "text", text: "two explanations" }], stopReason: "stop",
         usage: { input: 30, output: 10, totalTokens: 40 } }) };
     } } };
@@ -283,10 +292,22 @@ test("a context overflow error makes the next request drop one more block", asyn
   const messages = ["1", "2"].map(text => ({ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text }] }));
   assert.equal(handlers.context({ messages }, {}).messages.length, 2);
   handlers.message_end(say("", { stopReason: "error", errorMessage: "maximum context length exceeded" }));
-  assert.equal(handlers.context({ messages }, {}).messages.length, 1);
+  const recovered = handlers.context({ messages }, {}).messages;
+  assert.equal(recovered.length, 2);
+  assert.match(recovered[0].content[0].text, /Earlier context was trimmed/);
+  assert.equal(handlers.context({ messages }, {}).messages.length, 2);
   assert.equal(rows("evict").length, 1);
   handlers.agent_settled();
   assert.equal(rows("segment_end")[0].reason, "context_overflow");
+});
+
+test("eviction keeps its cut until the retained window exceeds the cap", () => {
+  const messages = Array.from({ length: 12 }, (_, index) => ({ role: "user", content: `block ${index} ${"x".repeat(80)}` }));
+  const first = evict(messages.slice(0, 8), 70, 30, 0);
+  const stable = evict(messages.slice(0, 9), 70, 30, 0, first.cut);
+  assert.equal(stable.cut, first.cut);
+  const moved = evict(messages, 70, 30, 0, stable.cut);
+  assert.ok(moved.cut >= stable.cut);
 });
 
 test("segment_end flags an oversized raw session relative to the model cap", async () => {

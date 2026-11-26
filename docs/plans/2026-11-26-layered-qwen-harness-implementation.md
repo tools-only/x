@@ -35,3 +35,12 @@ Agent 自行调用 `reflect_component` 定义/修订/恢复 Memory、Skill、Pro
 决定：保留实验档位，不默认替换旧档位。下一可证伪检查是获预算授权后先以短真实 Qwen 运行检验普通情况下的首次创作、绑定调用、Memory 后续探针和停滞 consult 的合理使用，再按预注册对照比较任务效果与父子成本；若未出现使用，定位到曝光、调用摩擦或价值，不增加强制提醒。
 
 关联 backlog：`docs/deferred-research-todos.md` 的 A（adapter 边界）、B/C（子研究目的及父子通信）、D（压缩后认知连续性）保持开放；本轮仅证明无动作子请求与 context hook 可达，未证明研究质量、主动实验或跨压缩后的认知保持。
+
+## 2026-11-26 审计合入与缺陷修复
+
+- **基线合入与单因素对齐**：将 `codex/arc-evo-middle-layer`（`a791d63`）合入 `codex/qwen27b-cognitive-harness`，使 `qwen27b` 与 `qwen27b-harness` 共用同一套滞回 `evict()`、Qwen 27B 紧凑默认参数（`contextCap=40960`、`contextTarget=20480`、`foldAfter=4`、`outputTokens=4096`、`diffImage=false`）及 `work/` 热加载底座，支持干净的同分支对照；同步更新 `qwen27b-harness` 的裁剪 `recoveryText` 携带组件 `Memory`/`Prompt`/`Skills`/`Tools`。
+- **`Tools` 发布兼容修复**：`publishTools()` 改为优先检测 `python3` 并回退 `python`，支持 `def <name>(args)` / `def run(args)`（含类型注解/默认值）及无参 `def <name>()` / `def run()`。
+- **Prompt 与 `consult` 修复**：将 `demo/prompts/arc_layered_system_harness.md` 扩充至 2,579 字节，补回 `.grid`/`.ascii`、`{{color_legend}}`、`MOUSE` 与 `RESET` 规则、`anim_summary()`、2 次纯观察上限、`work/lib/<name>.py` 发布签名和 `consult("reframer", ...)` 入口；`consult` 改为聚合所有活跃 `memory` 组件中的 `Falsified` 段落（不再硬编码 `"current"`），并在 `MOUSE` 同区重复 ≥ 4 或重复死亡时触发 `STALL` 提示。
+- **增量 `NO_IMAGE` 与点击去重修复**：`ARC_LAYERED_NO_IMAGE=1` 仅在首帧、换关或 `RESET` 后发送完整十六进制网格，常规增量步只发送 `Changed cells` 与 `Touched components`；`mouse_tries` 改为按 `(board_key, region)` 独立计数（仅在 `RESET` 或换关时清空全部，不再因单次有变化动作清空其他盘面的无效点击计数）。
+- **Layer 0 `segment()` 性能优化**：将 `children` 孔洞判定由每个块全图 64×64 flood-fill 优化为外扩 1 格局部 `bbox` flood-fill，并增加按帧内容缓存；在 193 个连通块（129 个嵌套子块）的 64×64 稠密测试帧上，结果与 `a791d63` 逐字段完全一致，冷耗时由 640.67 ms 降至 31.95 ms（20.1×），缓存命中 0.78 ms。
+- **本轮验证范围**：`tests/arc_layered_python.test.ts` 定向 12/12 通过、`tests/arc_layered_components.test.ts` 1/1 通过、`tests/test_arc_layered_evolution.py` 2/2 通过、`py_compile` 与 `git diff --check` 通过。本机环境未安装 `node_modules`（缺少 `typebox` 与本地 Pi 依赖），因此修改后的 `tests/arc_layered_extension.test.ts` 与带 Pi 的 scripted smoke 尚未在本机复跑；需在已安装依赖的环境中补跑 `tests/arc_layered_extension.test.ts` 后再启动真实 Qwen 3.8 27B 对照。
