@@ -832,3 +832,16 @@ test("forbidActions blocks submit_actions while allowing @tool creation and live
   assert.match(normal.text, /\(8, 8\) 1/);
   python.close();
 });
+
+test("vacuous expect=(0, 250) is flagged and excluded from expect_hits while non-zero expect is scored", async () => {
+  const { python } = await session();
+  try {
+    const vac = await python.run("r = submit_actions('UP', expect=(0, 250))\nprint('hits:', r['expect_hits'], r['lines'][0])");
+    assert.match(vac.text, /hits: None/);
+    assert.match(vac.text, /\[vacuous expect=\(0, 250\):/);
+    const real = await python.run("r = submit_actions('UP', expect=(1, 10))\nprint('hits:', r['expect_hits'])");
+    assert.match(real.text, /hits: 1\/1/);
+  } finally {
+    python.close();
+  }
+});

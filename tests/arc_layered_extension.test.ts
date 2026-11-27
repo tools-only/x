@@ -891,6 +891,8 @@ test("boundary evolution blocks same-turn finish_evolution after error and marks
     const parentMsg = textOf((await handlers.before_agent_start({}, ctx)).message.content);
     assert.equal(roundCalls, 2);
     assert.match(sawDossier, /DECISIONS SINCE LAST REVIEW:/);
+    assert.match(sawDossier, /Branch reuse \(last \d+\):/);
+    assert.match(sawDossier, /Tooling gap:/);
     assert.doesNotMatch(parentMsg, /EVOLUTION \(game_over\): no_change/);
     const evoRows = rows("evolution_round");
     assert.equal(evoRows[0].decision, "incomplete");

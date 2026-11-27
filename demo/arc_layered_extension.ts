@@ -89,9 +89,10 @@ const EVOLUTION_SYSTEM_PROMPT = [
   "You are running an isolated, clean-context self-evolution review between task turns. You cannot take environment actions (submit_actions is disabled).",
   "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active component bodies, internal legibility stats, prior reviews), and the current frame.",
   "You are here because task play hit a boundary (stall/stuck/game_over/level_complete). Convert new evidence into an executable or falsifiable update unless active capabilities already cover the current gap:",
-  "1. Repeatable check/comparison/filter -> author a 0-arg or 1-arg @tool via python_inspect and test it on current_frame/transitions in the same script.",
-  "2. New confirmed/falsified fact or next experiment -> update Memory via reflect_component with ONLY crisp Confirmed facts, Falsified routes (with step), and ONE Next Discriminating Probe (expected A vs B). Attach verify={'rule': '1-line Python expr over t returning True/False/None'} when testable on single transitions — if not expressible on single transitions, still update Memory with the concrete facts/probe rather than defaulting to no_change. Do NOT write vague prose advice ('stop repeating', 'try other actions').",
-  "3. Only choose decision='no_change' when active Memory/Tools already cover the observed facts and their Next Probe has not yet been contradicted or exhausted — never use no_change just to skip updating newly observed facts, and never rewrite synonymous prose just to emit 'evolved'.",
+  "1. Missing progress/goal comparison -> author a 0-arg or 1-arg @tool in python_inspect that computes structured distance/progress from current_frame, and test it on current_frame in the same script.",
+  "2. Repeated branches / post-RESET retries -> author a 0-arg or 1-arg @tool in python_inspect that queries transitions for tried vs untried actions in the current or comparable state, and test it in the same script.",
+  "3. Competing causal hypotheses / vacuous predictions -> update Memory via reflect_component with crisp sections: Goal metric, Confirmed conditions, Eliminated branches (with step), and ONE Next controlled probe (change 1 variable in comparable state, predict specific region/state A vs B). Attach verify={'rule': '1-line Python expr over t returning True/False/None'} when testable on single transitions — if not expressible on single transitions, still update Memory with the concrete facts/probe rather than defaulting to no_change. Do NOT write vague prose advice ('stop repeating', 'try other actions').",
+  "4. Only choose decision='no_change' when active Memory/Tools already cover the observed facts and their Next controlled probe has not yet been contradicted or exhausted — never use no_change just to skip updating newly observed facts, and never rewrite synonymous prose just to emit 'evolved'.",
   "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
   "Editable space (0 or 1 targeted change; update stale memory if it failed to break a stall):",
   "- tools: python_inspect(code) with @tool on a 0-arg or 1-arg function (or work/lib/<name>.py); test it immediately",
@@ -687,6 +688,20 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (rich) {
       const eff = effortProgressSummary();
       if (eff) legibilityLines.push(`- ${eff}`);
+      const tail30 = levelSteps.slice(-30);
+      if (tail30.length) {
+        const rep30 = tail30.filter(f => f.same).length;
+        const new30 = tail30.filter(f => f.new).length;
+        const rst30 = tail30.filter(f => f.action === "RESET").length;
+        legibilityLines.push(`- Branch reuse (last ${tail30.length}): repeats=${rep30}, new_states=${new30}, resets=${rst30}`);
+      }
+      const recentTrace = decisionTrace.slice(-12);
+      const vacuousCalls = recentTrace.reduce((s, b) => s + b.pythonCalls.filter(p => p.result.includes("[vacuous expect=")).length, 0);
+      if (vacuousCalls || (state.unchecked_batches ?? 0) > 0) {
+        legibilityLines.push(`- Prediction quality: vacuous_expect_calls=${vacuousCalls} (last 12 decisions), unchecked_batches=${state.unchecked_batches ?? 0}`);
+      }
+      const toolUsesTotal = components ? components.list("tool").reduce((s, t) => s + (components.stats("tool", t.name)?.total.invocations ?? 0), 0) : 0;
+      legibilityLines.push(`- Tooling gap: python_calls=${(opts?.metrics ?? attemptMetrics).py_calls}, active_tools=${components?.list("tool").length ?? 0}, tool_invocations=${toolUsesTotal}`);
       if (boundaryReviewsThisLevel.length) {
         legibilityLines.push(`- Prior reviews on L${auditLevel}: ${boundaryReviewsThisLevel.map(r => `s${r.step} ${r.boundary}->${r.decision}(${r.exit_reason}${r.mutations.length ? `:${r.mutations.join(",")}` : ""}${r.note ? `:"${r.note}"` : ""})`).join("; ")}`);
       }
@@ -705,6 +720,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     ].filter(Boolean).join("\n").slice(0, limit);
   }
 
+  const STUCK_BACKOFF = [12, 16, 24, 36, 48, 60];
+  const canRunStuckAudit = (actionsUsed: number) =>
+    stuckAuditsThisLevel < STUCK_BACKOFF.length &&
+    (lastStuckAuditStep < 0 || actionsUsed - lastStuckAuditStep >= STUCK_BACKOFF[stuckAuditsThisLevel]);
+
   function content(batch: ActionBatch | null, nudge = false, evoOpts?: { evolutionReceipt?: string; boundaryHandled?: boolean }): Content {
     const state = python.state(), events: string[] = [];
     const boundaryHandled = Boolean(evoOpts?.boundaryHandled);
@@ -717,7 +737,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (evoOpts?.evolutionReceipt) events.push(evoOpts.evolutionReceipt);
     let inventoryShown = false;
     let dualAuditEmitted = boundaryHandled;
-    const canStuckAudit = !boundaryHandled && stuckAuditsThisLevel < 3 && (lastStuckAuditStep < 0 || state.actions_used - lastStuckAuditStep >= 12);
+    const canStuckAudit = !boundaryHandled && canRunStuckAudit(state.actions_used);
     if (boardInventoryEnabled && isFreshBoard) {
       const inv = boardInventory(state.frame);
       if (inv.line) { events.push(inv.line); inventoryShown = true; }
@@ -1303,6 +1323,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     const started = Date.now();
     const mutations: string[] = [];
+    let verifiedToolSample = "";
     let evoDecision: "evolved" | "no_change" | "incomplete" = "incomplete";
     let exitReason: "finish_evolution" | "max_rounds_exhausted" | "text_stop" | "error" = "max_rounds_exhausted";
     let note = "";
@@ -1411,6 +1432,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             }
             for (const p of pub.published) mutations.push(`tool/${p.name} v${p.version}`);
             text = outcome.text;
+            if (pub.published.length && !outcome.error) {
+              const firstLine = outcome.text.split("\n").map(l => l.trim()).find(Boolean) ?? "";
+              if (firstLine) verifiedToolSample = firstLine.slice(0, 120);
+            }
             for (const p of pub.published) text += `\n[tool mounted: ${p.name} v${p.version} — callable directly as ${p.name}() or bound tool]`;
             for (const f of pub.failed) text += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
             isError = Boolean(outcome.error) || pub.failed.length > 0;
@@ -1460,7 +1485,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         mutations: uniqueMutations, note, rounds: roundsRun, dossier_chars: dossier.length, ms: Date.now() - started });
       if (evoDecision === "incomplete" && !uniqueMutations.length) return undefined;
       const mutSummary = uniqueMutations.length ? ` [${uniqueMutations.join(", ")}]` : "";
-      return `EVOLUTION (${boundary}): ${evoDecision}${mutSummary}${note ? ` — ${note}` : ""}`;
+      const samplePart = verifiedToolSample ? ` (verified output: ${verifiedToolSample})` : "";
+      return `EVOLUTION (${boundary}): ${evoDecision}${mutSummary}${samplePart}${note ? ` — ${note}` : ""}`;
     } catch (error) {
       lastEvoTraceIndex = decisionTrace.length;
       log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: false, exit_reason: "error", error: String(error).slice(0, 200),
@@ -1535,7 +1561,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           evolutionReceipt = await runBoundaryEvolution("game_over", failSteps, state, state.level, ctx);
           boundaryHandled = true;
         } else {
-          const canStuckAudit = stuckAuditsThisLevel < 3 && (lastStuckAuditStep < 0 || state.actions_used - lastStuckAuditStep >= 12);
+          const canStuckAudit = canRunStuckAudit(state.actions_used);
           const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || (fact.same_death !== null && fact.same_death !== undefined && fact.same_death !== false));
           const stalled = options.consult !== false && (state.stale_steps >= 12 || regionStall);
           const stuck = options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter;

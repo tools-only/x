@@ -498,6 +498,12 @@ def _expect_ok(expect, before, after, result):
     return lo <= result.get("changed_cells", 0) <= hi
 
 
+def _is_vacuous_expect(expect):
+    return (isinstance(expect, (tuple, list)) and len(expect) == 2
+            and isinstance(expect[0], (int, float)) and isinstance(expect[1], (int, float))
+            and expect[0] <= 0 and expect[1] >= 50)
+
+
 class _WorkLoader:
     def __init__(self, name, path, package):
         self.name, self.path, self.package = name, path, package
@@ -624,11 +630,16 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
                     transient, len(grids), len(_H) - 1, len(_H) - 1)
         fact = _observe(before, forecast, source)
         lines[-1] += _echo(fact)
+        vacuous_expect = expect is not None and _is_vacuous_expect(expect)
         if expect is not None:
             hit = _expect_ok(expect, before, _H[-1], reply["result"])
-            log = _S.setdefault("expect_log", [])
-            log.append(bool(hit))
-            del log[:-10]
+            if vacuous_expect:
+                if executed == 1:
+                    lines[-1] += "  [vacuous expect=%r: covers both 0-change noop and large changes; use a non-zero range or lambda(before, after) to test a specific hypothesis]" % (expect,)
+            else:
+                log = _S.setdefault("expect_log", [])
+                log.append(bool(hit))
+                del log[:-10]
             if not hit:
                 surprise = True
                 reason = "surprise"
@@ -648,7 +659,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         else:
             consec_same_label = label
             consec_same_no_new = 0 if fact["changed"] else 1
-        if not force and expect is None and call["action"] != "RESET" and consec_same_no_new >= 4:
+        if not force and (expect is None or vacuous_expect) and call["action"] != "RESET" and consec_same_no_new >= 4:
             inv = _action_invariant_summary()
             inv_note = (" | " + inv) if inv else ""
             lines[-1] += "  <- %d identical actions without interior change or expect=; batch stopped (pass expect=... or force=True to override%s)" % (
