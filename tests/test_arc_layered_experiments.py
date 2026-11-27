@@ -68,3 +68,19 @@ def test_matched_prefix_is_identical_and_corruption_is_rejected(tmp_path):
         seed_prefix(snapshot, tmp_path / "bad", "task")
     with pytest.raises(ValueError, match="uncertain"):
         snapshot_prefix(source, tmp_path / "uncertain", "task", [{"event": "environment_error"}], session)
+
+
+def test_compare_pair_supports_custom_switch(tmp_path):
+    from autoresearch_pi.arc_layered_experiments import compare_pair
+    left, right = tmp_path / "a", tmp_path / "b"
+    for root, evo in ((left, "0"), (right, "1")):
+        root.mkdir()
+        (root / "fork.json").write_text(json.dumps({"prefix_digest": "abc"}))
+        (root / "run-config.json").write_text(json.dumps({
+            "game": "su15", "model": "qwen", "provider": "az", "thinking": "medium", "profile": "qwen27b-harness",
+            "config": "api-research", "extension_env": {"ARC_LAYERED_EVOLUTION": evo},
+        }))
+        (root / "summary.json").write_text(json.dumps({"stop_reason": "win", "levels_completed": 2}))
+    pair = compare_pair(left, right, switch="ARC_LAYERED_EVOLUTION")
+    assert pair["switch"] == "ARC_LAYERED_EVOLUTION"
+    assert [arm["switch_enabled"] for arm in pair["arms"]] == [False, True]

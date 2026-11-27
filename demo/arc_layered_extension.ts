@@ -125,8 +125,8 @@ const EVOLUTION_SYSTEM_PROMPT = [
   "   - Search & non-replay strategy (L2/L4): replaying known dead ends or post-RESET failures instead of tracking tried vs untried branches from transitions.",
   "   - Planning & execution orchestration (L4/L5): stepping blindly when mechanics are already established, staying trapped in one framing, or failing to use mounted tools/skills.",
   "2. Carry the evolved method in the lightest effective harness component (0 or 1 targeted change; NEVER write vague pep-talks like 'be careful' or 'try harder'):",
-  "   - Executable analysis/strategy (`@tool` via python_inspect): read-only computation helper (observation/diff/progress metric, branch frontier checker, candidate scorer/planner). Include `# when:` and `# out/branch:` (and `branch_action` in the result dict when returning a discrete next action). Verify with `trial_at(k, tool_module.function)` before taking credit.",
-  "   - Falsifiable causal model & probe (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L3', scope='level'|'game', name, body, verify?)): crisp Goal metric, Confirmed conditions, Eliminated branches, ONE Next controlled probe, and `verify` (`{when, assert}` or `... if ... else None`) when single-step testable.",
+  "   - Executable analysis/strategy (`@tool` via python_inspect): read-only computation helper (observation/diff/progress metric, branch frontier checker, candidate scorer/planner). Include `# when:` and `# out/branch:` (and `branch_action` in the result dict when returning a discrete next action). Define `@tool def fn(): ...` and run `trial_at(k, fn)` in the SAME `python_inspect` script so tool authoring + no-lookahead verification finishes in 1 round.",
+  "   - Falsifiable causal model & probe (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L3', scope='level'|'game', name, body, verify?)): crisp Goal metric, Confirmed conditions, Eliminated branches, ONE Next controlled probe, and prefer structured `verify={'rule': {'when': '...', 'assert': '...'}}` whenever single-step testable so future contradictions trigger automatically.",
   "   - Reusable problem-solving method / workflow (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): concrete multi-step procedure for modeling, controlled probing, branch search, or verification (read on demand via read_component).",
   "   - Execution discipline / thinking rule (`prompt` via reflect_component(op=add/revise/retire/promote/demote, kind='prompt', layer='L5', scope='game'|'level', name, body), <= 600 chars): enforceable operating rule fixing recurring Process profile failures (e.g., prediction coverage, probe size before batching, checking mounted helpers).",
   "   - Clean-context reframing (`subagent` via reflect_component(op=add/revise/retire, kind='subagent', layer='L5', scope='game'|'level', name, summary, body)): specialist role invoked via consult when stuck in a local framing.",
@@ -709,7 +709,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
 
   function dualAudit(
-    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise",
+    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift",
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
@@ -1429,7 +1429,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
 
   async function runBoundaryEvolution(
-    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise",
+    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift",
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
@@ -1438,10 +1438,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   ): Promise<string | undefined> {
     if (!components || !ctx?.model || !ctx?.modelRegistry?.streamSimple) return undefined;
     const timeoutMs = Number(process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS ?? 240000);
-    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 6);
+    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 3);
     const contextWindow = Number((ctx.model as any)?.contextWindow ?? 102400);
     const maxDossierChars = Math.min(
-      Number(process.env.ARC_LAYERED_EVOLUTION_CONTEXT_CHARS ?? 64000),
+      Number(process.env.ARC_LAYERED_EVOLUTION_CONTEXT_CHARS ?? 24000),
       Math.max(6000, Math.floor(contextWindow * 0.35 * 3)),
     );
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1712,7 +1712,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         if (proof) log("component_proof", { name: item.name, status: proof.status, level: state.level, buckets });
       }
       const contradiction = components.list("memory").find(item => Object.keys(item.verify ?? {}).some(rule => !python.memoryCheckStats?.[`${item.name}/${rule}`]?.unscoped && Number(python.memoryCheckStats?.[`${item.name}/${rule}`]?.counter ?? 0) > 0) && !contradictionAudited.has(`${item.name}/${item.hash}`));
-      const cognitiveBoundary = cognitiveAudits < 3 && contradiction && state.step - lastCognitiveStep >= 4 ? "verify_contradiction" : cognitiveAudits < 3 && (consecutiveSurprises >= 2 || surpriseSteps.filter(step => state.step - step < 8).length >= 3) && state.step - lastCognitiveStep >= 6 ? "repeated_surprise" : null;
+      const cognitiveBoundary = cognitiveAudits < 3 && contradiction && state.step - lastCognitiveStep >= 4 ? "verify_contradiction"
+        : cognitiveAudits < 3 && (consecutiveSurprises >= 2 || surpriseSteps.filter(step => state.step - step < 8).length >= 3) && state.step - lastCognitiveStep >= 6 ? "repeated_surprise"
+        : cognitiveAudits < 3 && (state.unchecked_batches ?? 0) >= 4 && state.step - lastCognitiveStep >= 6 ? "method_drift"
+        : null;
       log("audit_gate", { level: state.level, step: state.step, cognitive: cognitiveAudits, total: correctiveAudits, last_cognitive_step: Number.isFinite(lastCognitiveStep) ? lastCognitiveStep : null, candidate: cognitiveBoundary });
       const canRun = state.state !== "WIN" && state.budget_left !== 0 && state.level_budget_left !== 0;
       if (canRun) {
@@ -1762,7 +1765,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
     const recoveryReserve = recoveryText ? estimateTokens({ role: "user", content: [{ type: "text", text: recoveryText }] }) : 0;
     const effectiveCap = Math.max(2048, cap - recoveryReserve);
-    const archived = archive ? foldRecoverably(event.messages, options.foldAfter || 4, archive) : undefined;
+    const archived = archive ? foldRecoverably(event.messages, options.foldAfter || 10, archive) : undefined;
     if (archived?.folded) log("archive_fold", { count: archived.folded });
     const result = evict(archived?.messages ?? event.messages, effectiveCap, Math.min(target, effectiveCap), extraBlocks, evictAnchorIndex);
     evictAnchorIndex = result.cut;
@@ -1988,7 +1991,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
     noImage: env.ARC_LAYERED_NO_IMAGE === "1",
     harnessProfile, minimalBasePrompt: env.ARC_LAYERED_MINIMAL_BASE_PROMPT === "1", consult: env.ARC_LAYERED_CONSULT !== "0",
-    recoverableFold: env.ARC_LAYERED_RECOVERABLE_FOLD === "1",
+    recoverableFold: harnessProfile ? env.ARC_LAYERED_RECOVERABLE_FOLD !== "0" : env.ARC_LAYERED_RECOVERABLE_FOLD === "1",
     evolution: harnessProfile && env.ARC_LAYERED_EVOLUTION !== "0",
     boardInventory: harnessProfile && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),

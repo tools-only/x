@@ -1168,3 +1168,26 @@ test("L4/L5 methodology evolution path supports minimal base prompt, process pro
   const panel = textOf(ctxOut.messages[0].content).split("## ACTIVE HARNESS").at(-1)!;
   assert.match(panel, /\[NEW\] PROMPT probe_discipline v1:/);
 });
+
+test("method_drift cognitive audit triggers on >=4 unchecked_batches without waiting for stall or surprise", async () => {
+  const { handlers, game, python, call, rows } = setup({ harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16 });
+  await handlers.before_agent_start({});
+  const ctx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: () => ({ result: async () => ({
+        role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 },
+        content: [{ type: "toolCall", id: "m1", name: "finish_evolution", arguments: { decision: "no_change", note: "checked" } }],
+      }) }),
+    },
+  };
+  game.step = 5;
+  game.actions_used = 5;
+  game.stale_steps = 4; // well below 16
+  game.unchecked_batches = 4;
+  python.next = batch({ executed: 1, actions: ["UP"], surprise: false });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "method_drift").length, 1);
+});

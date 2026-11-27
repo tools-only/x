@@ -13,6 +13,7 @@
   "config": "api-research",
   "benchmark_only": true,
   "extension_env": {
-    "ARC_LAYERED_EVOLUTION": "1"
+    "ARC_LAYERED_EVOLUTION": "1",
+    "ARC_LAYERED_RECOVERABLE_FOLD": "1"
   }
 }

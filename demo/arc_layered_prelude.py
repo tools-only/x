@@ -1086,7 +1086,7 @@ def trial_at(k, fn):
         raise IndexError("trial index outside recorded history")
     fn = getattr(fn, "__wrapped__", fn)
     if not isinstance(fn, types.FunctionType):
-        raise TypeError("pass a function, for example trial_at(k, tool_module.function)")
+        raise TypeError("pass a function, for example trial_at(k, my_tool_fn)")
     if fn.__closure__ or fn.__defaults__ or fn.__kwdefaults__:
         raise ValueError("trial function must not capture live values")
     history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H[:k + 1]]
@@ -1099,7 +1099,7 @@ def trial_at(k, fn):
                  history=history, transitions=transitions, current_frame=history[-1].frame,
                  previous_frame=last.before_frame if last else None, last_transition=last,
                  last_action=last.action if last else None, last_action_result=last.result if last else {},
-                 diff=diff, ascii=ascii)
+                 diff=diff, ascii=ascii, gameplay_changed=gameplay_changed, segment=segment)
     def trial_frame_diff(a=None, b=None):
         a = a if a is not None else names["previous_frame"]
         return frame_diff(a, names["current_frame"] if b is None else b) if a is not None else {

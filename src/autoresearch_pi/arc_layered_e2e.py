@@ -541,7 +541,23 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                       "child_tokens_lower_bound": child_known},
         "length_truncations": sum(1 for r in rows if r.get("kind") == "length_truncation"),
         "cache_read_rate": cache_read / cache_input if cache_input else None,
-        "phase2": {"layer_changes": {layer: sum(1 for row in rows if row.get("kind") == "component_change" and row.get("layer") == layer) for layer in ("L1", "L2", "L3", "L4", "L5")}, "proof_transitions": [r for r in rows if r.get("kind") == "component_proof"], "cognitive_audits": [r for r in rows if r.get("kind") == "evolution_round" and r.get("boundary") in ("verify_contradiction", "repeated_surprise")], "tool_health_checks": [r for r in rows if r.get("kind") == "tool_health_check"]},
+        "phase2": {
+            "layer_changes": {layer: sum(1 for row in rows if row.get("kind") == "component_change" and row.get("layer") == layer) for layer in ("L1", "L2", "L3", "L4", "L5")},
+            "proof_transitions": [r for r in rows if r.get("kind") == "component_proof"],
+            "cognitive_audits": [r for r in rows if r.get("kind") == "evolution_round" and r.get("boundary") in ("verify_contradiction", "repeated_surprise", "method_drift")],
+            "tool_health_checks": [r for r in rows if r.get("kind") == "tool_health_check"],
+        },
+        "archive": {
+            "folds": sum(int(r.get("count") or 0) for r in rows if r.get("kind") == "archive_fold"),
+            "reads": sum(1 for r in rows if r.get("kind") == "archive_read"),
+        },
+        "component_adoption": {
+            "memory_live_injected": sum(1 for r in rows if r.get("kind") == "live_injected" and r.get("component_kind") == "memory"),
+            "prompt_live_injected": sum(1 for r in rows if r.get("kind") == "live_injected" and r.get("component_kind") == "prompt"),
+            "component_reads": sum(1 for r in rows if r.get("kind") == "read_component"),
+            "tool_invocations_ok": sum(1 for r in rows if r.get("kind") in ("bound_invocation", "lib_invocation") and r.get("ok") is True),
+            "tool_branch_aligned": sum(row["aligned"] for row in branch_handoffs),
+        },
         "branch_handoffs": {
             "autonomous_fetch_followed_by_action": len(branch_handoffs),
             "branch_consistent_action": sum(row["aligned"] for row in branch_handoffs),

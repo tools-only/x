@@ -65,7 +65,7 @@ def seed_prefix(snapshot: Path, root: Path, game: str) -> dict:
     return receipt
 
 
-def compare_pair(left: Path, right: Path) -> dict:
+def compare_pair(left: Path, right: Path, switch: str = "ARC_LAYERED_RECOVERABLE_FOLD") -> dict:
     configs = [json.loads((root / "run-config.json").read_text(encoding="utf-8")) for root in (left, right)]
     forks = [json.loads((root / "fork.json").read_text(encoding="utf-8")) for root in (left, right)]
     if forks[0]["prefix_digest"] != forks[1]["prefix_digest"]:
@@ -75,16 +75,18 @@ def compare_pair(left: Path, right: Path) -> dict:
         if configs[0].get(key) != configs[1].get(key):
             raise ValueError(f"pair configuration mismatch: {key}")
     environments = [dict(config.get("extension_env") or {}) for config in configs]
-    folding = [environment.pop("ARC_LAYERED_RECOVERABLE_FOLD", "0") for environment in environments]
-    if environments[0] != environments[1] or set(folding) != {"0", "1"}:
-        raise ValueError("folding pair must differ only in recoverable-fold switch")
+    values = [environment.pop(switch, "0") for environment in environments]
+    if environments[0] != environments[1] or set(values) != {"0", "1"}:
+        raise ValueError(f"pair must differ only in {switch} switch")
     summaries = [json.loads((root / "summary.json").read_text(encoding="utf-8")) for root in (left, right)]
-    return {"format": "arc-layered-pair-v1", "prefix_digest": forks[0]["prefix_digest"],
+    return {"format": "arc-layered-pair-v1", "switch": switch, "prefix_digest": forks[0]["prefix_digest"],
             "continuation_mode": "matched-cold-runtime", "arms": [
-                {"root": str(root.resolve()), "recoverable_fold": switch == "1", "stop_reason": summary["stop_reason"],
+                {"root": str(root.resolve()), "switch_enabled": value == "1",
+                 **({"recoverable_fold": value == "1"} if switch == "ARC_LAYERED_RECOVERABLE_FOLD" else {}),
+                 "stop_reason": summary["stop_reason"],
                  "levels_completed": summary.get("levels_completed"), "continuation": summary.get("continuation"),
                  "wall_seconds": summary.get("wall_seconds"), "error": summary.get("error")}
-                for root, switch, summary in zip((left, right), folding, summaries)],
+                for root, value, summary in zip((left, right), values, summaries)],
             "evidence": "single paired observation; no general net-benefit claim"}
 
 
@@ -157,9 +159,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
-    parser.add_argument("--compare", action="store_true", help="Compare two completed folding arms instead of exporting transfer")
+    parser.add_argument("--compare", action="store_true", help="Compare two completed paired arms instead of exporting transfer")
+    parser.add_argument("--switch", default="ARC_LAYERED_RECOVERABLE_FOLD", help="Single extension_env switch differing between paired arms")
     args = parser.parse_args()
-    result = compare_pair(args.source, args.destination) if args.compare else export_transfer(args.source, args.destination)
+    result = compare_pair(args.source, args.destination, switch=args.switch) if args.compare else export_transfer(args.source, args.destination)
     print(json.dumps(result, ensure_ascii=False))
 
 
