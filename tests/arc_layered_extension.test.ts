@@ -1131,6 +1131,7 @@ test("L4/L5 methodology evolution path supports minimal base prompt, process pro
 
   let evoSysPrompt = "";
   let evoDossier = "";
+  let reflectToolDesc = "";
   let round = 0;
   const ctx: any = {
     model: { id: "same", maxTokens: 4096 },
@@ -1140,6 +1141,7 @@ test("L4/L5 methodology evolution path supports minimal base prompt, process pro
         if (round === 1) {
           evoSysPrompt = input.systemPrompt;
           evoDossier = input.messages[0].content[0].text;
+          reflectToolDesc = input.tools.find((t: any) => t.name === "reflect_component")?.description ?? "";
         }
         return { result: async () => ({
           role: "assistant", stopReason: "toolUse", usage: { input: 50, output: 20, totalTokens: 70 },
@@ -1156,7 +1158,11 @@ test("L4/L5 methodology evolution path supports minimal base prompt, process pro
   await handlers.before_agent_start({}, ctx);
   assert.match(evoSysPrompt, /kind='prompt', layer='L5'/);
   assert.match(evoSysPrompt, /kind='skill', layer='L4'/);
+  assert.match(evoSysPrompt, /scope='level' vs scope='game'/);
+  assert.match(evoSysPrompt, /at most 1 core L5 Prompt and 1-2 L4 Skills/);
+  assert.match(reflectToolDesc, /L5 prompt.*L4 skill/);
   assert.match(evoDossier, /- Process profile \(last \d+ decisions\): acting=1, max_batch=6, large_batches\(>=4\)=1, unchecked_batches=4/);
+  assert.match(evoDossier, /Harness slots \(active\): prompt=0\/1, skill=0\/2, memory=0\/6/);
 
   const ctxOut = handlers.context({ messages: [{ role: "user", content: [{ type: "text", text: "state" }] }] }, { model: { contextWindow: 102400 } });
   const panel = textOf(ctxOut.messages[0].content).split("## ACTIVE HARNESS").at(-1)!;

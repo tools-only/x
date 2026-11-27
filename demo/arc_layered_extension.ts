@@ -132,6 +132,10 @@ const EVOLUTION_SYSTEM_PROMPT = [
   "   - Clean-context reframing (`subagent` via reflect_component(op=add/revise/retire, kind='subagent', layer='L5', scope='game'|'level', name, summary, body)): specialist role invoked via consult when stuck in a local framing.",
   "3. Verify & curate: check Process profile and Last evolution feedback to see whether prior evolved methods actually changed behavior (unchecked_batches, large_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with an unfalsified probe or branch.",
   "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
+  "Scope & trigger rules (strict):",
+  "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill), cross-level @tools, and level_complete-promoted causal Memory.",
+  "- Fact fix vs method evolution: for a one-off observation/rule gap, update Memory (L3) or @tool (L1/L2). When Process profile or decision history shows a RECURRING method flaw (e.g., repeated unchecked_batches, unverified large_batches>=4, repeated failed routes across attempts/RESETs, or ignoring mounted tools), you MUST diagnose L4/L5 and evolve a Prompt (L5, scope='game') or Skill (L4, scope='game').",
+  "- Anti-divergence cap on methodology: Prompt (L5) and Skill (L4) MUST contain ZERO level-specific coordinates or one-off layout trivia—only general 'when <observable condition>, do <action/check>' rules. Maintain at most 1 core L5 Prompt and 1-2 L4 Skills total; use revise/merge on existing ones instead of adding duplicates.",
   "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before updating components and calling finish_evolution.",
   "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution once verified. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
@@ -782,12 +786,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     lastAuditBoundary = boundary;
     if (opts?.emitLog !== false) log("dual_audit_shown", { boundary, level: auditLevel, step: state.step, steps: steps.length });
     const limit = opts?.limit ?? (rich ? 6000 : boundary === "level_complete" ? 1600 : boundary === "game_over" ? 1350 : 950);
-    return [
+    const taskBlock = [
       "Layer 1 (Task facts):",
       ...(layer1.length ? layer1 : ["- no transitions recorded yet"]),
-      layer2,
-      ...legibilityLines,
-    ].filter(Boolean).join("\n").slice(0, limit);
+    ].join("\n");
+    const diagBlock = [layer2, ...legibilityLines].filter(Boolean).join("\n");
+    if (rich) {
+      const diagPart = diagBlock.slice(0, Math.min(3500, limit));
+      const taskBudget = Math.max(400, limit - diagPart.length - 1);
+      return [diagPart, taskBlock.slice(0, taskBudget)].filter(Boolean).join("\n");
+    }
+    return [taskBlock, diagBlock].filter(Boolean).join("\n").slice(0, limit);
   }
 
   const STUCK_BACKOFF = options.harnessProfile ? [16, 20, 28, 36, 48, 60] : [12, 16, 24, 36, 48, 60];
@@ -1452,7 +1461,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       : (options.outputTokens || (ctx.model as any).maxTokens || undefined);
     const evoMaxTokens = requestedEvoTokens && Math.min(requestedEvoTokens, ctx.model.maxTokens ?? requestedEvoTokens);
     const evoTools = [
-      { name: "reflect_component", description: "Add, revise, retire or restore one versioned Memory entry with optional verify.", parameters: reflectSchema },
+      { name: "reflect_component", description: "Add, revise, retire, restore, merge, promote or demote a versioned component (memory with optional verify, L5 prompt <=600 chars, L4 skill, subagent, or tool lifecycle) with scope=level|game and layer=L1..L5.", parameters: reflectSchema },
       { name: "read_component", description: "Read an existing component body.", parameters: readSchema },
       { name: "python_inspect", description: "Run non-acting Python in the live kernel to inspect frames/transitions or author & test @tool helpers (submit_actions is disabled).",
         parameters: Type.Object({ code: Type.String({ description: "Non-acting Python code to run" }) }) },
@@ -1463,21 +1472,29 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const auditText = dualAudit(boundary, steps, state, auditLevel, {
         compact: false, richWindow: true, includeInventory: true, metrics: opts?.metrics, evolution: opts?.evolution, emitLog: true, limit: 6000,
       });
-      const activeItems = components.list().map(item => {
+      const allLive = components.list();
+      const nonDormant = allLive.filter(item => item.status !== "dormant" && item.status !== "variant_broken");
+      const slotLine = `Harness slots (active): prompt=${nonDormant.filter(i => i.kind === "prompt").length}/1, skill=${nonDormant.filter(i => i.kind === "skill").length}/2, memory=${nonDormant.filter(i => i.kind === "memory").length}/6, tool=${nonDormant.filter(i => i.kind === "tool").length}, subagent=${nonDormant.filter(i => i.kind === "subagent").length}`;
+      const metaTag = (item: Component) => `[layer=${item.layer ?? "?"} scope=${item.scope ?? "level"} status=${item.status ?? "active"}${item.when ? ` when=${item.when}` : ""}]`;
+      const activeItems = allLive.map(item => {
+        const tag = metaTag(item);
+        if (item.status === "dormant" || item.status === "variant_broken") {
+          return `${item.kind.toUpperCase()} ${item.name} v${item.version} ${tag} (not mounted in parent panel; summary: ${item.summary || item.body.slice(0, 80)})`;
+        }
         if (item.kind === "tool") {
           let src = "";
           try { src = readFileSync(join(options.root, "work", "lib", `${item.name}.py`), "utf8").trim().slice(0, 1200); } catch {}
-          return `TOOL ${item.name} v${item.version}:\n${src || item.body}`;
+          return `TOOL ${item.name} v${item.version} ${tag}:\n${src || item.body}`;
         }
         if (item.kind === "skill") {
           const st = components.stats("skill", item.name);
-          return `SKILL ${item.name} v${item.version} (reads=${st?.total.reads ?? 0}, summary=${item.summary}):\n${item.body}`;
+          return `SKILL ${item.name} v${item.version} ${tag} (reads=${st?.total.reads ?? 0}, summary=${item.summary}):\n${item.body}`;
         }
-        if (item.kind === "subagent") return `SUBAGENT ${item.name} v${item.version}:\n${item.body}`;
-        return formatComponentLine(item);
+        if (item.kind === "subagent") return `SUBAGENT ${item.name} v${item.version} ${tag}:\n${item.body}`;
+        return `${tag} ${formatComponentLine(item)}`;
       });
       const activeBudget = Math.min(14000, Math.floor(maxDossierChars * 0.25));
-      const activeText = activeItems.length ? activeItems.join("\n\n").slice(0, activeBudget) : "none";
+      const activeText = [slotLine, ...(activeItems.length ? activeItems : ["none"])].join("\n\n").slice(0, activeBudget);
       const headerPart = `Boundary: ${boundary.toUpperCase()} | level ${state.level}/${state.win_levels}, step ${state.step}, state=${state.state}` +
         `${[state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "", state.budget_left !== undefined ? `run budget ${state.budget_left}` : ""].filter(Boolean).join(", ") ? `, ${[state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "", state.budget_left !== undefined ? `run budget ${state.budget_left}` : ""].filter(Boolean).join(", ")}` : ""} | valid: ${(state.valid_actions ?? []).join(" ")}`;
       const windowBudget = Math.max(2000, maxDossierChars - headerPart.length - auditText.length - activeText.length - 200);
