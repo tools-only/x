@@ -1,0 +1,32 @@
+{
+  "providers": {
+    "openai": {
+      "baseUrl": "https://az.gptplus5.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$OPENAI_API_KEY",
+      "compat": {
+        "supportsDeveloperRole": false
+      },
+      "authHeader": true,
+      "models": [
+        {
+          "id": "gpt-6-sol",
+          "name": "gpt-6-sol",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 175000,
+          "cost": {
+            "input": 5,
+            "output": 30,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "maxTokens": 65536
+        }
+      ]
+    }
+  }
+}
