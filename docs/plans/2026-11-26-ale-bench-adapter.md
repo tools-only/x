@@ -32,7 +32,7 @@
 | 证据层级 | 状态 | Provider / environment | 产物及结论边界 |
 | --- | --- | --- | --- |
 | 功能正确 | 通过（7 tests） | Python test doubles | 覆盖投影、Lite 十题、artifact、关闭路径 |
-| 全链路可达 | 部分验证，未完成 | Windows Python 3.12、ALE-Bench 1.7.0、Docker Desktop 29.7.2、HF cache | CairoSVG 已可导入，Rust 1.79.0 镜像已通过 DaoCloud mirror 拉取并标记为 `rust:1.79.0-buster`，工具源码也已在容器中编译。bridge 仍在 upstream `generate_inputs` 初始化阶段返回空输入，因而 public/private 评测和 Pi provider 链路未完成。未将此结果报告为真实评测成功。 |
+| 全链路可达 | 部分验证，未完成 | Windows Python 3.12、ALE-Bench 1.7.0、Docker Desktop 29.7.2、AZ-compatible provider | Lite `ahc008` Session 初始化、Docker Rust 工具构建、公开题面读取和 Pi provider 调用已实测成功。真实 Pi 曾写出 C++ 源码并发起 public evaluation。完整评测和 private_eval 尚未完成。 |
 | 自主采用 | 未验证 | 未运行真实 Pi/provider | 本次无 Agent 自主选择证据 |
 | 净收益 | 未验证 | 未运行对照实验 | 无成本或任务质量结论 |
 
@@ -40,5 +40,6 @@
 
 - 已支持：Lite 十题校验、公开评测、case_eval 诊断、单次终态私有评测、脱敏 artifact、CLI，以及 Agent 回调驱动的有限公共评测演化、attempt 谱系和最佳源码选择。`cognitive_components.ts` 提供版本化组件存储核、生命周期统计和失败见证。Pi extension 已接入组件读写、公开题面查询、独立 case 预算、attempt/best 记录、restore 原语和 A/B1/B2 profile 参数。
 - 未支持：真实 Docker/HF 评测验证、上下文 evict/fold、多 segment continuation、consult、动态 `work/lib` 自动发布、跨任务批处理和 leaderboard 访问。Pi 原生 extension coding loop 与组件存储接入已完成，但尚未在真实 ALE-Bench 环境运行。`ale-bench-evolve` 的候选文件模式是接线诊断，不是自主模型实验。
-- 环境处理：已安装并验证 `ale_bench==1.7.0`、CairoSVG 和 cairocffi，已启动 Docker Desktop。Docker Hub 直连被代理策略阻断，因此通过 `docker.m.daocloud.io/library/rust:1.79.0-buster` 预拉取后标记为上游要求的本地镜像名。Windows 兼容补丁为 bridge 子进程设置 UTF-8，并为 upstream 在 Windows 缺失的 `os.getgid`/`os.getuid` 提供中性值。
-- 剩余验证：当前 ALE-Bench session 在 `generate_inputs` 初始化阶段仍返回空输入，具体 public/private 评测、Pi provider 链路和终态 private_eval 尚未完成。该层级受 upstream Docker volume/input-generation 行为阻塞，不能据此声明真实任务已跑通。A 的 adapter/runtime 边界和 D 的 public/private context 连续性仍属于开放待办，本次只落实字段隔离和单一 Session artifact。
+- 环境处理：已安装并验证 `ale_bench==1.7.0`、CairoSVG 和 cairocffi，Docker Rust 镜像通过 DaoCloud mirror 预拉取，并标记为 upstream 要求的 `rust:1.79.0-buster`。Python 可选依赖、无密钥环境样例、Docker 和数据配置说明见 `docs/ale-bench-environment.md` 与 `.env.ale-bench.example`。Windows bridge 设置 UTF-8、补齐 upstream 所需的 POSIX 身份函数并规范容器内 POSIX 路径。
+- 最近一次 Pi 运行：从指定 env 文件加载 AZ endpoint 后，Pi 以 `az / gpt-6-luna / low` 成功读取公开题面、编写 C++ 源码并调用 public evaluation。provider 随后返回服务器过载错误，完整 public/private 测评尚未完成。bridge 错误响应已改为 JSON，避免把错误页 HTML 传给 Pi；该最近改动尚未在全链路运行中验证。
+- 剩余验证：等待 provider 可用后，重新运行 Lite `ahc008` 并确认 public_eval、终态 private_eval 与 `ale_bench.json` 完成。A 的 adapter/runtime 边界和 D 的 public/private context 连续性仍属于开放待办，本次落实字段隔离与单一 Session artifact。

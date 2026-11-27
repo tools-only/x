@@ -73,7 +73,7 @@ def serve(root: Path, problem_id: str, lite_version: bool, max_public: int, max_
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
             if self.headers.get("X-ALE-Token") != state.token:
-                self.send_error(403, "invalid token")
+                self._send_error(403, "invalid token")
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -84,11 +84,11 @@ def serve(root: Path, problem_id: str, lite_version: bool, max_public: int, max_
                 self.end_headers()
                 self.wfile.write(raw)
             except Exception as exc:  # boundary returns a structured error to Pi
-                self.send_error(400, str(exc))
+                self._send_error(400, str(exc))
 
         def do_GET(self) -> None:  # noqa: N802
             if self.headers.get("X-ALE-Token") != state.token:
-                self.send_error(403, "invalid token")
+                self._send_error(403, "invalid token")
                 return
             try:
                 raw = json.dumps(state.payload(self.path, {}), ensure_ascii=False).encode("utf-8")
@@ -97,7 +97,15 @@ def serve(root: Path, problem_id: str, lite_version: bool, max_public: int, max_
                 self.end_headers()
                 self.wfile.write(raw)
             except Exception as exc:
-                self.send_error(400, str(exc))
+                self._send_error(400, str(exc))
+
+        def _send_error(self, status: int, message: str) -> None:
+            raw = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
 
         def log_message(self, *_args: Any) -> None:
             return
