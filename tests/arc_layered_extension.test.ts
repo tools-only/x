@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LayeredComponents } from "../demo/arc_layered_components.ts";
 import test from "node:test";
-import { compactHistory, compressedTrajectory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, renderDecisionWindow, STATE_TYPE } from "../demo/arc_layered_extension.ts";
+import { compactHistory, compressedTrajectory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, renderDecisionWindow, STATE_TYPE, structuralSnapshot } from "../demo/arc_layered_extension.ts";
 
 const grid = Array.from({ length: 64 }, () => Array(64).fill(0));
 
@@ -953,4 +953,142 @@ test("unscoped 100%-failing verify rule emits fallback note and keeps Memory act
   python.memoryCheckStats["probe_mem/bad_scope"] = { support: 1, counter: 1, checked: 2, by_level: {}, witness: "L1 s5 UP", error: null, unscoped: false };
   const ctxFolded = handlers.context({ messages: [{ role: "custom", customType: STATE_TYPE, content: parentStart.message.content }] }, { model: { contextWindow: 102400 } }).messages;
   assert.match(textOf(ctxFolded[0].content), /\[CONTRADICTED\] probe_mem v1/);
+});
+
+test("harnessProfile gates stuck/stall until 16 stale steps and adds level_complete inspect cap to dossier", async () => {
+  const { handlers, game, python, rows, call } = setup({ harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16 });
+  await handlers.before_agent_start({});
+
+  let calls = 0;
+  let levelCompleteDossier = "";
+  const ctx: any = {
+    model: { id: "same-model", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_m: any, input: any) => {
+        calls += 1;
+        const text = input.messages[0].content[0].text;
+        if (text.includes("LEVEL_COMPLETE")) levelCompleteDossier = text;
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 50, output: 10, totalTokens: 60 },
+          content: [{ type: "toolCall", id: `c${calls}`, name: "finish_evolution", arguments: { decision: "no_change", note: "ok" } }],
+        }) };
+      },
+    },
+  };
+
+  // stale_steps = 12 must NOT trigger stall/stuck in harnessProfile (threshold >= 16)
+  game.stale_steps = 12;
+  game.actions_used = 12;
+  python.next = batch({ executed: 12, actions: Array(12).fill("UP") });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(calls, 0);
+
+  // stale_steps = 16 DOES trigger evolution
+  game.stale_steps = 16;
+  game.actions_used = 16;
+  python.next = batch({ executed: 4, actions: Array(4).fill("UP") });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(calls, 1);
+  assert.equal(rows("evolution_round").length, 1);
+
+  // level_complete includes the at-most-1 python_inspect instruction
+  game.level = 2;
+  game.stale_steps = 0;
+  python.next = batch({ executed: 1, actions: ["UP"], level_changed: true });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.match(levelCompleteDossier, /Boundary rule \(LEVEL_COMPLETE\): use at most 1 python_inspect call/);
+});
+
+test("Phase 2 contradiction audits deduplicate versions, cool down and cap at three", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cognitive-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  for (let i = 0; i < 4; i++) store.reflect("add", "memory", `rule${i}`, "test", "", undefined, { check: "True" });
+  const { handlers, game, python, rows } = setup({ root, harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({});
+  let calls = 0;
+  const ctx: any = { model: { id: "same", maxTokens: 4096 }, modelRegistry: { streamSimple: () => {
+    calls++;
+    return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 1, output: 1, totalTokens: 2 },
+      content: [{ type: "toolCall", id: "done", name: "finish_evolution", arguments: { decision: "no_change", note: "reviewed" } }] }) };
+  } } };
+  python.memoryCheckStats = Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`rule${i}/check`, { support: 1, counter: 1, checked: 2, by_level: {}, witness: "witness", error: null }]));
+  for (const step of [4, 5, 8, 9, 12, 16, 20]) { game.step = step; await handlers.before_agent_start({}, ctx); }
+  assert.equal(calls, 3);
+  assert.equal(rows("evolution_round").filter((row: any) => row.boundary === "verify_contradiction").length, 3);
+});
+
+test("Phase 2 structural evidence describes actions, dimensions, symbols and connected regions", () => {
+  assert.deepEqual(structuralSnapshot({ frame: [[0,0,0],[1,0,1]], valid_actions: ["B", "A"] }), {
+    actions: ["A", "B"], rows: 2, columns: 3, symbols: [0,1], nonModalSymbolRegions: 2,
+  });
+});
+test("Phase 2 cross-level health failure isolates game tool and archives local advice", async () => {
+  const root = mkdtempSync(join(tmpdir(), "variant-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "local", "local advice");
+  store.reflect("add", "tool", "broken", "def broken(): return None", "broken()", undefined, undefined, { scope: "game" });
+  const { handlers, python, game, call, rows } = setup({ root, harnessProfile: true, evolution: false, noImage: true });
+  await handlers.before_agent_start({});
+  game.level = 2; game.levels_completed = 1;
+  python.next = batch({ executed: 1, actions: ["UP"], level_changed: true, steps: [{ step: 1, level: 1, action: "UP", level_up: true, claims_failed: [], claims_held: [] }] });
+  const run = python.run.bind(python);
+  python.run = async () => ({ ...await run(), steps: python.next.steps });
+  await call();
+  python.run = async () => ({ text: "", error: "empty tool result", acted: null, metrics: {}, images: [] });
+  await handlers.before_agent_start({});
+  const latest = new LayeredComponents(join(root, "harness", "components"));
+  assert.equal(latest.current("memory", "local")?.status, "dormant");
+  assert.equal(latest.current("tool", "broken")?.status, "variant_broken");
+  assert.equal(rows("tool_health_check")[0].ok, false);
+  assert.equal(rows("cross_level_delta").length, 1);
+});
+
+test("Phase 2 two surprising batches trigger audit, then cognitive cooldown blocks repetition", async () => {
+ const { handlers, python, game, call, rows } = setup({ harnessProfile: true, evolution: true, noImage: true });
+ await handlers.before_agent_start({});
+ const ctx: any = { model: { id: "same", maxTokens: 4096 }, modelRegistry: { streamSimple: () => ({ result: async () => ({
+   role: "assistant", stopReason: "toolUse", usage: { input: 1, output: 1, totalTokens: 2 },
+   content: [{ type: "toolCall", id: "finish", name: "finish_evolution", arguments: { decision: "no_change", note: "review" } }],
+ }) }) } };
+ for (const step of [2, 5, 6]) {
+   game.step = step; game.actions_used = step;
+   python.next = batch({ executed: 1, actions: ["UP"], surprise: true });
+   handlers.turn_start(); await call(); await handlers.before_agent_start({}, ctx);
+ }
+ assert.equal(rows("evolution_round").filter((row: any) => row.boundary === "repeated_surprise").length, 1);
+ // After cooldown (>=6 steps), a non-surprise followed by ONE surprise must NOT immediately re-trigger repeated_surprise
+ game.step = 13; game.actions_used = 13;
+ python.next = batch({ executed: 1, actions: ["UP"], surprise: false });
+ handlers.turn_start(); await call(); await handlers.before_agent_start({}, ctx);
+ game.step = 14; game.actions_used = 14;
+ python.next = batch({ executed: 1, actions: ["UP"], surprise: true });
+ handlers.turn_start(); await call(); await handlers.before_agent_start({}, ctx);
+ assert.equal(rows("evolution_round").filter((row: any) => row.boundary === "repeated_surprise").length, 1);
+});
+
+test("Phase 2 active panel hides dormant/variant_broken, orders prompt > level > game memory, and caps active memories at 6", () => {
+  const root = mkdtempSync(join(tmpdir(), "phase2-panel-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "game_rule", "game rule", "", undefined, undefined, { scope: "game", status: "provisional" });
+  for (let i = 1; i <= 6; i += 1) {
+    store.reflect("add", "memory", `lvl_${i}`, `level mem ${i}`, "", undefined, undefined, { scope: "level" });
+  }
+  store.reflect("add", "memory", "sleeping", "should stay hidden", "", undefined, undefined, { scope: "level", status: "dormant" });
+  store.reflect("define", "tool", "broken_tool", "def broken_tool():\n  return 1", "broken_tool()", undefined, undefined, { scope: "game", status: "variant_broken" });
+  store.reflect("define", "prompt", "pacing", "probe 1 step");
+
+  const { handlers } = setup({ root, harnessProfile: true, evolution: true, noImage: true });
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] });
+  const { messages } = handlers.context({ messages: [user("state")] }, { model: { contextWindow: 102400 } });
+  const panel = textOf(messages[0].content).split("## ACTIVE HARNESS").at(-1)!;
+  assert.doesNotMatch(panel, /DORMANT|should stay hidden|broken_tool|variant_broken/);
+  assert.match(panel, /PROMPT pacing v1: probe 1 step/);
+  assert.ok(panel.indexOf("PROMPT pacing") < panel.indexOf("MEMORY lvl_1"));
+  assert.doesNotMatch(panel, /MEMORY game_rule/); // 6 level memories fill the <=6 cap ahead of game_rule
 });

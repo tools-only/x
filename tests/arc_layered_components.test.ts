@@ -96,3 +96,26 @@ test("normalizeVerifyExpr formats {when, assert} and wraps unscoped action-guard
   const scoped = "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action == 'UP' else None";
   assert.equal(normalizeVerifyExpr(scoped), scoped);
 });
+
+ test("Phase 2 isolates level scope, proves cross-level priors, merges and preserves history", () => {
+  const store = new LayeredComponents(mkdtempSync(join(tmpdir(), "phase2-")));
+  store.reflect("add", "memory", "local", "local");
+  store.reflect("add", "memory", "rule", "rule", "", undefined, { rule: "True" });
+  store.reflect("define", "tool", "scanner", "def scanner():\n  return 1", "scanner()");
+  assert.equal(store.current("tool", "scanner")?.scope, "game");
+  store.reflect("promote", "memory", "rule", undefined, "", undefined, undefined, { last_promoted_level: 1 });
+  store.onLevelTransition(1, 2);
+  assert.equal(store.current("memory", "local")?.status, "dormant");
+  assert.equal(store.current("memory", "rule")?.status, "provisional");
+  assert.equal(store.current("tool", "scanner")?.status, "active");
+  store.updateProof("rule", 2, { "1": { support: 4, counter: 0 }, "2": { support: 2, counter: 0 } });
+  assert.equal(store.current("memory", "rule")?.status, "provisional");
+  store.updateProof("rule", 2, { "1": { support: 4, counter: 0 }, "2": { support: 3, counter: 0 } });
+  assert.equal(store.current("memory", "rule")?.status, "confirmed");
+  store.updateProof("rule", 2, { "2": { support: 3, counter: 1 } });
+  assert.equal(store.current("memory", "rule")?.status, "contradicted");
+  store.reflect("merge", "memory", "rule", "refined", "", undefined, undefined, { sources: ["local"] });
+  assert.equal(store.current("memory", "local")?.retired, true);
+  assert.equal(store.current("memory", "rule")?.status, "active");
+  assert.equal(store.read("memory", "rule", 1).body, "rule");
+ });

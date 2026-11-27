@@ -144,3 +144,5 @@ Boundary audits may refresh this read-only panel after a level change, failure o
 - Treat Memory as evidence with a scope. A [CONTRADICTED] marker is a reason to recheck the hypothesis.
 - Read an indexed skill with read_component only when its summary fits the task.
 - Pure observations are capped at four calls per turn. Keep the next prediction short and call python.
+
+Treat [PROVISIONAL] rules as priors to test with tight expectations; [CONFIRMED] is evidence only for observed levels. Use conditionally listed SUBAGENTS via consult when their when condition matches.

@@ -324,7 +324,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         consecutive_constructive, consecutive_length, layered_cursor = 0, 0, 0
         max_length_recoveries = int(pi_env.get("ARC_LAYERED_MAX_LENGTH_RECOVERIES", "2"))
         # Pi acknowledges prompt after before_agent_start, which may run the full boundary Audit.
-        audit_seconds = (float(pi_env.get("ARC_LAYERED_EVOLUTION_TIMEOUT_MS", "120000")) / 1000
+        audit_seconds = (float(pi_env.get("ARC_LAYERED_EVOLUTION_TIMEOUT_MS", "240000")) / 1000
                          if profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_EVOLUTION") != "0" else 0)
         while True:
             if time.monotonic() >= deadline:
@@ -525,6 +525,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                       "child_tokens_lower_bound": child_known},
         "length_truncations": sum(1 for r in rows if r.get("kind") == "length_truncation"),
         "cache_read_rate": cache_read / cache_input if cache_input else None,
+        "phase2": {"layer_changes": {layer: sum(1 for row in rows if row.get("kind") == "component_change" and row.get("layer") == layer) for layer in ("L1", "L2", "L3", "L4", "L5")}, "proof_transitions": [r for r in rows if r.get("kind") == "component_proof"], "cognitive_audits": [r for r in rows if r.get("kind") == "evolution_round" and r.get("boundary") in ("verify_contradiction", "repeated_surprise")], "tool_health_checks": [r for r in rows if r.get("kind") == "tool_health_check"]},
         "branch_handoffs": {
             "autonomous_fetch_followed_by_action": len(branch_handoffs),
             "branch_consistent_action": sum(row["aligned"] for row in branch_handoffs),

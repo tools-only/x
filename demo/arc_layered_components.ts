@@ -4,8 +4,9 @@ import { join } from "node:path";
 
 export type Kind = "memory" | "skill" | "prompt" | "subagent" | "tool";
 export type VerifyRuleInput = string | { when: string; assert: string };
-export type Component = { id?: string; kind: Kind; name: string; version: number; body: string; summary: string; hash: string; verify?: Record<string, string>; retired?: boolean; when?: string; out_branch?: string };
-export type ReflectOp = "define" | "redefine" | "restore" | "add" | "revise" | "retire";
+export type LifecycleStatus = "active" | "provisional" | "confirmed" | "contradicted" | "review_due" | "variant_broken" | "dormant";
+export type Component = { id?: string; kind: Kind; name: string; version: number; body: string; summary: string; hash: string; verify?: Record<string, string>; retired?: boolean; layer?: "L1" | "L2" | "L3" | "L4" | "L5"; scope?: "level" | "game"; status?: LifecycleStatus; last_promoted_level?: number; when?: string; out_branch?: string };
+export type ReflectOp = "define" | "redefine" | "restore" | "add" | "revise" | "retire" | "merge" | "promote" | "demote";
 export type StatsBucket = { invocations: number; ok: number; action_producing: number; reads: number; failures: number };
 export type ComponentStats = {
   defined_level: number; updated_level: number; defined_step: number; updated_step: number;
@@ -196,15 +197,41 @@ export class LayeredComponents {
       .map(([key, version]) => { const [k, name] = key.split("/"); return this.read(k as Kind, name, version); })
       .filter(component => !component.retired);
   }
+  onLevelTransition(fromLevel: number, toLevel: number) {
+    for (const item of this.list()) {
+      if ((item.scope ?? "level") !== "level" || item.status === "dormant") continue;
+      this.reflect("revise", item.kind, item.name, item.body, item.summary, undefined, item.verify, { status: "dormant" });
+    }
+  }
+  updateProof(name: string, level: number, buckets: Record<string, { support: number; counter: number }>) {
+    const item = this.current("memory", name);
+    if (!item || item.retired || item.status === "dormant") return;
+    const bucket = buckets[String(level)];
+    const failed = (bucket?.counter ?? 0) > 0;
+    const confirmed = item.status === "provisional" && level !== item.last_promoted_level &&
+      (bucket?.support ?? 0) >= 3 && !failed && Object.entries(buckets).some(([key, value]) => Number(key) !== level && value.support > 0);
+    if (failed && item.status !== "contradicted" || confirmed)
+      return this.reflect("revise", "memory", name, item.body, item.summary, undefined, item.verify,
+        { status: failed ? "contradicted" : "confirmed" });
+  }
   reflect(op: ReflectOp, kind: Kind, name: string, body?: string, summary = "", version?: number,
-          verify?: Record<string, VerifyRuleInput>): Component {
+          verify?: Record<string, VerifyRuleInput>, metadata?: { layer?: Component["layer"]; scope?: Component["scope"]; status?: LifecycleStatus; last_promoted_level?: number; sources?: string[] }): Component {
     if (!NAME.test(name)) throw Error("component name must be lowercase letters, digits or underscore");
+    if (metadata?.scope && !["level", "game"].includes(metadata.scope)) throw Error("invalid component scope");
+    if (metadata?.layer && !/^L[1-5]$/.test(metadata.layer)) throw Error("invalid component layer");
     const current = this.current(kind, name);
     const adding = op === "define" || op === "add";
     if (adding && current) throw Error("component already exists; use revise");
     if (!adding && !current) throw Error("component does not exist; use add");
+    const sources = op === "merge" ? (metadata?.sources ?? []).map(source => {
+      if (source === name) throw Error("merge source must differ from target");
+      const item = this.current(kind, source);
+      if (!item || item.retired) throw Error("merge source is not active");
+      return item;
+    }) : [];
+    if (op === "merge" && !sources.length) throw Error("merge requires sources and replacement body");
     let retired = op === "retire";
-    if (retired && current) {
+    if ((retired || op === "promote" || op === "demote") && current) {
       body = current.body;
       summary = current.summary;
       verify = current.verify;
@@ -216,16 +243,17 @@ export class LayeredComponents {
       summary = prior.summary;
       verify = prior.verify;
       retired = Boolean(prior.retired);
+      metadata = { layer: prior.layer, scope: prior.scope, status: prior.status, last_promoted_level: prior.last_promoted_level };
     }
     if (!body?.trim() || body.length > LIMIT[kind]) throw Error(`${kind} body must have 1–${LIMIT[kind]} characters`);
     if (kind === "skill" && !summary.trim()) throw Error("skill needs a one-line summary");
     if (summary.includes("\n")) throw Error("summary must be one line");
     const clean = cleanVerify(kind, verify);
     const next = (current?.version ?? 0) + 1;
-    const component: Component = { id: this.key(kind, name), kind, name, version: next, body,
+    const component: Component = { layer: current?.layer, scope: current?.scope ?? (kind === "tool" || kind === "skill" ? "game" : "level"), status: op === "revise" || op === "merge" ? "active" : current?.status ?? "active", last_promoted_level: current?.last_promoted_level, ...metadata, ...(op === "promote" ? { scope: "game" as const, status: "provisional" as const } : op === "demote" ? { scope: "level" as const, status: "dormant" as const } : {}), id: this.key(kind, name), kind, name, version: next, body,
       ...(retired ? { retired: true } : {}),
       summary: summary.slice(0, 120), ...(clean ? { verify: clean } : {}), hash: digest(body, clean) };
-    if (kind === "tool" || kind === "memory") {
+    {
       component.when = /^\s*#?\s*when:[ \t]*(.+)$/mi.exec(body)?.[1].trim().slice(0, 120);
       component.out_branch = /^\s*#?\s*out\/branch:[ \t]*(.+)$/mi.exec(body)?.[1].trim().slice(0, 120);
     }
@@ -233,9 +261,10 @@ export class LayeredComponents {
     mkdirSync(join(this.root, kind, name), { recursive: true });
     writeFileSync(path, JSON.stringify(component), "utf8");
     this.heads.set(this.key(kind, name), next);
-    const head = join(this.root, "HEAD.json"), temp = `${head}.tmp`;
-    writeFileSync(temp, JSON.stringify(Object.fromEntries(this.heads)), "utf8");
-    renameSync(temp, head);
+    const head = join(this.root, "HEAD.json"), temp = `${head}.tmp`, headsJson = JSON.stringify(Object.fromEntries(this.heads));
+    writeFileSync(temp, headsJson, "utf8");
+    try { renameSync(temp, head); } catch { writeFileSync(head, headsJson, "utf8"); }
+    for (const source of sources) this.reflect("retire", kind, source.name);
     return component;
   }
 }

@@ -27,3 +27,12 @@
 `r2` 最终在首关第 8 步结束。Pi 0.87 在 `before_agent_start` 之后才确认 `prompt`，首次 stalled Audit 在确认之前运行，前两轮分别耗时 51 和 40 秒。Audit 与 RPC 等待原先同为 120 秒，runner 在获得审计回执之前因 RPC 超时退出。修复后只给 layered `prompt` 增加配置中的 Audit 时间，保留现有全程 deadline 约束。Audit 到时主动结束 provider 等待并记录 `timeout`，即使 provider 流迟迟不结算。`r3` 已真实越过该故障点。
 
 `r3` 越过了之前的第 8 步，在首关完成 21 步后，第 22 次环境 `step` 超过 90 秒且结果未知，因此中断并从新 scorecard 重启。根因是桥接器的就绪读取线程收到 ready 行后停止读取 stdout，而 ARC SDK 把日志写到 stdout；管道写满使 SDK 卡在日志 `flush()`。现已让该线程在就绪后持续排空 stdout。用模拟子进程在 ready 行后输出 1 MiB 的定向回归烟测通过。`runs/phase1-az-qwen27b-su15-20261127-r3/interruption.json` 保留中断原因。`r4` 在新目录进行中；当前仍不足以评估 Phase 1 对自主采用或 ARC 成功率的效果。
+
+
+## Phase 2 implementation (2026-11-27)
+
+Implemented component layer/scope/status metadata, level dormancy, versioned merge/promote/demote, provisional cross-level proof and contradiction folding. Existing per-level verify buckets drive proof; overlapping rules do not multiply supporting transitions. Historical versions and per-level witnesses remain available to Audit. Tool comments can declare scope/layer; retained game tools receive a read-only initial-frame check. Required-argument tools are imported but not invoked; exceptions/empty callable results quarantine the tool. Structural evidence reports dimensions/actions/symbols and same-symbol 4-connected regions excluding the modal symbol (a mechanical count, not semantic object recognition).
+
+Cognitive reviews use contradiction evidence identity, four/six-step cooldowns, three cognitive reviews, six stagnation reviews and eight total corrections per level; level-complete reviews are separate. Consecutive surprising batches and three surprises in eight steps trigger review. The Dossier includes L1-L5 diagnosis guidance, observation code patterns, use/alignment counts, per-level witnesses and structural snapshots. The bounded live panel excludes dormant/broken bodies and conditionally indexes consult agents. Runner output includes proof changes, layer changes and cognitive audit records. A 240s audit default is matched by RPC acknowledgement allowance.
+
+Validation: Phase 1/2 targeted Node checks (12) passed, including cross-level proof/merge, quarantined tools, structural evidence, cognitive deduplication/cooldown/quota and repeated surprises. Python evolution/kernel suites: 27 passed. Existing broad Node failures remain; full integration and real-provider Phase 2 adoption/net benefit are unverified. The ongoing r4 is a Phase 1 run, not a Phase 2 experiment. No Phase 2 paid run was launched. Changes remain local for review.
