@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { compactHistory, compressedTrajectory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, STATE_TYPE } from "../demo/arc_layered_extension.ts";
+import { compactHistory, compressedTrajectory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, renderDecisionWindow, STATE_TYPE } from "../demo/arc_layered_extension.ts";
 
 const grid = Array.from({ length: 64 }, () => Array(64).fill(0));
 
@@ -826,4 +826,74 @@ test("clean-context boundary evolution runs with evolution-only tools and keeps 
   assert.equal(evoRows[0].decision, "evolved");
   const usageText = readFileSync(join(root, "harness", "usage.jsonl"), "utf8");
   assert.match(usageText, /"kind":"evolution"/);
+  const compChanges = rows("component_change");
+  assert.equal(compChanges.length, 1);
+  assert.equal(compChanges[0].component_kind, "memory");
+  const evoTrace = readFileSync(join(root, "harness", "evolution-trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
+  assert.equal(evoTrace.length, 2);
+  assert.equal(evoTrace[1].exit_reason, "finish_evolution");
+  assert.ok(evoTrace[0].dossier_chars > 0);
+});
+
+test("renderDecisionWindow drops oldest blocks and preserves latest decision", () => {
+  const blocks = [1, 2, 3].map(d => ({
+    decision: d, level: 1, stepStart: d, stepEnd: d, reasoningTail: `think ${d} ` + "x".repeat(80),
+    pythonCalls: [{ code: `print(${d})`, result: `out ${d}`, acted: true }],
+    actions: [`s${d} UP diff=1`], consults: [],
+  }));
+  const rendered = renderDecisionWindow(blocks, 260);
+  assert.match(rendered, /\[2 earlier decision\(s\).*omitted\]/);
+  assert.match(rendered, /\[d3 L1 s3\.\.3\]/);
+  assert.doesNotMatch(rendered, /\[d1 L1/);
+});
+
+test("boundary evolution blocks same-turn finish_evolution after error and marks max_rounds_exhausted as incomplete", async () => {
+  const { handlers, game, python, rows, call, root } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  game.state = "GAME_OVER";
+  game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 2,
+  }] });
+  await call();
+
+  let sawDossier = "";
+  let roundCalls = 0;
+  const origMax = process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS;
+  process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS = "2";
+  try {
+    const ctx: any = {
+      model: { id: "same-model", maxTokens: 4096, contextWindow: 102400 },
+      modelRegistry: {
+        streamSimple: (_m: any, input: any) => {
+          roundCalls += 1;
+          if (roundCalls === 1) sawDossier = input.messages[0].content[0].text;
+          return { result: async () => ({
+            role: "assistant", stopReason: "toolUse", usage: { input: 200, output: 40, totalTokens: 240 },
+            content: roundCalls === 1
+              ? [
+                  { type: "toolCall", id: "b1", name: "read_component", arguments: { kind: "memory", name: "missing" } },
+                  { type: "toolCall", id: "b2", name: "finish_evolution", arguments: { decision: "no_change", note: "premature" } },
+                ]
+              : [{ type: "toolCall", id: "b3", name: "read_component", arguments: { kind: "memory", name: "still_missing" } }],
+          }) };
+        },
+      },
+    };
+    const parentMsg = textOf((await handlers.before_agent_start({}, ctx)).message.content);
+    assert.equal(roundCalls, 2);
+    assert.match(sawDossier, /DECISIONS SINCE LAST REVIEW:/);
+    assert.doesNotMatch(parentMsg, /EVOLUTION \(game_over\): no_change/);
+    const evoRows = rows("evolution_round");
+    assert.equal(evoRows[0].decision, "incomplete");
+    assert.equal(evoRows[0].exit_reason, "max_rounds_exhausted");
+    const traceLines = readFileSync(join(root, "harness", "evolution-trace.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
+    assert.equal(traceLines[0].results[1].ok, false);
+    assert.match(traceLines[0].results[1].preview, /Blocked finish_evolution/);
+  } finally {
+    if (origMax === undefined) delete process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS;
+    else process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS = origMax;
+  }
 });

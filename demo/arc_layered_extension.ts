@@ -42,17 +42,63 @@ type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMini
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 type AttemptMetrics = { py_calls: number; py_errors: number; truncated: number; observe_limits: number; errors: string[] };
 const EDITABLE_SPACE = "Editable capability space: memory (with optional verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult).";
+type DecisionTraceBlock = {
+  decision: number;
+  level: number;
+  stepStart: number;
+  stepEnd: number;
+  reasoningTail: string;
+  pythonCalls: Array<{ code: string; result: string; error?: string; acted: boolean }>;
+  actions: string[];
+  consults: Array<{ name: string; question: string; answer: string }>;
+};
+
+export function renderDecisionWindow(blocks: DecisionTraceBlock[], maxChars: number): string {
+  if (!blocks.length || maxChars <= 0) return "";
+  const formatted = blocks.map(b => {
+    const parts: string[] = [`[d${b.decision} L${b.level} s${b.stepStart}..${b.stepEnd}]`];
+    if (b.reasoningTail) parts.push(`Reasoning: ${b.reasoningTail}`);
+    for (const p of b.pythonCalls) {
+      parts.push(`Python (${p.acted ? "acted" : "observe"}):\n${p.code}`);
+      if (p.error) parts.push(`PyError: ${p.error}`);
+      else if (p.result) parts.push(`PyOut: ${p.result}`);
+    }
+    if (b.actions.length) parts.push(`Actions: ${b.actions.join(" | ")}`);
+    for (const c of b.consults) {
+      parts.push(`Consult(${c.name}) Q: ${c.question}\nA: ${c.answer}`);
+    }
+    return parts.join("\n");
+  });
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = formatted.length - 1; i >= 0; i -= 1) {
+    const chunk = formatted[i];
+    const add = (kept.length ? 2 : 0) + chunk.length;
+    if (kept.length > 0 && used + add > maxChars) {
+      const omitted = i + 1;
+      const omittedChars = formatted.slice(0, omitted).reduce((s, x) => s + x.length, 0);
+      return `[${omitted} earlier decision(s) (~${omittedChars} chars) omitted]\n\n${kept.reverse().join("\n\n")}`.slice(0, maxChars);
+    }
+    kept.push(kept.length === 0 && chunk.length > maxChars ? chunk.slice(-maxChars) : chunk);
+    used += add;
+  }
+  return kept.reverse().join("\n\n");
+}
+
 const EVOLUTION_SYSTEM_PROMPT = [
   "You are running an isolated, clean-context self-evolution review between task turns. You cannot take environment actions (submit_actions is disabled).",
-  "Inspect Layer 1 (task trajectory, failure/stall facts, board inventory) and Layer 2 (active capabilities, tool/verify/execution stats, and last evolution outcome).",
-  "Decide whether current capabilities already suffice or whether 1 minimal capability update would address a real gap in the editable space:",
+  "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active component bodies, internal legibility stats, prior reviews), and the current frame.",
+  "If the dossier already gives enough evidence to keep capabilities as-is or apply a memory/prompt/skill/subagent update, do NOT call python_inspect — decide directly.",
+  "Only call python_inspect when you need to verify specific frame/transition details or to author & test a @tool / verify rule. Batch all checks into one python_inspect call.",
+  "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
+  "Editable space (keep updates minimal: 0 or 1 targeted change; prefer updates that take effect immediately without an extra read, such as memory with verify, @tool, or short prompt; update stale memory if it failed to break a stall):",
   "- memory: reflect_component(op, kind='memory', name, body, verify?) where optional verify={'rule': '1-line Python expr over t returning True/False/None'}",
   "- tools: python_inspect(code) with @tool on a 0-arg or 1-arg function (or writing work/lib/<name>.py); test it immediately on current_frame/transitions",
-  "- skills: reflect_component(op, kind='skill', name, body, summary) for a reusable workflow",
+  "- skills: reflect_component(op, kind='skill', name, body, summary) for a reusable cross-level workflow",
   "- prompt: reflect_component(op, kind='prompt', name, body) (<= 600 chars)",
   "- subagent: reflect_component(op, kind='subagent', name, body) for a custom consult role",
-  "Keep updates minimal (0 or 1 targeted change; verify any new tool or verify rule before finishing). Ground claims strictly in observed facts.",
-  "End by calling finish_evolution(decision='evolved'|'no_change', note='one concise line').",
+  "Round budget: you have a bounded number of rounds (shown in tool results). You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution in the same turn once verified.",
+  "Ground claims strictly in observed facts. End by calling finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -405,6 +451,27 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const levelChangedColors = new Set<number>();
   let lastSkillIndex = "";
   const consultsByLevel = new Map<number, number>();
+  const decisionTrace: DecisionTraceBlock[] = [];
+  let currentTraceBlock: DecisionTraceBlock | null = null;
+  let lastEvoTraceIndex = 0;
+  let boundaryReviewsThisLevel: Array<{ step: number; boundary: string; decision: string; exit_reason: string; mutations: string[]; note: string }> = [];
+  let lastConsultOnLevel: { name: string; step: number; question: string; answer: string } | null = null;
+  const ensureTraceBlock = (st?: LayeredState): DecisionTraceBlock => {
+    if (!currentTraceBlock) {
+      const s = st ?? safeState();
+      currentTraceBlock = {
+        decision: decision + 1, level: s.level, stepStart: s.step, stepEnd: s.step,
+        reasoningTail: "", pythonCalls: [], actions: [], consults: [],
+      };
+      decisionTrace.push(currentTraceBlock);
+      if (decisionTrace.length > 200) {
+        const drop = decisionTrace.length - 200;
+        decisionTrace.splice(0, drop);
+        lastEvoTraceIndex = Math.max(0, lastEvoTraceIndex - drop);
+      }
+    }
+    return currentTraceBlock;
+  };
   try {
     for (const line of readFileSync(join(store, "layered.jsonl"), "utf8").split("\n")) {
       if (!line) continue;
@@ -590,9 +657,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
-    opts?: { compact?: boolean; includeInventory?: boolean; metrics?: AttemptMetrics; evolution?: EvolutionRecord | null; emitLog?: boolean; limit?: number },
+    opts?: { compact?: boolean; richWindow?: boolean; includeInventory?: boolean; metrics?: AttemptMetrics; evolution?: EvolutionRecord | null; emitLog?: boolean; limit?: number },
   ): string {
     const compact = Boolean(opts?.compact);
+    const rich = Boolean(opts?.richWindow);
     const layer1: string[] = [];
     if (boundary === "game_over" && steps.length) {
       const dead = [...steps].reverse().find(f => f.death) ?? steps.at(-1)!;
@@ -604,8 +672,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         : "";
       layer1.push(`- Fatal transition: step ${dead.step}, action ${dead.action}${repeatNote}${diffNote}; trail: ${tail}`);
     }
-    if (steps.length) layer1.push(`- Trajectory:\n${compressedTrajectory(steps).slice(0, compact ? 320 : 650)}`);
-    if (state.causal_briefing) layer1.push(`- Causal summary:\n${state.causal_briefing.slice(0, compact ? 220 : 350)}`);
+    if (steps.length) layer1.push(`- Trajectory:\n${compressedTrajectory(steps).slice(0, rich ? 3000 : compact ? 320 : 650)}`);
+    if (state.causal_briefing) layer1.push(`- Causal summary:\n${state.causal_briefing.slice(0, rich ? 2000 : compact ? 220 : 350)}`);
     if (state.action_invariant) layer1.push(`- Invariant drift: ${state.action_invariant}`);
     if (boardInventoryEnabled && opts?.includeInventory) {
       const inv = boardInventory(state.frame, levelChangedColors);
@@ -613,13 +681,25 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (inv.unchanged.length) layer1.push(`- Unchanged symbols since attempt start: ${inv.unchanged.join(", ")}`);
     }
     const layer2 = layer2Snapshot(auditLevel, opts?.metrics ?? attemptMetrics, opts?.evolution !== undefined ? opts.evolution : lastEvolution);
+    const legibilityLines: string[] = [];
+    if (rich) {
+      const eff = effortProgressSummary();
+      if (eff) legibilityLines.push(`- ${eff}`);
+      if (boundaryReviewsThisLevel.length) {
+        legibilityLines.push(`- Prior reviews on L${auditLevel}: ${boundaryReviewsThisLevel.map(r => `s${r.step} ${r.boundary}->${r.decision}(${r.exit_reason}${r.mutations.length ? `:${r.mutations.join(",")}` : ""}${r.note ? `:"${r.note}"` : ""})`).join("; ")}`);
+      }
+      if (lastConsultOnLevel) {
+        legibilityLines.push(`- Last consult (${lastConsultOnLevel.name} at s${lastConsultOnLevel.step}): ${lastConsultOnLevel.answer.slice(0, 500)}`);
+      }
+    }
     lastAuditBoundary = boundary;
     if (opts?.emitLog !== false) log("dual_audit_shown", { boundary, level: auditLevel, step: state.step, steps: steps.length });
-    const limit = opts?.limit ?? (boundary === "level_complete" ? 1600 : boundary === "game_over" ? 1350 : 950);
+    const limit = opts?.limit ?? (rich ? 6000 : boundary === "level_complete" ? 1600 : boundary === "game_over" ? 1350 : 950);
     return [
       "Layer 1 (Task facts):",
       ...(layer1.length ? layer1 : ["- no transitions recorded yet"]),
       layer2,
+      ...legibilityLines,
     ].filter(Boolean).join("\n").slice(0, limit);
   }
 
@@ -929,6 +1009,14 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       log("python", { ms: Date.now() - from, acted: !!batch, actions: batch?.executed ?? 0, stop_reason: batch?.stop_reason ?? null,
         truncated: outcome.truncated, error: outcome.error ?? null, kernel_restarted: !!outcome.kernelRestarted,
         level: state.level, step: state.step, images: outcome.images.length, metrics: outcome.metrics });
+      const traceBlock = ensureTraceBlock(state);
+      traceBlock.stepEnd = Math.max(traceBlock.stepEnd, state.step);
+      traceBlock.pythonCalls.push({
+        code: params.code.slice(0, 1000),
+        result: outcome.text.slice(0, 600),
+        ...(outcome.error ? { error: outcome.error.trim().slice(0, 200) } : {}),
+        acted: !!batch,
+      });
       let terminate = false;
       const freeToolBuild = !batch && pub.published.length > 0 && !toolBuildFreeUsedThisTurn;
       if (freeToolBuild) toolBuildFreeUsedThisTurn = true;
@@ -950,6 +1038,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const creditedActionLibs = new Set<string>();
       for (const fact of outcome.steps ?? []) {
         write("decisions.jsonl", { t: new Date().toISOString(), ...fact, notes: outcome.notes ?? [], error: outcome.error ?? null });
+        traceBlock.actions.push(`s${fact.step} ${fact.action} try${fact.tries}${fact.changed_cells !== undefined ? ` diff=${fact.changed_cells}` : ""}${fact.new ? " new" : ""}${fact.same ? " same" : ""}${fact.death ? " DEATH" : ""}${fact.level_up ? " LEVEL_UP" : ""}`);
         levelSteps.push(fact);
         if (fact.action === "RESET") {
           attemptSteps.length = 0;
@@ -1013,6 +1102,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           stuckAuditsThisLevel = 0;
           lastDeathAuditStep = -1;
           lastAuditBoundary = "";
+          boundaryReviewsThisLevel = [];
+          lastConsultOnLevel = null;
         } else if (batch.game_over) {
           lastFailedAttemptSteps = attemptSteps.length ? [...attemptSteps] : [...levelSteps];
           lastReviewPath = writeLevelReview(options.root, levelSteps[0].level, state, levelSteps, outcome.notes ?? [], reviewExtra);
@@ -1121,6 +1212,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           if (!ok) throw Error(reply.errorMessage ?? (answer ? String(reply.stopReason) : `empty output at stopReason=${reply.stopReason}`));
           lastEvolution = { kind: "consult", name: params.name, level: state.level, step: state.step,
             actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
+          lastConsultOnLevel = { name: params.name, step: state.step, question: params.question.slice(0, 240), answer: answer.slice(0, 600) };
+          ensureTraceBlock(state).consults.push({ name: params.name, question: params.question.slice(0, 240), answer: answer.slice(0, 500) });
           const finalAnswer = reply.stopReason === "length" ? `${answer}\n[truncated at ${consultMaxTokens ?? "model"} tokens]` : answer;
           return { details: {}, content: [{ type: "text", text: finalAnswer.slice(0, 6000) }] };
         } catch (error) {
@@ -1152,7 +1245,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const item = components.reflect(params.op, params.kind as Kind, params.name, params.body, params.summary, params.version, params.verify);
       const st = safeState();
       components.recordChange(item.kind, item.name, st.level, st.step);
-      log("component_change", { op: params.op, kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
+      log("component_change", { op: params.op, component_kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
         verify_rules: item.verify ? Object.keys(item.verify) : [], after_audit: lastAuditBoundary || null, source });
       lastEvolution = { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
         actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
@@ -1202,11 +1295,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   ): Promise<string | undefined> {
     if (!components || !ctx?.model || !ctx?.modelRegistry?.streamSimple) return undefined;
     const timeoutMs = Number(process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS ?? 120000);
-    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 3);
+    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 6);
+    const contextWindow = Number((ctx.model as any)?.contextWindow ?? 102400);
+    const maxDossierChars = Math.min(
+      Number(process.env.ARC_LAYERED_EVOLUTION_CONTEXT_CHARS ?? 64000),
+      Math.max(6000, Math.floor(contextWindow * 0.35 * 3)),
+    );
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     const started = Date.now();
     const mutations: string[] = [];
-    let evoDecision: "evolved" | "no_change" = "no_change";
+    let evoDecision: "evolved" | "no_change" | "incomplete" = "incomplete";
+    let exitReason: "finish_evolution" | "max_rounds_exhausted" | "text_stop" | "error" = "max_rounds_exhausted";
     let note = "";
     let roundsRun = 0;
     const parentThinking = typeof (pi as any).getThinkingLevel === "function" ? (pi as any).getThinkingLevel() : undefined;
@@ -1223,22 +1322,34 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     ];
     try {
       const auditText = dualAudit(boundary, steps, state, auditLevel, {
-        compact: false, includeInventory: true, metrics: opts?.metrics, evolution: opts?.evolution, emitLog: true, limit: 2400,
+        compact: false, richWindow: true, includeInventory: true, metrics: opts?.metrics, evolution: opts?.evolution, emitLog: true, limit: 6000,
       });
-      const activeText = components.list().filter(i => i.kind === "memory" || i.kind === "prompt")
-        .map(item => formatComponentLine(item)).join("\n");
-      const skillsText = components.list("skill").map(item => `${item.name} v${item.version} — ${item.summary}`).join("; ");
-      const valid = (state.valid_actions ?? []).join(" ");
-      const budget = [
-        state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "",
-        state.budget_left !== undefined ? `run budget ${state.budget_left}` : "",
-      ].filter(Boolean).join(", ");
+      const activeItems = components.list().map(item => {
+        if (item.kind === "tool") {
+          let src = "";
+          try { src = readFileSync(join(options.root, "work", "lib", `${item.name}.py`), "utf8").trim().slice(0, 1200); } catch {}
+          return `TOOL ${item.name} v${item.version}:\n${src || item.body}`;
+        }
+        if (item.kind === "skill") {
+          const st = components.stats("skill", item.name);
+          return `SKILL ${item.name} v${item.version} (reads=${st?.total.reads ?? 0}, summary=${item.summary}):\n${item.body}`;
+        }
+        if (item.kind === "subagent") return `SUBAGENT ${item.name} v${item.version}:\n${item.body}`;
+        return formatComponentLine(item);
+      });
+      const activeBudget = Math.min(14000, Math.floor(maxDossierChars * 0.25));
+      const activeText = activeItems.length ? activeItems.join("\n\n").slice(0, activeBudget) : "none";
+      const headerPart = `Boundary: ${boundary.toUpperCase()} | level ${state.level}/${state.win_levels}, step ${state.step}, state=${state.state}` +
+        `${[state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "", state.budget_left !== undefined ? `run budget ${state.budget_left}` : ""].filter(Boolean).join(", ") ? `, ${[state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "", state.budget_left !== undefined ? `run budget ${state.budget_left}` : ""].filter(Boolean).join(", ")}` : ""} | valid: ${(state.valid_actions ?? []).join(" ")}`;
+      const windowBudget = Math.max(2000, maxDossierChars - headerPart.length - auditText.length - activeText.length - 200);
+      const traceSlice = decisionTrace.slice(lastEvoTraceIndex);
+      const decisionWindowText = renderDecisionWindow(traceSlice, windowBudget);
       const dossier = [
-        `Boundary: ${boundary.toUpperCase()} | level ${state.level}/${state.win_levels}, step ${state.step}, state=${state.state}${budget ? `, ${budget}` : ""} | valid: ${valid}`,
+        headerPart,
         auditText,
-        activeText ? `Current Memory/Prompt:\n${activeText.slice(0, 1800)}` : "Current Memory/Prompt: none",
-        skillsText ? `Current Skills: ${skillsText.slice(0, 600)}` : "",
-      ].filter(Boolean).join("\n\n").slice(0, 6000);
+        decisionWindowText ? `DECISIONS SINCE LAST REVIEW:\n${decisionWindowText}` : "",
+        `Current Active Components (full bodies):\n${activeText}`,
+      ].filter(Boolean).join("\n\n").slice(0, maxDossierChars);
       const useImage = !options.noImage && Array.isArray(state.frame) && state.frame.length > 0 && Array.isArray(state.frame[0]) && state.frame[0].length > 0;
       const userContent: Content = [{ type: "text", text: dossier }, ...(useImage ? [{
         type: "image" as const, mimeType: "image/png",
@@ -1262,21 +1373,28 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         } as any, streamOpts as any).result();
         write("usage.jsonl", { decision, kind: "evolution", boundary, round, model: ctx.model.id,
           ...usageRecord(reply), ms: Date.now() - roundStart, stop_reason: reply.stopReason });
-        if (reply.stopReason === "error" || reply.stopReason === "aborted")
+        if (reply.stopReason === "error" || reply.stopReason === "aborted") {
+          exitReason = "error";
           throw Error(reply.errorMessage ?? `evolution ${reply.stopReason}`);
+        }
         messages.push(reply);
         const calls = (reply.content ?? []).filter((part: any) => part.type === "toolCall");
         const replyText = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").trim();
         if (!calls.length) {
           if (reply.stopReason === "length" && !replyText && lengthRetries < 1) {
             lengthRetries += 1;
-            messages.push({ role: "user", content: [{ type: "text", text: "Output concise tool call or finish_evolution now." }], timestamp: Date.now() });
+            messages.push({ role: "user", content: [{ type: "text", text: `Output concise tool call or finish_evolution now. [evolution round ${round}/${maxRounds}]` }], timestamp: Date.now() });
             continue;
           }
           if (replyText) note = replyText.split("\n")[0].trim().slice(0, 160);
+          exitReason = "text_stop";
+          if (mutations.length > 0) evoDecision = "evolved";
           break;
         }
-        for (const call of calls) {
+        const traceResults: Array<{ name: string; ok: boolean; preview: string }> = [];
+        let turnHadError = false;
+        for (let ci = 0; ci < calls.length; ci += 1) {
+          const call = calls[ci];
           const args = (call.arguments ?? {}) as Record<string, any>;
           let text = "", isError = false;
           if (call.name === "reflect_component") {
@@ -1298,27 +1416,55 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             for (const f of pub.failed) text += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
             isError = Boolean(outcome.error) || pub.failed.length > 0;
           } else if (call.name === "finish_evolution") {
-            evoDecision = args.decision === "evolved" || mutations.length > 0 ? "evolved" : "no_change";
-            note = String(args.note ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
-            text = `evolution finished (${evoDecision})`;
-            done = true;
+            if (turnHadError && round < maxRounds) {
+              text = "Blocked finish_evolution: an earlier tool call in this round failed. Fix the error or call finish_evolution(decision='no_change', ...) on the next round.";
+              isError = true;
+            } else {
+              evoDecision = args.decision === "evolved" || mutations.length > 0 ? "evolved" : "no_change";
+              note = String(args.note ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+              text = `evolution finished (${evoDecision})`;
+              exitReason = "finish_evolution";
+              done = true;
+            }
           } else {
             text = `unknown evolution tool: ${call.name}`;
             isError = true;
           }
+          if (isError) turnHadError = true;
+          if (ci === calls.length - 1 && !done) {
+            const roundNote = round >= maxRounds - 1
+              ? `\n[evolution round ${round}/${maxRounds} — FINAL round next: apply at most 1 update and call finish_evolution]`
+              : `\n[evolution round ${round}/${maxRounds}]`;
+            text += roundNote;
+          }
+          traceResults.push({ name: call.name, ok: !isError, preview: text.slice(0, 240) });
           messages.push({ role: "toolResult", toolCallId: call.id, toolName: call.name,
             content: [{ type: "text", text }], isError, timestamp: Date.now() });
         }
+        write("evolution-trace.jsonl", {
+          t: new Date().toISOString(), boundary, level: auditLevel, step: state.step, round,
+          ...(round === 1 ? { dossier_chars: dossier.length, trace_blocks: traceSlice.length } : {}),
+          calls: calls.map((c: any) => ({ name: c.name, args_preview: JSON.stringify(c.arguments ?? {}).slice(0, 240) })),
+          results: traceResults,
+          ...(replyText ? { text_preview: replyText.slice(0, 240) } : {}),
+          ...(done ? { exit_reason: exitReason } : {}),
+        });
       }
       if (mutations.length > 0) evoDecision = "evolved";
       publishTools();
       const uniqueMutations = [...new Set(mutations)];
-      log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: true, decision: evoDecision,
-        mutations: uniqueMutations, note, rounds: roundsRun, ms: Date.now() - started });
+      lastEvoTraceIndex = decisionTrace.length;
+      if (boundary !== "level_complete") {
+        boundaryReviewsThisLevel.push({ step: state.step, boundary, decision: evoDecision, exit_reason: exitReason, mutations: uniqueMutations, note });
+      }
+      log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: true, decision: evoDecision, exit_reason: exitReason,
+        mutations: uniqueMutations, note, rounds: roundsRun, dossier_chars: dossier.length, ms: Date.now() - started });
+      if (evoDecision === "incomplete" && !uniqueMutations.length) return undefined;
       const mutSummary = uniqueMutations.length ? ` [${uniqueMutations.join(", ")}]` : "";
       return `EVOLUTION (${boundary}): ${evoDecision}${mutSummary}${note ? ` — ${note}` : ""}`;
     } catch (error) {
-      log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: false, error: String(error).slice(0, 200),
+      lastEvoTraceIndex = decisionTrace.length;
+      log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: false, exit_reason: "error", error: String(error).slice(0, 200),
         mutations: [...new Set(mutations)], rounds: roundsRun, ms: Date.now() - started });
       return mutations.length ? `EVOLUTION (${boundary}): partial [${[...new Set(mutations)].join(", ")}]` : undefined;
     } finally {
@@ -1404,6 +1550,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         }
       }
     }
+    currentTraceBlock = null;
     return { systemPrompt: system, message: { customType: STATE_TYPE, content: content(batch, false, { evolutionReceipt, boundaryHandled }), display: false } };
   });
   pi.on("turn_start", () => { actedThisTurn = false; observeCallsThisTurn = 0; observeLimitHitThisTurn = false; toolBuildFreeUsedThisTurn = false; });
@@ -1526,6 +1673,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       lastStop = "context_overflow";
       log("context_overflow", { error: message.errorMessage, extra_blocks: extraBlocks });
     }
+    const msgText = (message.content ?? []).filter((part: any) => part.type === "text" || part.type === "thinking")
+      .map((part: any) => String(part.type === "thinking" ? (part.thinking ?? part.text ?? "") : (part.text ?? ""))).join("\n").trim();
+    if (msgText) {
+      const tb = ensureTraceBlock();
+      tb.reasoningTail = `${tb.reasoningTail ? `${tb.reasoningTail}\n` : ""}${msgText}`.slice(-800);
+    }
     const found = options.harnessProfile ? {} : extractTags(message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n"));
     if (Object.keys(found).length) {
       pi.appendEntry(MEMORY_TYPE, memory = { ...memory, ...found });
@@ -1590,7 +1743,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     boardInventory: env.ARC_LAYERED_PROFILE === "qwen27b-harness" && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
-    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? (qwen27b ? 4 : 0)),
+    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
     maxObserveCallsPerTurn: Number(env.ARC_LAYERED_MAX_OBSERVE_CALLS ?? 2),

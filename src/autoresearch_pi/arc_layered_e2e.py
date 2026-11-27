@@ -497,6 +497,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "failed": sum(1 for r in evo_rounds if r.get("ok") is False),
             "evolved": sum(1 for r in evo_rounds if r.get("ok") is True and (r.get("decision") == "evolved" or bool(r.get("mutations")))),
             "no_change": sum(1 for r in evo_rounds if r.get("ok") is True and r.get("decision") == "no_change" and not r.get("mutations")),
+            "incomplete": sum(1 for r in evo_rounds if r.get("ok") is True and r.get("decision") == "incomplete" and not r.get("mutations")),
+            "by_exit_reason": dict(Counter(r.get("exit_reason") for r in evo_rounds if r.get("exit_reason"))),
             "by_boundary": dict(Counter(r.get("boundary") for r in evo_rounds if r.get("boundary"))),
             "tokens_lower_bound": evo_known,
             "ms_total": sum(int(r.get("ms") or 0) for r in evo_rounds),
