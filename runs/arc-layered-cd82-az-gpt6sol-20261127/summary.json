@@ -1,0 +1,138 @@
+{
+  "format": "arc-layered-run-v1",
+  "game": "cd82",
+  "config": "api-research",
+  "profile": "qwen27b-harness",
+  "provider": "openai",
+  "model": "gpt-6-sol",
+  "thinking": "provider-default",
+  "stop_reason": "budget_exhausted",
+  "segments": 37,
+  "segment_reasons": [
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "level_change",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "action",
+    "budget"
+  ],
+  "provider_errors": 0,
+  "pi": {
+    "auto_compaction_setting": false,
+    "thinking": "medium",
+    "context_window": 175000
+  },
+  "bridge_close": {
+    "close_status": "closed",
+    "scorecard_verified": true,
+    "terminal_state": "NOT_FINISHED",
+    "levels_completed": 1,
+    "actions": 66,
+    "forced_actions": 0,
+    "scorecard_id": "eb2e63a5-04da-47f4-8818-2a83ed1e30c2",
+    "baseline_actions": [
+      55,
+      8,
+      41,
+      21,
+      23,
+      23
+    ],
+    "action_budget_multiplier": 5.0,
+    "action_budget": 855
+  },
+  "pi_stderr_tail": "",
+  "actions": 66,
+  "levels_completed": 1,
+  "win_levels": 6,
+  "final_state": "NOT_FINISHED",
+  "wall_seconds": 528.9,
+  "reported_tokens": 737122,
+  "budget_tokens": 215010,
+  "requests": 48,
+  "request_accounting": {
+    "attempts": 48,
+    "by_kind": {
+      "parent": {
+        "attempts": 48,
+        "completed": 47,
+        "aborted": 0,
+        "unsettled": 0,
+        "failed": 1
+      }
+    },
+    "known_tokens_lower_bound": 737122,
+    "unknown_cost_attempts": 1,
+    "complete_cost_known": false,
+    "cost_scope": "provider-reported tokens, not verified billing"
+  },
+  "python": {
+    "calls": 45,
+    "acting_calls": 37,
+    "actions": 66,
+    "truncated": 1,
+    "errors": 7,
+    "kernel_restarts": 0,
+    "stop_reasons": {
+      "level_change": 1
+    },
+    "mean_ms": 634
+  },
+  "evictions": {
+    "count": 0,
+    "tokens_removed": 0
+  },
+  "folds": 0,
+  "compactions": 0,
+  "evolution": {
+    "changes": 0,
+    "syntax_errors": 0
+  },
+  "work_snapshot": null,
+  "sessions": 1,
+  "context_overflows": 0,
+  "evidence": {
+    "decisions": 66,
+    "repeated": 3,
+    "deaths": 0,
+    "level_ups": 1,
+    "prediction_off": 0,
+    "claim_failures": 0,
+    "claim_holds": 0,
+    "program_actions": 0,
+    "replays": [
+      "work/replay/level_2.md"
+    ]
+  }
+}

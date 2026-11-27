@@ -1,0 +1,19 @@
+{
+  "close_status": "closed",
+  "scorecard_verified": true,
+  "terminal_state": "NOT_FINISHED",
+  "levels_completed": 1,
+  "actions": 66,
+  "forced_actions": 0,
+  "scorecard_id": "eb2e63a5-04da-47f4-8818-2a83ed1e30c2",
+  "baseline_actions": [
+    55,
+    8,
+    41,
+    21,
+    23,
+    23
+  ],
+  "action_budget_multiplier": 5.0,
+  "action_budget": 855
+}

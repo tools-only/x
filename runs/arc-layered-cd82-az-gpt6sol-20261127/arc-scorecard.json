@@ -1,0 +1,85 @@
+{
+  "source_url": null,
+  "tags": [
+    "agent",
+    "pi-autoresearch-meta"
+  ],
+  "opaque": null,
+  "card_id": "eb2e63a5-04da-47f4-8818-2a83ed1e30c2",
+  "api_key": null,
+  "score": 4.761904761904762,
+  "environments": [
+    {
+      "id": "cd82-fb555c5d",
+      "runs": [
+        {
+          "id": null,
+          "guid": "7f894b43-feda-47fe-a8d5-ec55a5784063",
+          "score": 4.761904761904762,
+          "levels_completed": 1,
+          "actions": 66,
+          "resets": 5,
+          "state": "NOT_FINISHED",
+          "completed": false,
+          "level_scores": [
+            115.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "level_actions": [
+            26,
+            40,
+            0,
+            0,
+            0,
+            0
+          ],
+          "level_baseline_actions": [
+            55,
+            8,
+            41,
+            21,
+            23,
+            23
+          ],
+          "number_of_levels": null,
+          "number_of_environments": 0,
+          "message": null
+        }
+      ],
+      "score": 4.761904761904762,
+      "actions": 66,
+      "levels_completed": 1,
+      "completed": false,
+      "level_count": 6,
+      "resets": 5
+    }
+  ],
+  "tags_scores": [
+    {
+      "id": "keyboard_click",
+      "guid": null,
+      "score": 4.761904761904762,
+      "levels_completed": 1,
+      "actions": 66,
+      "resets": null,
+      "state": null,
+      "completed": null,
+      "level_scores": null,
+      "level_actions": null,
+      "level_baseline_actions": null,
+      "number_of_levels": 6,
+      "number_of_environments": 1,
+      "message": null
+    }
+  ],
+  "competition_mode": false,
+  "total_environments_completed": 0,
+  "total_environments": 1,
+  "total_levels_completed": 1,
+  "total_levels": 6,
+  "total_actions": 66
+}
