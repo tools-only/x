@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { BridgeClient, LayeredPython, type ActionBatch, type LayeredState, type MemoryCheckStats, type StepFact } from "./arc_layered_python.ts";
+import { BridgeClient, COLOR_LEGEND, LayeredPython, type ActionBatch, type LayeredState, type MemoryCheckStats, type StepFact } from "./arc_layered_python.ts";
 import { arcEnvAdapter } from './arc_env_adapter.ts';
 import type { LayeredEnvAdapter } from './layered_env_adapter.ts';
 import { RequestTrace, usageRecord } from "./arc_request_trace.ts";
@@ -34,6 +34,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   recoverableFold?: boolean;
   noImage?: boolean;
   harnessProfile?: boolean;
+  minimalBasePrompt?: boolean;
   consult?: boolean;
   evolution?: boolean;
   boardInventory?: boolean;
@@ -114,21 +115,25 @@ export function renderDecisionWindow(blocks: DecisionTraceBlock[], maxChars: num
 }
 
 const EVOLUTION_SYSTEM_PROMPT = [
-  "You are running an isolated, clean-context self-evolution review between task turns. You cannot take environment actions (submit_actions is disabled).",
-  "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active component bodies, internal legibility stats, prior reviews), and the current frame.",
-  "You are here because task play hit a boundary (stall/stuck/game_over/level_complete). Convert new evidence into an executable or falsifiable update unless active capabilities already cover the current gap:",
-  "1. Missing progress/goal comparison -> author a 0-arg or 1-arg @tool in python_inspect that computes structured distance/progress from current_frame, and test it on current_frame in the same script.",
-  "2. Repeated branches / post-RESET retries -> author a 0-arg or 1-arg @tool in python_inspect that queries transitions for tried vs untried actions in the current or comparable state, and test it in the same script.",
-  "3. Competing causal hypotheses / vacuous predictions -> update Memory via reflect_component with crisp sections: Goal metric, Confirmed conditions, Eliminated branches (with step), and ONE Next controlled probe (change 1 variable in comparable state, predict specific region/state A vs B). Attach verify={'rule': '1-line Python expr over t returning True/False/None'} when testable on single transitions — if not expressible on single transitions, still update Memory with the concrete facts/probe rather than defaulting to no_change. Do NOT write vague prose advice ('stop repeating', 'try other actions').",
-  "4. Only choose decision='no_change' when active Memory/Tools already cover the observed facts and their Next controlled probe has not yet been contradicted or exhausted — never use no_change just to skip updating newly observed facts, and never rewrite synonymous prose just to emit 'evolved'.",
+  "You are running an isolated, clean-context meta-evolution audit between task turns. You cannot take environment actions (submit_actions is disabled).",
+  "Your job is NOT merely to patch a single stuck step — it is to diagnose flaws in the solver's problem-solving method, strategy, and thinking process, and materialize the missing capability in the harness so future decisions are systematically more scientific.",
+  "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active components, Process profile, Component use, Last evolution feedback, prior reviews), and the current frame.",
+  "Meta-evolution loop (anchor to ONE concrete decision point k or cross-level delta):",
+  "1. Critique the solver's method, strategy, and thinking at step k — identify the deepest root flaw:",
+  "   - Observation & modeling method (L1/L3): acting before reading key local changes/structure, repeating ad-hoc inspection scripts, or failing to maintain an explicit falsifiable cause-and-effect model.",
+  "   - Hypothesis & probing method (L3/L4): sending unchecked/vacuous-expect or oversized unverified batches instead of small discriminating probes that separate competing explanations, or ignoring SURPRISE / verify contradictions instead of revising beliefs.",
+  "   - Search & non-replay strategy (L2/L4): replaying known dead ends or post-RESET failures instead of tracking tried vs untried branches from transitions.",
+  "   - Planning & execution orchestration (L4/L5): stepping blindly when mechanics are already established, staying trapped in one framing, or failing to use mounted tools/skills.",
+  "2. Carry the evolved method in the lightest effective harness component (0 or 1 targeted change; NEVER write vague pep-talks like 'be careful' or 'try harder'):",
+  "   - Executable analysis/strategy (`@tool` via python_inspect): read-only computation helper (observation/diff/progress metric, branch frontier checker, candidate scorer/planner). Include `# when:` and `# out/branch:` (and `branch_action` in the result dict when returning a discrete next action). Verify with `trial_at(k, tool_module.function)` before taking credit.",
+  "   - Falsifiable causal model & probe (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L3', scope='level'|'game', name, body, verify?)): crisp Goal metric, Confirmed conditions, Eliminated branches, ONE Next controlled probe, and `verify` (`{when, assert}` or `... if ... else None`) when single-step testable.",
+  "   - Reusable problem-solving method / workflow (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): concrete multi-step procedure for modeling, controlled probing, branch search, or verification (read on demand via read_component).",
+  "   - Execution discipline / thinking rule (`prompt` via reflect_component(op=add/revise/retire/promote/demote, kind='prompt', layer='L5', scope='game'|'level', name, body), <= 600 chars): enforceable operating rule fixing recurring Process profile failures (e.g., prediction coverage, probe size before batching, checking mounted helpers).",
+  "   - Clean-context reframing (`subagent` via reflect_component(op=add/revise/retire, kind='subagent', layer='L5', scope='game'|'level', name, summary, body)): specialist role invoked via consult when stuck in a local framing.",
+  "3. Verify & curate: check Process profile and Last evolution feedback to see whether prior evolved methods actually changed behavior (unchecked_batches, large_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with an unfalsified probe or branch.",
   "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
-  "Editable space (0 or 1 targeted change; update stale memory if it failed to break a stall):",
-  "- tools: python_inspect(code) with @tool on one read-only function. Include # when: and # out/branch: inside the function. If returning a specific discrete next action, include branch_action in the result dict. Test a self-contained no-argument probe with trial_at(k, tool_module.function) at the relevant history index before taking credit for the update.",
-  "- memory: reflect_component(op=add/revise/retire, kind=memory, name, body, verify?). Anchor the diagnosis to one decision k.",
-  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution in the same turn once verified.",
-  "Diagnose one L1 perception / L2 state / L3 cognition / L4 strategy / L5 orchestration bottleneck at step k. Set scope=level or game and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use.",
-  "On level_complete, use at most 1 python_inspect call before updating components and calling finish_evolution.",
-  "Ground claims strictly in observed facts. End by calling finish_evolution(decision='evolved'|'no_change', note='one concise line').",
+  "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before updating components and calling finish_evolution.",
+  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution once verified. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -439,7 +444,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false,
     claims: false, ...options.flags };
   flags.no_model = !flags.model;
-  const system = adapter.systemPrompt(flags, options.maxActionsPerCall, Boolean(options.harnessProfile));
+  const system = options.harnessProfile && options.minimalBasePrompt
+    ? readFileSync(new URL("./prompts/arc_layered_system_minimal.md", import.meta.url), "utf8")
+        .replace(/\{\{\?(\w+)\}\}\n?([\s\S]*?)\{\{\/\1\}\}\n?/g, (_, flag, body) => flags[flag] ? body : "")
+        .replaceAll("{{color_legend}}", COLOR_LEGEND)
+        .replaceAll("{{max_actions_per_call}}", String(options.maxActionsPerCall))
+    : adapter.systemPrompt(flags, options.maxActionsPerCall, Boolean(options.harnessProfile));
   let memory: Record<string, string> = {};
   const components = options.harnessProfile ? new LayeredComponents(join(store, "components")) : undefined;
   let notebook: Record<string, string> = {};
@@ -457,7 +467,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const freshAttemptMetrics = (): AttemptMetrics => ({ py_calls: 0, py_errors: 0, truncated: 0, observe_limits: 0, errors: [] });
   let attemptMetrics: AttemptMetrics = freshAttemptMetrics();
   type EvolutionRecord = { kind: Kind | "consult"; name: string; version?: number; level: number; step: number;
-    actionsSince: number; newStatesSince: number; deathsSince: number };
+    actionsSince: number; newStatesSince: number; deathsSince: number;
+    baseline?: { unchecked: number; repeats: number; actions: number } };
   let lastEvolution: EvolutionRecord | null = null;
   let finishedLevelEvolution: EvolutionRecord | null = null;
   const WINDOW_SIZE = 12;
@@ -638,9 +649,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (evo.kind === "tool") {
       const st = components.stats("tool", evo.name);
       if (st) detail = `used ${st.total.ok}/${st.total.invocations} ok, `;
-    } else if (evo.kind === "skill") {
-      const st = components.stats("skill", evo.name);
-      if (st) detail = `reads=${st.total.reads}, `;
+    } else if (evo.kind === "prompt" || evo.kind === "skill") {
+      if (evo.kind === "skill") {
+        const st = components.stats("skill", evo.name);
+        if (st) detail = `reads=${st.total.reads}, `;
+      }
+      if (evo.baseline) {
+        const curUnchecked = safeState().unchecked_batches ?? 0;
+        const curRepeats = levelSteps.filter(f => f.same).length;
+        detail += `unchecked=${curUnchecked}(was ${evo.baseline.unchecked}), repeats_since=${Math.max(0, curRepeats - evo.baseline.repeats)}, `;
+      }
     } else if (evo.kind === "memory") {
       const cur = components.current("memory", evo.name);
       const vs = cur ? formatVerifySummary(cur.name, cur.verify, python.memoryCheckStats).trim() : "";
@@ -735,8 +753,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const eff = effortProgressSummary();
       if (eff) legibilityLines.push(`- ${eff}`);
       const tail30 = levelSteps.slice(-30);
+      const rep30 = tail30.filter(f => f.same).length;
       if (tail30.length) {
-        const rep30 = tail30.filter(f => f.same).length;
         const new30 = tail30.filter(f => f.new).length;
         const rst30 = tail30.filter(f => f.action === "RESET").length;
         legibilityLines.push(`- Branch reuse (last ${tail30.length}): repeats=${rep30}, new_states=${new30}, resets=${rst30}`);
@@ -746,6 +764,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (vacuousCalls || (state.unchecked_batches ?? 0) > 0) {
         legibilityLines.push(`- Prediction quality: vacuous_expect_calls=${vacuousCalls} (last 12 decisions), unchecked_batches=${state.unchecked_batches ?? 0}`);
       }
+      const actingDecisions = recentTrace.filter(b => b.actions.length > 0).length;
+      const maxBatch = recentTrace.reduce((m, b) => Math.max(m, b.actions.length), 0);
+      const largeBatches = recentTrace.filter(b => b.actions.length >= 4).length;
+      legibilityLines.push(
+        `- Process profile (last ${recentTrace.length} decisions): acting=${actingDecisions}, max_batch=${maxBatch}, large_batches(>=4)=${largeBatches}, unchecked_batches=${state.unchecked_batches ?? 0}, vacuous_expect=${vacuousCalls}, repeats=${rep30}/${tail30.length}`,
+      );
       const toolUsesTotal = components ? components.list("tool").reduce((s, t) => s + (components.stats("tool", t.name)?.total.invocations ?? 0), 0) : 0;
       legibilityLines.push(`- Tooling gap: python_calls=${(opts?.metrics ?? attemptMetrics).py_calls}, active_tools=${components?.list("tool").length ?? 0}, tool_invocations=${toolUsesTotal}`);
       if (boundaryReviewsThisLevel.length) {
@@ -1348,7 +1372,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       log("component_change", { op: params.op, component_kind: item.kind, layer: item.layer ?? null, scope: item.scope, status: item.status, name: item.name, version: item.version, level: st.level, step: st.step,
         verify_rules: item.verify ? Object.keys(item.verify) : [], after_audit: lastAuditBoundary || null, source });
       lastEvolution = { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
-        actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
+        actionsSince: 0, newStatesSince: 0, deathsSince: 0,
+        baseline: { unchecked: st.unchecked_batches ?? 0, repeats: levelSteps.filter(f => f.same).length, actions: st.actions_used } };
       let reply = `${item.kind}/${item.name} v${item.version} ${item.retired ? "retired" : "active"}`;
       if (item.kind === "memory") {
         if (python.syncMemoryChecks) {
@@ -1945,7 +1970,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? (harnessProfile ? 48000 : qwen27b ? 20480 : 57344)),
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
     noImage: env.ARC_LAYERED_NO_IMAGE === "1",
-    harnessProfile, consult: env.ARC_LAYERED_CONSULT !== "0",
+    harnessProfile, minimalBasePrompt: env.ARC_LAYERED_MINIMAL_BASE_PROMPT === "1", consult: env.ARC_LAYERED_CONSULT !== "0",
     recoverableFold: env.ARC_LAYERED_RECOVERABLE_FOLD === "1",
     evolution: harnessProfile && env.ARC_LAYERED_EVOLUTION !== "0",
     boardInventory: harnessProfile && env.ARC_LAYERED_BOARD_INVENTORY !== "0",

@@ -1107,3 +1107,58 @@ test("Phase 3 read_archive is opt-in and returns archived evidence through the p
  const invalid = await enabled.tools.read_archive.execute("read", { id: "../secret" });
  assert.equal(invalid.isError, true);
 });
+
+test("L4/L5 methodology evolution path supports minimal base prompt, process profile, and L5 prompt creation", async () => {
+  const { handlers, game, python, call } = setup({ harnessProfile: true, minimalBasePrompt: true, evolution: true, noImage: true, stuckAfter: 16 });
+  const opened = await handlers.before_agent_start({});
+  assert.match(opened.systemPrompt, /submit_actions/);
+  assert.match(opened.systemPrompt, /## ACTIVE HARNESS/);
+  assert.doesNotMatch(opened.systemPrompt, /## Working method|small probe batches/);
+
+  game.stale_steps = 16;
+  game.actions_used = 16;
+  game.unchecked_batches = 4;
+  const steps = Array.from({ length: 6 }, (_, i) => ({
+    step: i + 1, action: "UP", tries: i, same: i > 0, last_try: i > 0 ? i : null, new: false, level: 1,
+    changed: false, death: false, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [],
+    predict_off: null, same_death: false,
+  }));
+  python.next = batch({ executed: 6, actions: Array(6).fill("UP") });
+  const origRun = python.run.bind(python);
+  python.run = async () => ({ ...(await origRun()), steps });
+  handlers.turn_start();
+  await call();
+
+  let evoSysPrompt = "";
+  let evoDossier = "";
+  let round = 0;
+  const ctx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_m: any, input: any) => {
+        round += 1;
+        if (round === 1) {
+          evoSysPrompt = input.systemPrompt;
+          evoDossier = input.messages[0].content[0].text;
+        }
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 50, output: 20, totalTokens: 70 },
+          content: round === 1
+            ? [{ type: "toolCall", id: "p1", name: "reflect_component", arguments: {
+                op: "add", kind: "prompt", layer: "L5", scope: "game", name: "probe_discipline",
+                body: "when: before acting on unverified mechanics\nUse 1-step probes with tight expect= instead of blind batches." } }]
+            : [{ type: "toolCall", id: "p2", name: "finish_evolution", arguments: { decision: "evolved", note: "added L5 probe discipline" } }],
+        }) };
+      },
+    },
+  };
+
+  await handlers.before_agent_start({}, ctx);
+  assert.match(evoSysPrompt, /kind='prompt', layer='L5'/);
+  assert.match(evoSysPrompt, /kind='skill', layer='L4'/);
+  assert.match(evoDossier, /- Process profile \(last \d+ decisions\): acting=1, max_batch=6, large_batches\(>=4\)=1, unchecked_batches=4/);
+
+  const ctxOut = handlers.context({ messages: [{ role: "user", content: [{ type: "text", text: "state" }] }] }, { model: { contextWindow: 102400 } });
+  const panel = textOf(ctxOut.messages[0].content).split("## ACTIVE HARNESS").at(-1)!;
+  assert.match(panel, /\[NEW\] PROMPT probe_discipline v1:/);
+});
