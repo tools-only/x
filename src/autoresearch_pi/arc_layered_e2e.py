@@ -218,7 +218,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                         idle_timeout: float = 300.0, max_output_tokens: int | None = None, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
                         fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel,
                         bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = (),
-                        benchmark_only: bool = False) -> Path:
+                        benchmark_only: bool = False, transfer_from: Path | None = None, fork_from: Path | None = None,
+                        snapshot_after_segments: tuple[int, ...] = ()) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
     if profile not in PROFILES:
@@ -226,6 +227,15 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     if max_output_tokens is None:
         max_output_tokens = 4096 if profile == "qwen27b" else 12000
     root = root.resolve()
+    if transfer_from is not None and fork_from is not None:
+        raise ValueError("transfer and matched-prefix fork are separate experiments")
+    fork = None
+    if fork_from is not None:
+        from .arc_layered_experiments import seed_prefix
+        fork = seed_prefix(fork_from, root, game)
+    if transfer_from is not None:
+        from .arc_layered_experiments import seed_transfer
+        seed_transfer(transfer_from, root, game)
     harness = root / "harness"
     harness.mkdir(parents=True, exist_ok=True)
     env = load_project_dotenv(dotenv_root)
@@ -236,11 +246,11 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         max_actions = max_reported_tokens = idle_timeout = None
         segment_seconds = segment_tokens = idle_continuations = float("inf")
     summary: dict[str, Any] = {"format": "arc-layered-run-v1", "game": game, "config": config, "profile": profile, "provider": pi_provider,
-                               "model": pi_model, "thinking": thinking or "provider-default", "stop_reason": None,
+                               "model": pi_model, "thinking": thinking or "provider-default", "fork": fork, "stop_reason": None,
                                "segments": 0, "segment_reasons": [], "provider_errors": 0}
     bridge, bridge_stderr, launch_id, action_token = _start_bridge(
         root, arc_root=arc_root, game=game, max_actions=max_actions, env=env, bridge_python=bridge_python,
-        bridge_module_paths=bridge_module_paths)
+        bridge_module_paths=bridge_module_paths, **({"replay_from": root / "fork-replay.jsonl"} if fork else {}))
     kernel: PiKernel | None = None
     closed = False
     state: dict[str, Any] = {}
@@ -288,7 +298,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             **{key: summary[key] for key in ("format", "game", "config", "profile", "provider", "model", "thinking")},
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
             "wall_seconds": None if benchmark_only else wall_seconds, "segment_seconds": None if benchmark_only else segment_seconds,
-            "segment_tokens": None if benchmark_only else segment_tokens, "benchmark_only": benchmark_only,
+            "segment_tokens": None if benchmark_only else segment_tokens, "benchmark_only": benchmark_only, "transfer_from": str(transfer_from.resolve()) if transfer_from else None,
             "idle_continuations": None if benchmark_only else idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
             "consult_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_CONSULT") != "0",
             "evolution_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_EVOLUTION") != "0",
@@ -369,6 +379,12 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             reason = end.get("reason")
             summary["segment_reasons"].append(reason)
             state = _bridge_state(bridge_url) or state
+            if summary["segments"] in snapshot_after_segments:
+                from .arc_layered_experiments import snapshot_prefix
+                from .arc_layered_support import _get_json
+                snapshot_prefix(root, root / "snapshots" / f"after-segment-{summary['segments']}", game,
+                                _get_json(bridge_url + "/events")["events"],
+                                root / ("session.jsonl" if session_index == 1 else f"session-{session_index}.jsonl"))
             if state.get("state") == "WIN":
                 summary["stop_reason"] = "win"
                 break
@@ -542,6 +558,10 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         "context_overflows": sum(1 for row in rows if row.get("kind") == "context_overflow"),
         "evidence": _layered_evidence(root),
     })
+    if fork:
+        summary["continuation"] = {"actions": max(0, int(summary.get("actions") or 0) - fork["prefix_actions"]),
+                                   "reported_tokens_lower_bound": max(0, _reported_tokens(harness) - fork["prefix_reported_tokens"]),
+                                   "mode": fork["continuation_mode"], "replay_actions": fork["prefix_actions"]}
     path = root / "summary.json"
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path

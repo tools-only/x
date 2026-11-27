@@ -15,6 +15,8 @@ import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
 import { LayeredComponents, type Component, type Kind, type ReflectOp, type VerifyRuleInput } from "./arc_layered_components.ts";
 import { boardInventory, recordFrameColorChanges } from "./arc_layered_inventory.ts";
 
+import { LayeredArchive, foldRecoverably } from "./arc_layered_archive.ts";
+
 export const STATE_TYPE = "arc-layered-state";
 export const MEMORY_TYPE = "arc-layered-memory";
 export const NOTEBOOK_TYPE = "arc-layered-notebook";
@@ -29,6 +31,7 @@ const PALETTE: Array<[number, number, number, number]> = [
 ];
 
 export type LayeredOptions = { scale: number; gridLines: boolean; reminder: boolean; contextCap: number; contextTarget: number; diffImage: boolean;
+  recoverableFold?: boolean;
   noImage?: boolean;
   harnessProfile?: boolean;
   consult?: boolean;
@@ -1303,8 +1306,21 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let consecutiveSurprises = 0, lastPredictionStep = -1;
   const alignedUses = new Map<string, number>();
   let structuralDelta = "";
-  let healthCheckPending = false;
+  let healthCheckPending = existsSync(join(options.root, "transfer.json"));
   let previousLevelFrame: LayeredState | undefined;
+  const archive = options.recoverableFold ? new LayeredArchive(join(options.root, "harness", "archive")) : undefined;
+  if (archive) pi.registerTool({ name: "read_archive", label: "read_archive", executionMode: "sequential",
+    description: "Read immutable historical evidence by archive handle. Archived advice is not current guidance. Pagination offsets count serialized characters.",
+    parameters: Type.Object({ id: Type.String(), offset: Type.Optional(Type.Number()), limit: Type.Optional(Type.Number()) }),
+    async execute(_id, params) {
+      try {
+        const result = archive.read(params.id, params.offset, params.limit);
+        log("archive_read", { id: params.id, offset: result.offset, chars: result.text.length });
+        return { details: {}, content: [{ type: "text", text: JSON.stringify(result) }] };
+      } catch (error) {
+        return { details: {}, isError: true, content: [{ type: "text", text: String(error) }] };
+      }
+    } });
   const evolutionEnabled = options.evolution ?? Boolean(options.harnessProfile);
   const reflectSchema = Type.Object({ op: Type.Union([Type.Literal("add"), Type.Literal("revise"), Type.Literal("retire"), Type.Literal("restore"), Type.Literal("merge"), Type.Literal("promote"), Type.Literal("demote")]),
     kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent"), Type.Literal("tool")]),
@@ -1704,7 +1720,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
     const recoveryReserve = recoveryText ? estimateTokens({ role: "user", content: [{ type: "text", text: recoveryText }] }) : 0;
     const effectiveCap = Math.max(2048, cap - recoveryReserve);
-    const result = evict(event.messages, effectiveCap, Math.min(target, effectiveCap), extraBlocks, evictAnchorIndex);
+    const archived = archive ? foldRecoverably(event.messages, options.foldAfter || 4, archive) : undefined;
+    if (archived?.folded) log("archive_fold", { count: archived.folded });
+    const result = evict(archived?.messages ?? event.messages, effectiveCap, Math.min(target, effectiveCap), extraBlocks, evictAnchorIndex);
     evictAnchorIndex = result.cut;
     extraBlocks = Math.max(0, extraBlocks - result.blocks);
     if (result.cut > 0) {
@@ -1726,8 +1744,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const effectiveFoldAfter = options.harnessProfile && components && components.list("memory").length === 0 && options.foldAfter > 0
       ? Math.max(options.foldAfter, 10)
       : options.foldAfter;
-    const folding = fold(result.messages, effectiveFoldAfter);
-    const preObs = foldPreActionObservations(folding.messages);
+    const folding = archive ? { messages: result.messages, folded: 0 } : fold(result.messages, effectiveFoldAfter);
+    const preObs = archive ? { messages: folding.messages, folded: 0 } : foldPreActionObservations(folding.messages);
     if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: effectiveFoldAfter });
     let messages = recoveryText ? [{ role: "user", content: [{ type: "text", text: recoveryText }] }, ...preObs.messages] : preObs.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
@@ -1928,6 +1946,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
     noImage: env.ARC_LAYERED_NO_IMAGE === "1",
     harnessProfile, consult: env.ARC_LAYERED_CONSULT !== "0",
+    recoverableFold: env.ARC_LAYERED_RECOVERABLE_FOLD === "1",
     evolution: harnessProfile && env.ARC_LAYERED_EVOLUTION !== "0",
     boardInventory: harnessProfile && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),

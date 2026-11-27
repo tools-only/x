@@ -90,7 +90,7 @@ def _resolve_pi_cli() -> tuple[str, str]:
 
 
 def _start_bridge(root: Path, *, arc_root: Path, game: str, max_actions: int | None, env: dict[str, str],
-                  bridge_python: Path | None, bridge_module_paths: tuple[Path, ...]
+                  bridge_python: Path | None, bridge_module_paths: tuple[Path, ...], replay_from: Path | None = None
                   ) -> tuple[subprocess.Popen[str], Any, str, str]:
     arc_root = arc_root.resolve()
     arc_python = bridge_python or arc_root / ".venv" / "Scripts" / "python.exe"
@@ -102,6 +102,8 @@ def _start_bridge(root: Path, *, arc_root: Path, game: str, max_actions: int | N
     launch_id, action_token = secrets.token_hex(16), secrets.token_urlsafe(32)
     command = [str(arc_python), "-m", "autoresearch_pi.arc_agi_3_bridge", "--root", str(root),
                "--game", game, "--port", "0"]
+    if replay_from is not None:
+        command.extend(("--replay-actions", str(replay_from)))
     if max_actions is not None:
         command.extend(("--max-actions", str(max_actions)))
     bridge_stderr = (root / "bridge-stderr.log").open("w", encoding="utf-8")

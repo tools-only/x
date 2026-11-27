@@ -1092,3 +1092,18 @@ test("Phase 2 active panel hides dormant/variant_broken, orders prompt > level >
   assert.ok(panel.indexOf("PROMPT pacing") < panel.indexOf("MEMORY lvl_1"));
   assert.doesNotMatch(panel, /MEMORY game_rule/); // 6 level memories fill the <=6 cap ahead of game_rule
 });
+
+test("Phase 3 read_archive is opt-in and returns archived evidence through the parent tool", async () => {
+ const plain = setup();
+ assert.equal(plain.tools.read_archive, undefined);
+ const { LayeredArchive } = await import("../demo/arc_layered_archive.ts");
+ const root = mkdtempSync(join(tmpdir(), "archive-runtime-"));
+ const archive = new LayeredArchive(join(root, "harness", "archive"));
+ const id = archive.save([{ type: "text", text: "old evidence" }]);
+ const enabled = setup({ root, recoverableFold: true });
+ const reply = await enabled.tools.read_archive.execute("read", { id });
+ assert.match(reply.content[0].text, /old evidence/);
+ assert.equal(enabled.rows("archive_read").length, 1);
+ const invalid = await enabled.tools.read_archive.execute("read", { id: "../secret" });
+ assert.equal(invalid.isError, true);
+});
