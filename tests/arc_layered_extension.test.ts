@@ -1159,7 +1159,8 @@ test("L4/L5 methodology evolution path supports minimal base prompt, process pro
   assert.match(evoSysPrompt, /kind='prompt', layer='L5'/);
   assert.match(evoSysPrompt, /kind='skill', layer='L4'/);
   assert.match(evoSysPrompt, /scope='level' vs scope='game'/);
-  assert.match(evoSysPrompt, /at most 1 core L5 Prompt and 1-2 L4 Skills/);
+  assert.match(evoSysPrompt, /Executable-first offloading/);
+  assert.match(evoSysPrompt, /revised AT MOST 2 times per level/);
   assert.match(reflectToolDesc, /L5 prompt.*L4 skill/);
   assert.match(evoDossier, /- Process profile \(last \d+ decisions\): acting=1, max_batch=6, large_batches\(>=4\)=1, unchecked_batches=4/);
   assert.match(evoDossier, /Harness slots \(active\): prompt=0\/1, skill=0\/2, memory=0\/6/);
@@ -1190,4 +1191,50 @@ test("method_drift cognitive audit triggers on >=4 unchecked_batches without wai
   await call();
   await handlers.before_agent_start({}, ctx);
   assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "method_drift").length, 1);
+});
+
+test("prompt revision circuit-breaker blocks >2 revisions of the same prompt on one level", async () => {
+  const { handlers, game, python, call } = setup({ harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16 });
+  await handlers.before_agent_start({});
+  let blockedReply = "";
+  const specs = [
+    { op: "add", body: "v1", decision: "evolved" },
+    { op: "revise", body: "v2", decision: "evolved" },
+    { op: "revise", body: "v3", decision: "evolved" },
+    { op: "revise", body: "v4", decision: "no_change" },
+  ] as const;
+  for (const [idx, step] of [5, 8, 11, 14].entries()) {
+    const spec = specs[idx]!;
+    let subRound = 0;
+    const ctx: any = {
+      model: { id: "same", maxTokens: 4096 },
+      modelRegistry: {
+        streamSimple: (_m: any, input: any) => {
+          subRound += 1;
+          if (subRound === 2 && idx === 3) {
+            const toolResults = input.messages.filter((m: any) => m.role === "toolResult" && m.toolName === "reflect_component");
+            blockedReply = textOf(toolResults.at(-1)?.content ?? []);
+          }
+          return { result: async () => ({
+            role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 },
+            content: subRound === 1
+              ? [{ type: "toolCall", id: `p${idx}`, name: "reflect_component", arguments: {
+                  op: spec.op, kind: "prompt", layer: "L5", scope: "game", name: "pace", body: spec.body } }]
+              : [{ type: "toolCall", id: `pf${idx}`, name: "finish_evolution", arguments: { decision: spec.decision, note: `audit ${idx + 1}` } }],
+          }) };
+        },
+      },
+    };
+    game.state = "GAME_OVER";
+    game.step = step;
+    game.actions_used = step;
+    python.next = batch({ executed: 1, actions: ["UP"], game_over: true, steps: [{
+      step, action: "UP", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+      source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 1,
+    }] });
+    handlers.turn_start();
+    await call();
+    await handlers.before_agent_start({}, ctx);
+  }
+  assert.match(blockedReply, /already revised 2x on this level; stop rewriting prose/);
 });

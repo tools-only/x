@@ -134,8 +134,8 @@ const EVOLUTION_SYSTEM_PROMPT = [
   "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
   "Scope & trigger rules (strict):",
   "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill), cross-level @tools, and level_complete-promoted causal Memory.",
-  "- Fact fix vs method evolution: for a one-off observation/rule gap, update Memory (L3) or @tool (L1/L2). When Process profile or decision history shows a RECURRING method flaw (e.g., repeated unchecked_batches, unverified large_batches>=4, repeated failed routes across attempts/RESETs, or ignoring mounted tools), you MUST diagnose L4/L5 and evolve a Prompt (L5, scope='game') or Skill (L4, scope='game').",
-  "- Anti-divergence cap on methodology: Prompt (L5) and Skill (L4) MUST contain ZERO level-specific coordinates or one-off layout trivia—only general 'when <observable condition>, do <action/check>' rules. Maintain at most 1 core L5 Prompt and 1-2 L4 Skills total; use revise/merge on existing ones instead of adding duplicates.",
+  "- Executable-first offloading (CRITICAL): when the solver repeats failed routes/edges, replays post-RESET deaths, or lacks state/goal/frontier visibility, ALWAYS prefer authoring a read-only `@tool` via `python_inspect` (offloading computation out of the solver) or a concrete `Memory + verify` rule over writing prose instructions. Do NOT write a Prompt telling the solver to manually track edges/frontiers in prose when a `@tool` can compute it directly from `transitions`/`current_frame`.",
+  "- Prompt & Skill anti-divergence circuit-breaker: maintain at most 1 core L5 Prompt (<= 600 chars) and 1-2 L4 Skills total, with ZERO level-specific coordinates. A Prompt may be revised AT MOST 2 times per level — if repeats or deaths persist after revising a Prompt, STOP rewriting Prompt prose and build an executable `@tool`, a falsifiable `Memory + verify`, or choose `no_change`. Avoid creating Skills when existing Skills have `reads=0` (prefer directly callable `@tool` or inline `Memory`).",
   "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before updating components and calling finish_evolution.",
   "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution once verified. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
@@ -1194,7 +1194,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           components?.onLevelTransition(finishedLevelNumber, state.level);
           healthCheckPending = true;
           shownTurns.clear();
-          cognitiveAudits = correctiveAudits = 0; lastCognitiveStep = lastAnyAuditStep = -Infinity; surpriseSteps.length = 0; consecutiveSurprises = 0; lastPredictionStep = -1;
+          cognitiveAudits = correctiveAudits = 0; lastCognitiveStep = lastAnyAuditStep = -Infinity; surpriseSteps.length = 0; consecutiveSurprises = 0; lastPredictionStep = -1; promptRevisionsThisLevel.clear();
           finishedLevelMetrics = { ...attemptMetrics, errors: [...attemptMetrics.errors] };
           finishedLevelEvolution = lastEvolution ? { ...lastEvolution } : null;
           lastReviewPath = writeLevelReview(options.root, levelSteps[0].level, state, levelSteps, outcome.notes ?? [], reviewExtra);
@@ -1334,6 +1334,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       } });
   }
   let cognitiveAudits = 0, correctiveAudits = 0, lastCognitiveStep = -Infinity, lastAnyAuditStep = -Infinity;
+  const promptRevisionsThisLevel = new Map<string, number>();
   const contradictionAudited = new Set<string>();
   const surpriseSteps: number[] = [];
   let consecutiveSurprises = 0, lastPredictionStep = -1;
@@ -1374,8 +1375,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 
     if (!["memory", "skill", "prompt", "subagent", "tool"].includes(params.kind)) return { ok: false, text: "invalid component kind" };
     if (params.kind === "tool" && !["promote", "demote", "retire"].includes(params.op)) return { ok: false, text: "Use python_inspect to author tools" };
+    if (source === "evolution" && params.kind === "prompt" && (params.op === "revise" || params.op === "redefine")) {
+      const used = promptRevisionsThisLevel.get(params.name) ?? 0;
+      if (used >= 2) {
+        return { ok: false, text: `Prompt '${params.name}' already revised ${used}x on this level; stop rewriting prose and instead author a read-only @tool via python_inspect, update Memory with verify, or call finish_evolution(decision='no_change', ...).` };
+      }
+    }
     try {
       const item = components.reflect(params.op, params.kind as Kind, params.name, params.body, params.summary, params.version, params.verify, { sources: params.sources, ...(params.scope ? { scope: params.scope } : {}), ...(params.layer ? { layer: params.layer } : {}), ...(params.op === "promote" ? { last_promoted_level: lastAuditBoundary === "level_complete" ? finishedLevelNumber : safeState().level } : {}) });
+      if (source === "evolution" && item.kind === "prompt" && (params.op === "revise" || params.op === "redefine")) {
+        promptRevisionsThisLevel.set(item.name, (promptRevisionsThisLevel.get(item.name) ?? 0) + 1);
+      }
       const st = safeState();
       components.recordChange(item.kind, item.name, st.level, st.step);
       log("component_change", { op: params.op, component_kind: item.kind, layer: item.layer ?? null, scope: item.scope, status: item.status, name: item.name, version: item.version, level: st.level, step: st.step,
@@ -1991,7 +2001,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
     noImage: env.ARC_LAYERED_NO_IMAGE === "1",
     harnessProfile, minimalBasePrompt: env.ARC_LAYERED_MINIMAL_BASE_PROMPT === "1", consult: env.ARC_LAYERED_CONSULT !== "0",
-    recoverableFold: harnessProfile ? env.ARC_LAYERED_RECOVERABLE_FOLD !== "0" : env.ARC_LAYERED_RECOVERABLE_FOLD === "1",
+    recoverableFold: env.ARC_LAYERED_RECOVERABLE_FOLD === "1",
     evolution: harnessProfile && env.ARC_LAYERED_EVOLUTION !== "0",
     boardInventory: harnessProfile && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
