@@ -135,7 +135,7 @@ def _wait_for_bridge(root: Path, process: subprocess.Popen[str], timeout: float 
                     continue
                 if valid(value):
                     receipts.put(value)
-                    return
+                    # The ARC SDK logs to stdout after readiness; keep draining the pipe.
         except (OSError, UnicodeError):
             return
 

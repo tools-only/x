@@ -217,20 +217,24 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                         segment_seconds: float = 1_000_000.0, segment_tokens: int = 100_000_000, idle_continuations: int = 3,
                         idle_timeout: float = 300.0, max_output_tokens: int | None = None, count_cache: bool = False, dotenv_root: Path = PROJECT_ROOT, extension_env: dict[str, str] | None = None,
                         fresh_level_session: bool = False, kernel_class: type[PiKernel] = PiKernel,
-                        bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = ()) -> Path:
+                        bridge_python: Path | None = None, bridge_module_paths: tuple[Path, ...] = (),
+                        benchmark_only: bool = False) -> Path:
     if config not in CONFIGS:
         raise ValueError(f"config must be one of {CONFIGS}")
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {PROFILES}")
     if max_output_tokens is None:
-        max_output_tokens = 4096 if profile in ("qwen27b", "qwen27b-harness") else 12000
+        max_output_tokens = 4096 if profile == "qwen27b" else 12000
     root = root.resolve()
     harness = root / "harness"
     harness.mkdir(parents=True, exist_ok=True)
     env = load_project_dotenv(dotenv_root)
     used_tokens = _reported_tokens if count_cache else _budget_tokens
     started = time.monotonic()
-    deadline = started + wall_seconds
+    deadline = float("inf") if benchmark_only else started + wall_seconds
+    if benchmark_only:
+        max_actions = max_reported_tokens = idle_timeout = None
+        segment_seconds = segment_tokens = idle_continuations = float("inf")
     summary: dict[str, Any] = {"format": "arc-layered-run-v1", "game": game, "config": config, "profile": profile, "provider": pi_provider,
                                "model": pi_model, "thinking": thinking or "provider-default", "stop_reason": None,
                                "segments": 0, "segment_reasons": [], "provider_errors": 0}
@@ -248,6 +252,9 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         bridge_url = f"http://127.0.0.1:{int(ready['port'])}"
         node, cli = _resolve_pi_cli()
         pi_env = dict(env)
+        if benchmark_only:
+            for key in ("PI_PROVIDER_MAX_REPORTED_TOKENS", "PI_PROVIDER_CONTEXT_ADMISSION", "PI_PROVIDER_REPORTED_ADMISSION"):
+                pi_env.pop(key, None)
         if agent_dir is None:
             agent_dir = root / ".pi-agent"
             agent_dir.mkdir(exist_ok=True)
@@ -266,8 +273,10 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         pi_env.update({"PI_CODING_AGENT_DIR": str(agent_dir), "PI_ARC_BRIDGE_URL": bridge_url, "PI_ARC_ACTION_TOKEN": action_token,
                        "ARC_RUN_ROOT": str(root), "ARC_GAME": game, "ARC_LAYERED_CONFIG": config, "ARC_LAYERED_PROFILE": profile,
                        "ARC_LAYERED_COUNT_CACHE": str(int(count_cache)), "ARC_LAYERED_OUTPUT_TOKENS": str(max_output_tokens),
-                       "ARC_LAYERED_SEGMENT_SECONDS": str(segment_seconds), "ARC_LAYERED_SEGMENT_TOKENS": str(segment_tokens),
-                       "ARC_LAYERED_IDLE_CONTINUATIONS": str(idle_continuations), **(extension_env or {})})
+                       "ARC_LAYERED_SEGMENT_SECONDS": "Infinity" if benchmark_only else str(segment_seconds),
+                       "ARC_LAYERED_SEGMENT_TOKENS": "Infinity" if benchmark_only else str(segment_tokens),
+                       "ARC_LAYERED_IDLE_CONTINUATIONS": "Infinity" if benchmark_only else str(idle_continuations),
+                       **(extension_env or {})})
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", pi_model, "--session", str(root / "session.jsonl"),
                    "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
                    *(["--thinking", thinking] if thinking else []), "--extension", str(EXTENSION)]
@@ -278,8 +287,9 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         (root / "run-config.json").write_text(json.dumps({
             **{key: summary[key] for key in ("format", "game", "config", "profile", "provider", "model", "thinking")},
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
-            "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
-            "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
+            "wall_seconds": None if benchmark_only else wall_seconds, "segment_seconds": None if benchmark_only else segment_seconds,
+            "segment_tokens": None if benchmark_only else segment_tokens, "benchmark_only": benchmark_only,
+            "idle_continuations": None if benchmark_only else idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
             "consult_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_CONSULT") != "0",
             "evolution_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_EVOLUTION") != "0",
             "board_inventory_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_BOARD_INVENTORY") != "0",
@@ -313,6 +323,9 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         prompt, overflow_retried, idle_segments, stalls = "Play the game.", False, 0, 0
         consecutive_constructive, consecutive_length, layered_cursor = 0, 0, 0
         max_length_recoveries = int(pi_env.get("ARC_LAYERED_MAX_LENGTH_RECOVERIES", "2"))
+        # Pi acknowledges prompt after before_agent_start, which may run the full boundary Audit.
+        audit_seconds = (float(pi_env.get("ARC_LAYERED_EVOLUTION_TIMEOUT_MS", "120000")) / 1000
+                         if profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_EVOLUTION") != "0" else 0)
         while True:
             if time.monotonic() >= deadline:
                 summary["stop_reason"] = "deadline"
@@ -320,7 +333,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             if max_reported_tokens is not None and used_tokens(harness) >= max_reported_tokens:
                 summary["stop_reason"] = "token_cap"
                 break
-            kernel.prompt(prompt)
+            kernel.prompt(prompt, response_timeout=120.0 + audit_seconds)
             try:
                 while True:
                     try:
@@ -397,12 +410,12 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             else:
                 consecutive_length = 0
                 idle_segments += 1
-            if idle_segments >= MAX_IDLE_SEGMENTS:
+            if not benchmark_only and idle_segments >= MAX_IDLE_SEGMENTS:
                 summary["stop_reason"] = "idle"
                 break
-            prompt = ("Your previous reply hit max output tokens before acting. Call python or reflect_component concisely now."
+            prompt = ("Your previous reply hit max output tokens before acting. Call python concisely now."
                       if activity == "length" else "Continue playing.")
-            if activity != "length" and idle_segments == MAX_IDLE_SEGMENTS - 1:
+            if not benchmark_only and activity != "length" and idle_segments == MAX_IDLE_SEGMENTS - 1:
                 prompt += "\nThis is the last idle segment before the run stops. Take an environment action if one is warranted."
             if parse_errors:
                 prompt += "\nThese files under work/ do not parse:\n" + "\n".join(parse_errors)
@@ -431,6 +444,9 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     budget = state.get("action_budget") or {}
     requests = _request_accounting(_read_jsonl(harness / "request-events.jsonl"))
     usage_rows = _read_jsonl(harness / "usage.jsonl")
+    cache_rows = [row for row in usage_rows if row.get("cache_read") is not None and row.get("input") is not None]
+    cache_read = sum(int(row["cache_read"]) for row in cache_rows)
+    cache_input = sum(int(row["input"]) + int(row["cache_read"]) + int(row.get("cache_write") or 0) for row in cache_rows)
     child_usage = [row for row in usage_rows if row.get("kind") == "subagent"]
     evo_usage = [row for row in usage_rows if row.get("kind") == "evolution"]
     child_known = sum(int(row.get("total") or (int(row.get("input") or 0) + int(row.get("output") or 0))) for row in child_usage)
@@ -463,6 +479,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         return converted
 
     evo_rounds = [r for r in rows if r.get("kind") == "evolution_round"]
+    branch_handoffs = [r for r in rows if r.get("kind") == "branch_handoff"]
     summary.update({
         "actions": budget.get("total_used"), "levels_completed": state.get("levels_completed"), "win_levels": state.get("win_levels"),
         "final_state": state.get("state"), "wall_seconds": round(time.monotonic() - started, 1),
@@ -507,6 +524,14 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                       "consult_failed": sum(1 for r in rows if r.get("kind") == "consult" and r.get("ok") is False),
                       "child_tokens_lower_bound": child_known},
         "length_truncations": sum(1 for r in rows if r.get("kind") == "length_truncation"),
+        "cache_read_rate": cache_read / cache_input if cache_input else None,
+        "branch_handoffs": {
+            "autonomous_fetch_followed_by_action": len(branch_handoffs),
+            "branch_consistent_action": sum(row["aligned"] for row in branch_handoffs),
+            "upward_writeback": sum(row["aligned"] and row["upward_writeback"] for row in branch_handoffs),
+            "repeat_mismatch_candidates": sum(row["repeat_mismatch"] for row in branch_handoffs),
+            "opportunities": None,  # Requires review of applicable states, including missed calls.
+        },
         "evictions": {"count": len(evictions), "tokens_removed": sum(row["tokens_removed"] for row in evictions)},
         "folds": sum(row["parts"] for row in rows if row.get("kind") == "fold"),
         "compactions": sum(1 for row in rows if row.get("kind") == "compact"),

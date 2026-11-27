@@ -19,6 +19,7 @@ export type StepFact = { step: number; action: string; tries: number; same: bool
   new: boolean; level: number; changed: boolean; death: boolean; level_up: boolean;
   source: string | null; fatal: boolean; claims_failed: string[]; claims_held: string[];
   verify_failed?: string[]; changed_cells?: number; change_box?: [number, number, number, number] | null;
+  branch_handoff?: { tool: string; suggested: string; actual: string; comparable: boolean; aligned: boolean; repeat_mismatch: boolean };
   changed_symbols?: number[];
   predict_off: number | null; same_death: boolean | number | null; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
@@ -26,7 +27,7 @@ export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBat
   kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[]; decoratedTools?: string[];
   usedLibs?: string[] };
 export type MemoryCheckStats = Record<string, { support: number; counter: number; checked: number;
-  by_level: Record<string, { support: number; counter: number; checked?: number }>; witness: string | null; error: string | null }>;
+  by_level: Record<string, { support: number; counter: number; checked?: number }>; witness: string | null; error: string | null; unscoped?: boolean }>;
 
 export const COLOR_LEGEND = "W=white, w=light gray, g=gray, G=dark gray, c=charcoal, B=black, M=magenta, P=pink, " +
   "R=red, b=blue, S=sky blue, Y=yellow, O=orange, r=dark red, N=light green, p=purple";
@@ -297,7 +298,7 @@ export class LayeredPython {
       mini_review: this.miniReview };
   }
 
-  private file(request: KernelRequest) {
+  private file(request: KernelRequest, parentReadonlyTools = false) {
     const clean = String(request.path).replace(/\\/g, "/");
     if (/(?:^|\/)harness\/components(?:\/|$)/i.test(clean) || (clean.includes("components/") && !clean.startsWith("work/")))
       return { error: `direct writes to component storage are blocked (${request.path}); use reflect_component(op, kind, name, ...)` };
@@ -305,6 +306,8 @@ export class LayeredPython {
     const target = resolve(this.workDir, relative);
     if (!target.startsWith(this.workDir + sep)) return { error: `only files under work/ are available: ${request.path}` };
     if (request.op === "read") return existsSync(target) ? { data: readFileSync(target, "utf8") } : { error: `no such file: ${request.path}`, missing: true };
+    if (parentReadonlyTools && target.toLowerCase().startsWith((join(this.workDir, "lib") + sep).toLowerCase()))
+      return { error: "Only boundary evolution can write tool files" };
     const data = String(request.data ?? ""), bytes = Buffer.byteLength(data);
     if (bytes > FILE_BYTES) return { error: `a work/ file is limited to ${FILE_BYTES} bytes (got ${bytes})` };
     const used = (readdirSync(this.workDir, { recursive: true }) as string[]).map(name => join(this.workDir, name))
@@ -318,7 +321,7 @@ export class LayeredPython {
     return { data: null };
   }
 
-  async run(code: string, signal?: AbortSignal, opts?: { forbidActions?: boolean }): Promise<PythonOutcome> {
+  async run(code: string, signal?: AbortSignal, opts?: { forbidActions?: boolean; parentReadonlyTools?: boolean; singleToolWrite?: boolean }): Promise<PythonOutcome> {
     const forbidActions = Boolean(opts?.forbidActions);
     if (!this.kernel.alive) this.sent = 0;
     const batch: ActionBatch & { halt?: string } = { executed: 0, actions: [], lines: [], level_changed: false, game_over: false, win: false };
@@ -330,17 +333,26 @@ export class LayeredPython {
       numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
-      harness_state: this.harnessState(), forbid_actions: forbidActions,
+      harness_state: this.harnessState(), forbid_actions: forbidActions, parent_readonly_tools: !!opts?.parentReadonlyTools,
       startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources, lib: this.scanLib(),
       memory_checks: this.memoryChecks, transition_results: this.transitionResults };
     this.sent = this.history.length;
+    let toolWrite: string | undefined;
     const onRequest = async (req: KernelRequest) => {
       if (req.t === "act") {
         if (forbidActions) return { stopped: "submit_actions is disabled during evolution review" };
         attempted = true;
         return this.act(req, batch);
       }
-      return this.file(req);
+      if (opts?.singleToolWrite && req.op !== "read") {
+        const relative = String(req.path).replace(/\\/g, "/").replace(/^(?:\.\/|\/)?work\//, "");
+        const target = resolve(this.workDir, relative).toLowerCase();
+        if (target.startsWith((join(this.workDir, "lib") + sep).toLowerCase())) {
+          if (toolWrite && target !== toolWrite) return { error: "One tool can be changed per audit" };
+          toolWrite = target;
+        }
+      }
+      return this.file(req, opts?.parentReadonlyTools);
     };
     let run: { result: Record<string, any>; metrics: Record<string, number> } | undefined;
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];

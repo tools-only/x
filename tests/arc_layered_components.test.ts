@@ -3,7 +3,20 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { LayeredComponents, type Kind } from "../demo/arc_layered_components.ts";
+import { LayeredComponents, normalizeVerifyExpr, type Kind } from "../demo/arc_layered_components.ts";
+
+test("Phase 1 ACE edits one stable entry and retires without losing history", () => {
+  const store = new LayeredComponents(mkdtempSync(join(tmpdir(), "ace-")));
+  const first = store.reflect("add", "memory", "probe", "original");
+  store.reflect("add", "memory", "other", "independent");
+  const revised = store.reflect("revise", "memory", "probe", "revised");
+  assert.equal(revised.id, first.id);
+  assert.equal(store.read("memory", "probe", 1).body, "original");
+  assert.equal(store.current("memory", "other")?.body, "independent");
+  store.reflect("retire", "memory", "probe");
+  assert.deepEqual(store.list("memory").map(item => item.name), ["other"]);
+  assert.equal(store.reflect("restore", "memory", "probe", undefined, undefined, 2).body, "revised");
+});
 
 test("component versions persist and restore without changing old versions", () => {
   const root = mkdtempSync(join(tmpdir(), "layered-components-"));
@@ -69,4 +82,17 @@ test("memory verify validates rules, hashes canonically, and restores prior veri
   assert.throws(() => reopened.reflect("redefine", "memory", "rules", "body", "", undefined, { ok: "a\nb" }), /one line/);
   assert.throws(() => reopened.reflect("redefine", "memory", "rules", "body", "", undefined,
     { r1: "True", r2: "True", r3: "True", r4: "True", r5: "True", r6: "True", r7: "True" }), /at most 6/);
+});
+
+test("normalizeVerifyExpr formats {when, assert} and wraps unscoped action-guard expressions", () => {
+  assert.equal(
+    normalizeVerifyExpr({ when: "t.action == 'UP'", assert: "t.after_frame.step > 0" }),
+    "(t.after_frame.step > 0) if (t.action == 'UP') else None",
+  );
+  assert.equal(
+    normalizeVerifyExpr("t.action and 'MOUSE(x=6,y=57)' in t.action and t.after_frame is not None and len(frame_diff(t.before_frame, t.after_frame).get('moved',[])) > 0"),
+    "(t.after_frame is not None and len(frame_diff(t.before_frame, t.after_frame).get('moved',[])) > 0) if (t.action and 'MOUSE(x=6,y=57)' in t.action) else None",
+  );
+  const scoped = "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action == 'UP' else None";
+  assert.equal(normalizeVerifyExpr(scoped), scoped);
 });

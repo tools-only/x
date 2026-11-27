@@ -36,6 +36,51 @@ async function session(extra: Partial<LayeredConfig> = {}) {
   return { bridge, python };
 }
 
+test("Phase 1 trial sees the recorded prefix and parent cannot publish", async () => {
+  const { python } = await session();
+  try {
+    await python.run('submit_actions(["UP"])');
+    const trial = await python.run("def probe():\n    return len(transitions), len(history), current_frame.step\nprint(trial_at(0, probe))", undefined, { forbidActions: true });
+    assert.equal(trial.error, undefined);
+    assert.match(trial.text, /\(0, 1, 0\)/);
+    const denied = await python.run("@tool\ndef scan():\n    return 1", undefined, { parentReadonlyTools: true });
+    assert.match(denied.error ?? denied.text, /Only boundary evolution/);
+    assert.deepEqual(denied.decoratedTools, []);
+  } finally {
+    python.close();
+  }
+});
+
+test("Phase 1 audit publishes a read-only branch probe and the next real action updates its evidence", async () => {
+  const { python } = await session();
+  try {
+    await python.run('submit_actions(["DOWN"])');
+    const audit = await python.run([
+      "@tool",
+      "def attempted():",
+      "    return {'branch_action': 'UP', 'tried': [t.action for t in transitions]}",
+      "print(trial_at(0, attempted.attempted)['tried'])",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.equal(audit.error, undefined);
+    assert.deepEqual(audit.decoratedTools, ["attempted"]);
+    assert.match(audit.text, /\[\]/);
+    const parent = { parentReadonlyTools: true };
+    const before = await python.run("print(attempted.attempted())", undefined, parent);
+    assert.match(before.text, /\['DOWN'\]/);
+    const repeat = await python.run('submit_actions(["DOWN"], expect=(0, 0))', undefined, parent);
+    assert.equal(repeat.steps?.[0]?.branch_handoff?.aligned, false);
+    assert.equal(repeat.steps?.[0]?.branch_handoff?.repeat_mismatch, true);
+    await python.run("attempted.attempted()", undefined, parent);
+    const next = await python.run('submit_actions(["UP"], expect=(2, 2))', undefined, parent);
+    assert.deepEqual(next.acted?.actions, ["UP"]);
+    assert.equal(next.steps?.[0]?.branch_handoff?.aligned, true);
+    const after = await python.run("print(attempted.attempted())", undefined, parent);
+    assert.match(after.text, /'DOWN', 'UP'/);
+  } finally {
+    python.close();
+  }
+});
+
 test("agent library module returns a value and reloads its revised source in the WASI kernel", async () => {
   const workDir = join(mkdtempSync(join(tmpdir(), "layered-bound-")), "work");
   mkdirSync(join(workDir, "lib"), { recursive: true });
@@ -841,6 +886,33 @@ test("vacuous expect=(0, 250) is flagged and excluded from expect_hits while non
     assert.match(vac.text, /\[vacuous expect=\(0, 250\):/);
     const real = await python.run("r = submit_actions('UP', expect=(1, 10))\nprint('hits:', r['expect_hits'])");
     assert.match(real.text, /hits: 1\/1/);
+  } finally {
+    python.close();
+  }
+});
+
+test("syncMemoryChecks marks 100%-failing historical rules as unscoped and suppresses live verify_failed spam", async () => {
+  const { python } = await session({ timeoutMs: 1200 });
+  try {
+    await python.run("submit_actions(['UP', 'DOWN', 'UP'], stop_on_noop=False)");
+    const stats = await python.syncMemoryChecks([
+      { id: "probe/unscoped", expr: "t.after_frame.step == 999" },
+      { id: "probe/scoped_fail", expr: "False if t.action == 'DOWN' else None" },
+    ]);
+    assert.equal(stats["probe/unscoped"].checked, 3);
+    assert.equal(stats["probe/unscoped"].support, 0);
+    assert.equal(stats["probe/unscoped"].counter, 3);
+    assert.equal(stats["probe/unscoped"].unscoped, true);
+
+    assert.equal(stats["probe/scoped_fail"].checked, 1);
+    assert.equal(stats["probe/scoped_fail"].counter, 1);
+    assert.equal(stats["probe/scoped_fail"].unscoped, false);
+
+    const live = await python.run("r = submit_actions('DOWN', stop_on_noop=False)\nprint(r['lines'][0])");
+    assert.doesNotMatch(live.text, /\[verify\/probe\/unscoped failed/);
+    assert.match(live.text, /\[verify\/probe\/scoped_fail failed/);
+    assert.equal(python.memoryCheckStats["probe/unscoped"].counter, 3);
+    assert.equal(python.memoryCheckStats["probe/scoped_fail"].counter, 2);
   } finally {
     python.close();
   }

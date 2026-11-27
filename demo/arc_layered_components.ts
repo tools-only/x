@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 
 export type Kind = "memory" | "skill" | "prompt" | "subagent" | "tool";
-export type Component = { kind: Kind; name: string; version: number; body: string; summary: string; hash: string; verify?: Record<string, string> };
+export type VerifyRuleInput = string | { when: string; assert: string };
+export type Component = { id?: string; kind: Kind; name: string; version: number; body: string; summary: string; hash: string; verify?: Record<string, string>; retired?: boolean; when?: string; out_branch?: string };
+export type ReflectOp = "define" | "redefine" | "restore" | "add" | "revise" | "retire";
 export type StatsBucket = { invocations: number; ok: number; action_producing: number; reads: number; failures: number };
 export type ComponentStats = {
   defined_level: number; updated_level: number; defined_step: number; updated_step: number;
@@ -20,7 +22,73 @@ const digest = (body: string, verify?: Record<string, string>) => {
   const payload = entries.length ? `${body}\0${JSON.stringify(entries)}` : body;
   return createHash("sha256").update(payload).digest("hex");
 };
-const cleanVerify = (kind: Kind, verify?: Record<string, string>) => {
+function scanTopLevel(expr: string): { hasIfElse: boolean; hasOr: boolean; andClauses: string[] } {
+  let depth = 0;
+  let quote: string | null = null;
+  let hasIf = false;
+  let hasElse = false;
+  let hasOr = false;
+  const andClauses: string[] = [];
+  let start = 0;
+  for (let i = 0; i < expr.length; i += 1) {
+    const ch = expr[i];
+    if (quote) {
+      if (ch === "\\" && i + 1 < expr.length) { i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === "(" || ch === "[" || ch === "{") { depth += 1; continue; }
+    if ((ch === ")" || ch === "]" || ch === "}") && depth > 0) { depth -= 1; continue; }
+    if (depth !== 0) continue;
+    if (/[A-Za-z_]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(expr[i - 1]))) {
+      let j = i + 1;
+      while (j < expr.length && /[A-Za-z0-9_]/.test(expr[j])) j += 1;
+      const word = expr.slice(i, j);
+      if (word === "if") hasIf = true;
+      else if (word === "else" && hasIf) hasElse = true;
+      else if (word === "or") hasOr = true;
+      else if (word === "and") {
+        andClauses.push(expr.slice(start, i).trim());
+        start = j;
+      }
+      i = j - 1;
+    }
+  }
+  andClauses.push(expr.slice(start).trim());
+  return { hasIfElse: hasIf && hasElse, hasOr, andClauses };
+}
+const OUTCOME_REF = /\b(?:after_frame|frame_diff|result|changed)\b|\bdiff\s*\(/;
+export function normalizeVerifyExpr(raw: VerifyRuleInput): string {
+  if (raw && typeof raw === "object") {
+    const whenExpr = String(raw.when ?? "").trim();
+    const assertExpr = String(raw.assert ?? "").trim();
+    if (!whenExpr || !assertExpr || whenExpr.includes("\n") || assertExpr.includes("\n"))
+      throw Error("verify expression must be one line of 1–320 characters");
+    const formatted = `(${assertExpr}) if (${whenExpr}) else None`;
+    if (formatted.length > 320) throw Error("verify expression must be one line of 1–320 characters");
+    return formatted;
+  }
+  let expr = String(raw ?? "").trim();
+  if (!expr || expr.includes("\n")) throw Error("verify expression must be one line of 1–320 characters");
+  const { hasIfElse, hasOr, andClauses } = scanTopLevel(expr);
+  if (!hasIfElse && !hasOr && andClauses.length >= 2) {
+    const guardParts: string[] = [];
+    let splitIdx = 0;
+    for (; splitIdx < andClauses.length; splitIdx += 1) {
+      const clause = andClauses[splitIdx];
+      if (clause && /\bt\.action\b/.test(clause) && !OUTCOME_REF.test(clause)) guardParts.push(clause);
+      else break;
+    }
+    const assertParts = andClauses.slice(splitIdx).filter(Boolean);
+    if (guardParts.length > 0 && assertParts.length > 0) {
+      expr = `(${assertParts.join(" and ")}) if (${guardParts.join(" and ")}) else None`;
+    }
+  }
+  if (expr.length > 320) throw Error("verify expression must be one line of 1–320 characters");
+  return expr;
+}
+const cleanVerify = (kind: Kind, verify?: Record<string, VerifyRuleInput>) => {
   if (verify === undefined) return undefined;
   if (kind !== "memory") throw Error("verify is supported on memory components only");
   const entries = Object.entries(verify);
@@ -29,10 +97,7 @@ const cleanVerify = (kind: Kind, verify?: Record<string, string>) => {
   const cleaned: Record<string, string> = {};
   for (const [key, rawExpr] of entries.sort(([a], [b]) => a.localeCompare(b))) {
     if (!NAME.test(key)) throw Error("verify rule name must be lowercase letters, digits or underscore");
-    const expr = String(rawExpr ?? "").trim();
-    if (!expr || expr.length > 240 || expr.includes("\n"))
-      throw Error("verify expression must be one line of 1–240 characters");
-    cleaned[key] = expr;
+    cleaned[key] = normalizeVerifyExpr(rawExpr);
   }
   return cleaned;
 };
@@ -124,32 +189,46 @@ export class LayeredComponents {
     const hash = digest(component.body, component.verify);
     if (component.kind !== kind || component.name !== name || component.version !== version || component.hash !== hash)
       throw Error("component version failed integrity check");
-    return component;
+    return { ...component, id: this.key(kind, name) };
   }
   list(kind?: Kind): Component[] {
     return [...this.heads].filter(([key]) => !kind || key.startsWith(kind + "/"))
-      .map(([key, version]) => { const [k, name] = key.split("/"); return this.read(k as Kind, name, version); });
+      .map(([key, version]) => { const [k, name] = key.split("/"); return this.read(k as Kind, name, version); })
+      .filter(component => !component.retired);
   }
-  reflect(op: "define" | "redefine" | "restore", kind: Kind, name: string, body?: string, summary = "", version?: number,
-          verify?: Record<string, string>): Component {
+  reflect(op: ReflectOp, kind: Kind, name: string, body?: string, summary = "", version?: number,
+          verify?: Record<string, VerifyRuleInput>): Component {
     if (!NAME.test(name)) throw Error("component name must be lowercase letters, digits or underscore");
     const current = this.current(kind, name);
-    if (op === "define" && current) throw Error("component already exists; use redefine");
-    if (op !== "define" && !current) throw Error("component does not exist; use define");
+    const adding = op === "define" || op === "add";
+    if (adding && current) throw Error("component already exists; use revise");
+    if (!adding && !current) throw Error("component does not exist; use add");
+    let retired = op === "retire";
+    if (retired && current) {
+      body = current.body;
+      summary = current.summary;
+      verify = current.verify;
+    }
     if (op === "restore") {
       if (!version) throw Error("restore requires a version");
       const prior = this.read(kind, name, version);
       body = prior.body;
       summary = prior.summary;
       verify = prior.verify;
+      retired = Boolean(prior.retired);
     }
     if (!body?.trim() || body.length > LIMIT[kind]) throw Error(`${kind} body must have 1–${LIMIT[kind]} characters`);
     if (kind === "skill" && !summary.trim()) throw Error("skill needs a one-line summary");
     if (summary.includes("\n")) throw Error("summary must be one line");
     const clean = cleanVerify(kind, verify);
     const next = (current?.version ?? 0) + 1;
-    const component: Component = { kind, name, version: next, body,
+    const component: Component = { id: this.key(kind, name), kind, name, version: next, body,
+      ...(retired ? { retired: true } : {}),
       summary: summary.slice(0, 120), ...(clean ? { verify: clean } : {}), hash: digest(body, clean) };
+    if (kind === "tool" || kind === "memory") {
+      component.when = /^\s*#?\s*when:[ \t]*(.+)$/mi.exec(body)?.[1].trim().slice(0, 120);
+      component.out_branch = /^\s*#?\s*out\/branch:[ \t]*(.+)$/mi.exec(body)?.[1].trim().slice(0, 120);
+    }
     const path = this.path(kind, name, next);
     mkdirSync(join(this.root, kind, name), { recursive: true });
     writeFileSync(path, JSON.stringify(component), "utf8");

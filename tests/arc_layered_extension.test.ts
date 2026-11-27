@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LayeredComponents } from "../demo/arc_layered_components.ts";
 import test from "node:test";
 import { compactHistory, compressedTrajectory, evict, extractTags, fold, foldPreActionObservations, framePng, installLayered, MEMORY_TYPE, NOTEBOOK_TYPE, renderDecisionWindow, STATE_TYPE } from "../demo/arc_layered_extension.ts";
 
@@ -31,6 +32,26 @@ const say = (text: string, extra = {}) => ({ type: "message_end", message: { rol
   usage: { input: 10, output: 5, totalTokens: 15 }, ...extra } });
 const settle = { type: "agent_before_settle", outcome: "completed", entries: [], continue: false };
 const textOf = (content: any[]) => content.filter(part => part.type === "text").map(part => part.text).join("\n");
+
+test("Phase 1 parent gets only a bounded active panel and contradicted advice stays folded after eviction", async () => {
+  const root = mkdtempSync(join(tmpdir(), "phase-one-context-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "bad", "do not resurrect this text", "", undefined, { witness: "False" });
+  store.reflect("add", "memory", "long", "x".repeat(2200));
+  store.reflect("add", "memory", "hot", "new observation");
+  store.recordChange("memory", "hot", 1, 0);
+  const { handlers, python, tools } = setup({ root, harnessProfile: true, contextCap: 2048, contextTarget: 512, foldAfter: 0 });
+  python.memoryCheckStats = { "bad/witness": { counter: 1, witness: "s1" } };
+  assert.equal(tools.reflect_component, undefined);
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] });
+  const { messages } = handlers.context({ messages: [user("old".repeat(5000)), user("current")] }, {});
+  const all = messages.map((message: any) => textOf(message.content)).join("\n");
+  const panel = all.split("## ACTIVE HARNESS").at(-1)!;
+  assert.ok(panel.length + "## ACTIVE HARNESS".length <= 2500);
+  assert.match(panel, /\[NEW\] MEMORY hot/);
+  assert.match(panel, /\[CONTRADICTED\] bad/);
+  assert.doesNotMatch(all, /do not resurrect this text/);
+});
 
 test("the run opens with the replaced system prompt and a state message with an image", async () => {
   const { handlers, tool } = setup();
@@ -62,69 +83,40 @@ test("text observation mode sends a complete frame initially and delta-only on s
   assert.doesNotMatch(textOf(next.message.content), /Frame 64x64:/);
 });
 
-test("harness profile reflects memory and injects its active version", async () => {
-  const { handlers, tools } = setup({ harnessProfile: true });
-  assert.ok(tools.reflect_component);
-  assert.ok(tools.read_component);
-  assert.ok(tools.consult);
+test("Phase 1 context exposes current Memory and the skill index on the latest message", async () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-components-fixture-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "current", "first");
+  store.reflect("revise", "memory", "current", "revised");
+  store.reflect("define", "skill", "probe", "inspect then act", "act after inspection");
+  const { handlers, tools, rows } = setup({ root, harnessProfile: true });
+  assert.equal(tools.reflect_component, undefined);
+  assert.match(textOf((await tools.read_component.execute("id", { kind: "memory", name: "current" })).content), /revised/);
   const first = await handlers.before_agent_start({});
-  assert.match(first.systemPrompt, /Five harness components/);
-  const saved = await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current", body: "H1: test next" });
-  assert.match(saved.content[0].text, /memory\/current v1/);
-  const read = await tools.read_component.execute("id", { kind: "memory", name: "current" });
-  assert.match(read.content[0].text, /H1: test next/);
-  const next = await handlers.before_agent_start({});
-  assert.doesNotMatch(textOf(next.message.content), /MEMORY current v1/);
-  const ctxMsg = handlers.context({ messages: [{ role: "custom", customType: STATE_TYPE, content: next.message.content }] }, { model: { contextWindow: 128000 } }).messages;
-  assert.match(textOf(ctxMsg[0].content), /MEMORY current v1: H1: test next/);
-});
-
-test("context exposes current component revisions and skill index only on the latest message", async () => {
-  const { handlers, tools, rows } = setup({ harnessProfile: true });
-  await handlers.before_agent_start({});
-  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current", body: "first" });
-  await tools.reflect_component.execute("id", { op: "define", kind: "skill", name: "probe", body: "inspect once", summary: "single inspection" });
-  const old = (await handlers.before_agent_start({})).message;
-  await tools.reflect_component.execute("id", { op: "redefine", kind: "memory", name: "current", body: "revised" });
-  await tools.reflect_component.execute("id", { op: "redefine", kind: "skill", name: "probe", body: "inspect then act", summary: "act after inspection" });
-  const newer = (await handlers.before_agent_start({})).message;
-  const out = handlers.context({ messages: [old, newer] }, { model: { contextWindow: 128000 } }).messages;
+  const second = await handlers.before_agent_start({});
+  const out = handlers.context({ messages: [first.message, second.message] }, {}).messages;
+  assert.match(first.systemPrompt, /ACTIVE HARNESS/);
   assert.doesNotMatch(textOf(out[0].content), /MEMORY current/);
   assert.match(textOf(out[1].content), /MEMORY current v2: revised/);
-  assert.match(textOf(out[1].content), /SKILLS: probe — act after inspection \(v2\)/);
-  assert.equal(rows("live_injected").filter(row => row.component_kind === "memory").at(-1).version, 2);
+  assert.match(textOf(out[1].content), /SKILLS: probe/);
+  assert.equal(rows("live_injected").at(-1).version, 2);
 });
 
-test("a conforming work library function is published and bound", async () => {
+test("Phase 1 parent turn does not publish a file found under work/lib", async () => {
   const root = mkdtempSync(join(tmpdir(), "layered-tool-"));
   mkdirSync(join(root, "work", "lib"), { recursive: true });
   writeFileSync(join(root, "work", "lib", "count.py"), "def count(args):\n    return len(args)\n");
-  writeFileSync(join(root, "work", "lib", "ping.py"), "def ping():\n    return 'pong'\n");
-  const { handlers, tools, python, rows } = setup({ root, harnessProfile: true });
+  const { handlers, tools, call } = setup({ root, harnessProfile: true });
   await handlers.before_agent_start({});
-  assert.ok(tools.count);
-  assert.ok(tools.ping);
-  assert.match(readFileSync(join(root, "harness", "components", "tool", "count", "v1.json"), "utf8"), /def count/);
-  const invoked = await tools.count.execute("id", { args: { a: 1 } });
-  const pinged = await tools.ping.execute("id", {});
-  assert.match(textOf(invoked.content), /ok/);
-  assert.match(textOf(pinged.content), /ok/);
-  assert.equal(python.runs, 2);
-  assert.equal(rows("bound_invocation")[0].ok, true);
-  assert.equal(rows("bound_invocation")[1].ok, true);
-  const failed = setup({ root: mkdtempSync(join(tmpdir(), "layered-failed-tool-")), harnessProfile: true });
-  mkdirSync(join(failed.root, "work", "lib"), { recursive: true });
-  writeFileSync(join(failed.root, "work", "lib", "broken.py"), "def broken(args):\n    raise ValueError('bad input')\n");
-  failed.python.run = async () => ({ text: "ValueError: bad input", error: "ValueError: bad input", acted: null, images: [], metrics: {}, truncated: false });
-  await failed.handlers.before_agent_start({});
-  assert.equal((await failed.tools.broken.execute("id", { args: {} })).isError, true);
-  assert.equal(failed.rows("bound_invocation")[0].ok, false);
+  await call();
+  assert.equal(tools.count, undefined);
 });
 
 test("consult uses the parent model once without action tools and enforces the level limit", async () => {
-  const { handlers, tools, rows } = setup({ harnessProfile: true, outputTokens: 4096 });
+  const root = mkdtempSync(join(tmpdir(), "consult-memory-"));
+  new LayeredComponents(join(root, "harness", "components")).reflect("add", "memory", "notes", "Confirmed: x\nFalsified: UP does nothing");
+  const { handlers, tools, rows } = setup({ root, harnessProfile: true, outputTokens: 4096 });
   await handlers.before_agent_start({});
-  await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "notes", body: "Confirmed: x\nFalsified: UP does nothing" });
   const model = { id: "same-model" };
   let calls = 0;
   const ctx: any = { model, modelRegistry: {
@@ -165,7 +157,7 @@ test("consult limit persists across a resumed session and can be disabled for B1
   assert.equal((await resumed.tools.consult.execute("id", { name: "reframer", question: "Third" }, undefined, undefined, ctx)).isError, true);
   const b1 = setup({ harnessProfile: true, consult: false });
   assert.equal(b1.tools.consult, undefined);
-  assert.ok(b1.tools.reflect_component);
+  assert.equal(b1.tools.reflect_component, undefined);
   assert.ok(b1.tools.read_component);
 });
 
@@ -771,7 +763,7 @@ test("clean-context boundary evolution runs with evolution-only tools and keeps 
     return python.memoryCheckStats;
   };
   let forbidSeen = false;
-  const origRun = python.run;
+  const origRun = python.run.bind(python);
   python.run = async (code: string, sig?: AbortSignal, opts?: { forbidActions?: boolean }) => {
     if (opts?.forbidActions) {
       forbidSeen = true;
@@ -803,7 +795,7 @@ test("clean-context boundary evolution runs with evolution-only tools and keeps 
             content: [
               { type: "toolCall", id: "e1", name: "python_inspect", arguments: { code: "print(current_frame.shape)" } },
               { type: "toolCall", id: "e2", name: "reflect_component", arguments: {
-                op: "define", kind: "memory", name: "rules", body: "Falsified: DOWN is fatal", verify: { ok: "t.action != 'DOWN'" } } },
+                op: "add", kind: "memory", name: "rules", body: "Falsified: DOWN is fatal", verify: { ok: "t.action != 'DOWN'" } } },
             ],
           }) };
         }
@@ -904,4 +896,61 @@ test("boundary evolution blocks same-turn finish_evolution after error and marks
     if (origMax === undefined) delete process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS;
     else process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS = origMax;
   }
+});
+
+test("unscoped 100%-failing verify rule emits fallback note and keeps Memory active instead of [CONTRADICTED]", async () => {
+  const { handlers, game, python, call } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({});
+  python.memoryCheckStats = {};
+  python.syncMemoryChecks = async (checks: Array<{ id: string; expr: string }>) => {
+    python.memoryCheckStats = Object.fromEntries(checks.map(c => [c.id,
+      c.id === "probe_mem/bad_scope"
+        ? { support: 0, counter: 4, checked: 4, by_level: { "1": { support: 0, counter: 4, checked: 4 } }, witness: "L1 s4 UP", error: null, unscoped: true }
+        : { support: 1, counter: 1, checked: 2, by_level: { "1": { support: 1, counter: 1, checked: 2 } }, witness: "L1 s4 DOWN", error: null, unscoped: false },
+    ]));
+    return python.memoryCheckStats;
+  };
+  game.state = "GAME_OVER";
+  game.step = 4;
+  python.next = batch({ executed: 1, actions: ["UP"], game_over: true, steps: [{
+    step: 4, action: "UP", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 1,
+  }] });
+  handlers.turn_start();
+  await call();
+
+  let round = 0;
+  let reflectReply = "";
+  const ctx: any = {
+    model: { id: "same-model", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_m: any, input: any) => {
+        round += 1;
+        if (round === 2) {
+          const toolMsg = input.messages.find((m: any) => m.role === "toolResult" && m.toolName === "reflect_component");
+          reflectReply = textOf(toolMsg?.content ?? []);
+        }
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 100, output: 20, totalTokens: 120 },
+          content: round === 1
+            ? [{ type: "toolCall", id: "r1", name: "reflect_component", arguments: {
+                op: "add", kind: "memory", name: "probe_mem", body: "Try UP next", verify: { bad_scope: "t.after_frame.step == 999" } } }]
+            : [{ type: "toolCall", id: "r2", name: "finish_evolution", arguments: { decision: "evolved", note: "saved probe" } }],
+        }) };
+      },
+    },
+  };
+  const parentStart = await handlers.before_agent_start({}, ctx);
+  assert.match(reflectReply, /\[verify fallback: bad_scope failed all historical transitions with 0 support/);
+  assert.match(reflectReply, /bad_scope: unscoped \(ignored\)/);
+
+  const ctxOut = handlers.context({ messages: [{ role: "custom", customType: STATE_TYPE, content: parentStart.message.content }] }, { model: { contextWindow: 102400 } }).messages;
+  const panel = textOf(ctxOut[0].content);
+  assert.match(panel, /\[NEW\] MEMORY probe_mem v1: Try UP next/);
+  assert.doesNotMatch(panel, /\[CONTRADICTED\] probe_mem/);
+
+  // A genuinely contradicted scoped rule (counter > 0, unscoped: false) still folds
+  python.memoryCheckStats["probe_mem/bad_scope"] = { support: 1, counter: 1, checked: 2, by_level: {}, witness: "L1 s5 UP", error: null, unscoped: false };
+  const ctxFolded = handlers.context({ messages: [{ role: "custom", customType: STATE_TYPE, content: parentStart.message.content }] }, { model: { contextWindow: 102400 } }).messages;
+  assert.match(textOf(ctxFolded[0].content), /\[CONTRADICTED\] probe_mem v1/);
 });

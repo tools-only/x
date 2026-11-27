@@ -96,10 +96,23 @@ def _wrap_lib_module(lib_name, module):
             def _wrapped(*args, **kwargs):
                 _S["called_lib"] = name
                 _S.setdefault("used_libs", set()).add(name)
-                return fn(*args, **kwargs)
+                if not _S.get("parent_readonly_tools"):
+                    return fn(*args, **kwargs)
+                previous = _S["forbid_actions"]
+                _S["forbid_actions"] = True
+                try:
+                    value = fn(*args, **kwargs)
+                    action = value.get("branch_action") if isinstance(value, dict) else None
+                    if isinstance(action, str) and action in _S["valid"]:
+                        frame = _H[-1]
+                        _S["branch_probe"] = (name, action, frame["raw"]["level"], frame["hash"], tuple(_S["valid"]))
+                    return value
+                finally:
+                    _S["forbid_actions"] = previous
             _wrapped.__name__ = fn.__name__
             _wrapped.__doc__ = fn.__doc__
             _wrapped.__module__ = fn.__module__
+            _wrapped.__wrapped__ = fn
             return _wrapped
         module.__dict__[attr] = _make_wrapper(obj, lib_name)
     return module
@@ -605,6 +618,7 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         if reasoning:
             call["reasoning"] = str(reasoning)
         before = _H[-1]
+        prior_valid = tuple(_S["valid"]) if _S.get("branch_probe") else ()
         label = call["action"] if call["action"] != "MOUSE" else "MOUSE(x=%s,y=%s)" % (call.get("x"), call.get("y"))
         if skipping and _edges()[0].get(before["hash"], {}).get(label) == before["hash"]:
             lines.append("%s: skipped, a known no-op in this state (force=True to send)" % label)
@@ -629,6 +643,16 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
                 lines[-1] += "  [animation: %d transient cells across %d frames; call anim_summary(%d) once instead of dumping frames_of(%d)]" % (
                     transient, len(grids), len(_H) - 1, len(_H) - 1)
         fact = _observe(before, forecast, source)
+        probe = _S.pop("branch_probe", None)
+        if probe is not None:
+            name, suggested, level, board_hash, valid = probe
+            comparable = (level == before["raw"]["level"] and board_hash == before["hash"]
+                          and valid == prior_valid)
+            fact["branch_handoff"] = {
+                "tool": name, "suggested": suggested, "actual": label, "comparable": comparable,
+                "aligned": comparable and suggested == label and expect is not None and not _is_vacuous_expect(expect),
+                "repeat_mismatch": comparable and suggested != label and bool(fact.get("same")),
+            }
         lines[-1] += _echo(fact)
         vacuous_expect = expect is not None and _is_vacuous_expect(expect)
         if expect is not None:
@@ -869,7 +893,7 @@ def _observe(before, forecast, source):
             if verdict is not None:
                 fact["claims_held" if verdict else "claims_failed"].append(name)
     for cid, entry in sorted((_S.get("memory_checks") or {}).items()):
-        if entry.get("code") is not None:
+        if entry.get("code") is not None and not entry.get("stats", {}).get("unscoped"):
             verdict = _judge_memory(cid, entry, t)
             if verdict is False:
                 fact["verify_failed"].append(cid)
@@ -993,7 +1017,7 @@ def _judge_claim(claim_name, claim, t):
 
 
 def _judge_memory(cid, entry, t):
-    if entry.get("code") is None:
+    if entry.get("code") is None or entry.get("stats", {}).get("unscoped"):
         return None
     tr = Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"]))
     env = {"__builtins__": _S["ns"]["__builtins__"], **_API, "t": tr,
@@ -1030,7 +1054,7 @@ def _sync_memory(checks, force_rebacktest=False):
         cur = store.get(cid)
         if cur is not None and cur["expr"] == expr and not force_rebacktest:
             continue
-        stats = {"support": 0, "counter": 0, "checked": 0, "by_level": {}, "witness": None, "error": None}
+        stats = {"support": 0, "counter": 0, "checked": 0, "by_level": {}, "witness": None, "error": None, "unscoped": False}
         try:
             compiled = compile(expr, "memory_verify/%s" % cid, "eval")
         except BaseException as exc:
@@ -1040,6 +1064,8 @@ def _sync_memory(checks, force_rebacktest=False):
         entry = {"expr": expr, "code": compiled, "stats": stats}
         for t in _T:
             _judge_memory(cid, entry, t)
+        if len(_T) >= 3 and stats["checked"] == len(_T) and stats["support"] == 0 and stats["counter"] == len(_T):
+            stats["unscoped"] = True
         store[cid] = entry
     for cid in list(store):
         if cid not in supplied:
@@ -1047,7 +1073,39 @@ def _sync_memory(checks, force_rebacktest=False):
 
 
 def tool(fn):
+    if _S.get("parent_readonly_tools"):
+        raise PermissionError("Only boundary evolution can publish @tool")
     return fn
+
+
+def trial_at(k, fn):
+    """Run a self-contained observation function at the prefix before transition k."""
+    if not _S.get("forbid_actions"):
+        raise PermissionError("trial_at is available during boundary evolution")
+    if type(k) is not int or not 0 <= k < len(_H):
+        raise IndexError("trial index outside recorded history")
+    fn = getattr(fn, "__wrapped__", fn)
+    if not isinstance(fn, types.FunctionType):
+        raise TypeError("pass a function, for example trial_at(k, tool_module.function)")
+    if fn.__closure__ or fn.__defaults__ or fn.__kwdefaults__:
+        raise ValueError("trial function must not capture live values")
+    history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H[:k + 1]]
+    transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T[:k]]
+    last = transitions[-1] if transitions else None
+    names = dict(__builtins__={name: getattr(builtins, name) for name in
+                              ("abs", "all", "any", "bool", "dict", "enumerate", "float", "int", "len",
+                               "list", "max", "min", "print", "range", "reversed", "set", "sorted", "str",
+                               "sum", "tuple", "zip")},
+                 history=history, transitions=transitions, current_frame=history[-1].frame,
+                 previous_frame=last.before_frame if last else None, last_transition=last,
+                 last_action=last.action if last else None, last_action_result=last.result if last else {},
+                 diff=diff, ascii=ascii)
+    def trial_frame_diff(a=None, b=None):
+        a = a if a is not None else names["previous_frame"]
+        return frame_diff(a, names["current_frame"] if b is None else b) if a is not None else {
+            "changed_cells": 0, "note": "no previous frame"}
+    names["frame_diff"] = trial_frame_diff
+    return type(fn)(fn.__code__, names)()
 
 
 def _extract_decorated_tools(tree, code):
@@ -1108,7 +1166,8 @@ def _cell(req):
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
               skip_noops=bool(req.get("skip_noops")), expect_on=bool(req.get("expect_enabled")),
               graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {},
-              forbid_actions=bool(req.get("forbid_actions")))
+              forbid_actions=bool(req.get("forbid_actions")),
+              parent_readonly_tools=bool(req.get("parent_readonly_tools")))
     if req["reset_history"]:
         _H.clear()
         _T.clear()
@@ -1126,7 +1185,7 @@ def _cell(req):
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
                     "diff": diff, "ascii": ascii, "frames_of": frames_of, "anim_summary": anim_summary,
-                    "frame_diff": frame_diff, "tool": tool}
+                    "frame_diff": frame_diff, "tool": tool, "trial_at": trial_at}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):

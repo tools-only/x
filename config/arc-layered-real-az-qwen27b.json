@@ -1,0 +1,18 @@
+{
+  "game": "su15",
+  "arc_root": "D:/arc-agi-benchmark/arc-agi-3-benchmarking",
+  "provider": "az",
+  "base_url": "https://az.gptplus5.com/v1",
+  "credential_root": "D:/agent/.codex/worktrees/arc-adapt-self-harness/autoresearch_pi_project",
+  "api_key_env": "OPENAI_API_KEY",
+  "model": "qwen3.8-27b",
+  "api": "openai-completions",
+  "thinking": "medium",
+  "thinking_format": "qwen",
+  "profile": "qwen27b-harness",
+  "config": "api-research",
+  "benchmark_only": true,
+  "extension_env": {
+    "ARC_LAYERED_EVOLUTION": "1"
+  }
+}

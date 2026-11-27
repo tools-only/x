@@ -175,7 +175,7 @@ class PiKernel:
         with self._stderr_lock:
             return self._stderr_tail
 
-    def send(self, command: str, **params: Any) -> Dict[str, Any]:
+    def send(self, command: str, *, response_timeout: float | None = None, **params: Any) -> Dict[str, Any]:
         self.start()
         assert self.process and self.process.stdin and self.process.stdout
         with self._lock:
@@ -187,8 +187,11 @@ class PiKernel:
             if self.event_sink:
                 self.event_sink(dict(type='rpc_control', stage='sent', command=command,
                     rpc_id=request_id, pid=self.process.pid, monotonic_ms=time.monotonic()*1000))
+            response_deadline = time.monotonic() + self._remaining_timeout(
+                self.timeout if response_timeout is None else response_timeout
+            )
             while True:
-                wait_timeout = self._remaining_timeout(self.timeout)
+                wait_timeout = max(0.0, response_deadline - time.monotonic())
                 try:
                     line = self._queue.get(timeout=wait_timeout)
                 except Empty as exc:
