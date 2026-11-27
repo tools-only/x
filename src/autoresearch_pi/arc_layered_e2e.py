@@ -87,6 +87,109 @@ def _layered_evidence(root: Path) -> dict[str, Any]:
     }
 
 
+def _flush_final_level_replay(root: Path, state: dict[str, Any], rows: list[dict[str, Any]],
+                              comp_stats: dict[str, Any]) -> Path | None:
+    """Ensure the final active level's work/replay/level_<N>.md is flushed after PiKernel.close()."""
+    harness = root / "harness"
+    decisions = _read_jsonl(harness / "decisions.jsonl")
+    if not decisions:
+        return None
+    win_levels = state.get("win_levels")
+    completed = state.get("levels_completed")
+    if isinstance(win_levels, int) and win_levels > 0 and isinstance(completed, int):
+        target_level = min(completed + 1, win_levels)
+    else:
+        target_level = int(decisions[-1].get("level") or 1)
+    level_decisions = [d for d in decisions if int(d.get("level") or 0) == target_level]
+    if not level_decisions:
+        target_level = int(decisions[-1].get("level") or 1)
+        level_decisions = [d for d in decisions if int(d.get("level") or 0) == target_level]
+    if not level_decisions:
+        return None
+    same_count = sum(1 for d in level_decisions if d.get("same"))
+    no_new = sum(1 for d in level_decisions if not d.get("new"))
+    unchanged = sum(1 for d in level_decisions if not d.get("changed"))
+    deaths = sum(1 for d in level_decisions if d.get("death"))
+    tail_lines = [
+        f"s{d.get('step')} {d.get('action')} try{d.get('tries', 0)}"
+        + (" same" if d.get("same") else "")
+        + (" DEATH" if d.get("death") else "")
+        + (" LEVEL_UP" if d.get("level_up") else "")
+        + (" frame-change" if d.get("changed") else "")
+        + (" new-interior" if d.get("new") else "")
+        + (f" via {d['source']}" if d.get("source") else "")
+        + (f" verify_failed:{'/'.join(d['verify_failed'])}" if d.get("verify_failed") else "")
+        for d in level_decisions[-6:]
+    ]
+    head_path = harness / "components" / "HEAD.json"
+    heads: dict[str, int] = json.loads(head_path.read_text(encoding="utf-8")) if head_path.is_file() else {}
+    verify_stats: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row.get("kind") == "memory_verify_sync" and isinstance(row.get("stats"), dict):
+            for cid, st in row["stats"].items():
+                if isinstance(st, dict):
+                    verify_stats[cid] = st
+    comp_lines: list[str] = []
+    for kind in ("memory", "prompt", "skill", "tool", "subagent"):
+        matched = sorted((k.split("/", 1)[1], v) for k, v in heads.items() if k.startswith(f"{kind}/"))
+        if not matched:
+            comp_lines.append(f"- {kind}: none")
+            continue
+        for name, ver in matched:
+            cpath = harness / "components" / kind / name / f"v{ver}.json"
+            cobj = json.loads(cpath.read_text(encoding="utf-8")) if cpath.is_file() else {}
+            st = comp_stats.get(f"{kind}/{name}") or {}
+            cur = (st.get("by_level") or {}).get(str(target_level)) or {}
+            tot = st.get("total") or {}
+            if kind == "memory":
+                vmap = cobj.get("verify") or {}
+                vparts = []
+                for rule in sorted(vmap):
+                    vst = verify_stats.get(f"{name}/{rule}")
+                    if not vst:
+                        vparts.append(f"{rule}: pending")
+                    elif vst.get("error"):
+                        vparts.append(f"{rule}: err({str(vst['error'])[:60]})")
+                    elif not vst.get("checked"):
+                        vparts.append(f"{rule}: 0 checked")
+                    else:
+                        failed = vst.get("counter", 0)
+                        wit = f" ({vst['witness']})" if failed and vst.get("witness") else ""
+                        vparts.append(f"{rule}: {vst.get('support', 0)}/{vst['checked']} held" + (f", {failed} failed{wit}" if failed else ""))
+                vsuf = f" [verify: {'; '.join(vparts)}]" if vparts else ""
+                comp_lines.append(f"- memory/{name} v{ver}{vsuf}")
+            elif kind == "skill":
+                comp_lines.append(f"- skill/{name} v{ver}: L{target_level} reads={cur.get('reads', 0)}, total={tot.get('reads', 0)}")
+            elif kind in ("tool", "subagent"):
+                comp_lines.append(f"- {kind}/{name} v{ver}: L{target_level} {cur.get('ok', 0)}/{cur.get('invocations', 0)} ok, total {tot.get('ok', 0)}/{tot.get('invocations', 0)} ok")
+            else:
+                comp_lines.append(f"- prompt/{name} v{ver}")
+    py_level = [r for r in rows if r.get("kind") == "python" and int(r.get("level") or 0) == target_level]
+    obs_level = sum(1 for r in rows if r.get("kind") == "observe_limit" and int(r.get("level") or 0) == target_level)
+    consult_level = sum(1 for r in rows if r.get("kind") == "consult" and r.get("attempted") is True and int(r.get("level") or 0) == target_level)
+    recent_errs = [str(r["error"]).splitlines()[-1][:120] for r in py_level if r.get("error")][-2:]
+    budget = state.get("action_budget") or {}
+    body = "\n".join([
+        f"# Level {target_level} review", "",
+        f"Outcome: {state.get('state', 'UNKNOWN')}; actions used {budget.get('total_used', len(decisions))}; completed {state.get('levels_completed', 0)}/{state.get('win_levels', 0)}.",
+        "", "## Layer 1: Task facts", "",
+        f"steps {len(level_decisions)}; same-result {same_count}; no-new-interior-state {no_new}; unchanged-frame {unchanged}; deaths {deaths}",
+        *tail_lines,
+        "", "## Layer 2: Active capabilities & execution", "",
+        *comp_lines,
+        f"- consults on L{target_level}: {consult_level}",
+        f"- python: calls={len(py_level)}, errors={sum(1 for r in py_level if r.get('error'))}, truncated={sum(1 for r in py_level if r.get('truncated'))}, observe_limits={obs_level}"
+        + (f"; recent errors: {' | '.join(recent_errs)}" if recent_errs else ""),
+        "", "## Editable capability space", "",
+        "Editable capability space: memory (with optional verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult).", "",
+    ])
+    replay_dir = root / "work" / "replay"
+    replay_dir.mkdir(parents=True, exist_ok=True)
+    target = replay_dir / f"level_{target_level}.md"
+    target.write_text(body[:4000], encoding="utf-8")
+    return target
+
+
 def _classify_segment_activity(end: dict[str, Any], segment_rows: list[dict[str, Any]],
                                work_changed: int, work_errors: int) -> str:
     """Distinguish productive cognitive/component progress from genuinely idle segments."""
@@ -94,7 +197,7 @@ def _classify_segment_activity(end: dict[str, Any], segment_rows: list[dict[str,
         return "acted"
     if end.get("reason") in ("length", "length_exhausted"):
         return str(end.get("reason"))
-    constructive_kinds = {"component_change", "tool_published", "read_component"}
+    constructive_kinds = {"component_change", "tool_published", "tool_decorated", "read_component"}
     has_constructive = (work_changed > 0 and not work_errors) or any(
         row.get("kind") in constructive_kinds
         or (row.get("kind") == "consult" and row.get("ok") is True)
@@ -339,6 +442,21 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         requests["complete_cost_known"] = requests["unknown_cost_attempts"] == 0
     comp_stats_path = harness / "components" / "stats.json"
     comp_stats = json.loads(comp_stats_path.read_text(encoding="utf-8")) if comp_stats_path.is_file() else {}
+    if profile == "qwen27b-harness":
+        _flush_final_level_replay(root, state, rows, comp_stats)
+    def _audits_followed_by_evolution(events: list[dict[str, Any]]) -> int:
+        converted = 0
+        pending_audit = False
+        evo_kinds = {"component_change", "tool_published", "tool_decorated"}
+        for ev in events:
+            k = ev.get("kind")
+            if k == "dual_audit_shown":
+                pending_audit = True
+            elif pending_audit and (k in evo_kinds or (k == "consult" and ev.get("ok") is True)):
+                converted += 1
+                pending_audit = False
+        return converted
+
     summary.update({
         "actions": budget.get("total_used"), "levels_completed": state.get("levels_completed"), "win_levels": state.get("win_levels"),
         "final_state": state.get("state"), "wall_seconds": round(time.monotonic() - started, 1),
@@ -356,7 +474,15 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "tool_publish_failed": sum(1 for r in rows if r.get("kind") == "tool_publish_failed"),
             "bound_invocations": sum(1 for r in rows if r.get("kind") == "bound_invocation"),
             "bound_ok": sum(1 for r in rows if r.get("kind") == "bound_invocation" and r.get("ok") is True),
+            "lib_invocations": sum(1 for r in rows if r.get("kind") == "lib_invocation"),
+            "lib_ok": sum(1 for r in rows if r.get("kind") == "lib_invocation" and r.get("ok") is True),
             "live_injected": sum(1 for r in rows if r.get("kind") == "live_injected"),
+            "memory_verify_syncs": sum(1 for r in rows if r.get("kind") == "memory_verify_sync"),
+            "memory_verify_failures": sum(1 for r in rows if r.get("kind") == "memory_verify_failure"),
+            "at_tool_published": sum(1 for r in rows if r.get("kind") == "tool_decorated"),
+            "dual_audits_shown": sum(1 for r in rows if r.get("kind") == "dual_audit_shown"),
+            "dual_audits_by_boundary": dict(Counter(r.get("boundary") for r in rows if r.get("kind") == "dual_audit_shown" and r.get("boundary"))),
+            "audits_followed_by_evolution": _audits_followed_by_evolution(rows),
             "stats": comp_stats,
         },
         "subagents": {"consult_ok": sum(1 for r in rows if r.get("kind") == "consult" and r.get("ok") is True),

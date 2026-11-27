@@ -735,3 +735,75 @@ test("interiorStale tracks stale_steps despite border counter ticks and detects 
   assert.equal(st.stale_steps, 3);
   assert.match(st.action_invariant ?? "", /action-invariant regions \[\(12\.\.15,0\.\.3\)\] changed across 3 distinct actions/);
 });
+
+test("@tool mounts callable module with imports and live globals, tracks usedLibs, and survives kernel restart", async () => {
+  const { python } = await session({ timeoutMs: 1200 });
+  const res1 = await python.run([
+    "from collections import Counter",
+    "@tool",
+    "def scan(args=None):",
+    "    flat = [v for row in current_frame.grid for v in row if v != 0]",
+    "    return dict(Counter(flat))",
+    "scan()",
+  ].join("\n"));
+  assert.equal(res1.error, undefined);
+  assert.deepEqual(res1.decoratedTools, ["scan"]);
+  assert.deepEqual(res1.usedLibs, ["scan"]);
+  assert.match(res1.text, /\{2: 1\}/);
+
+  await python.run("submit_actions('UP')");
+  const res2 = await python.run("print(scan(), scan.scan())");
+  assert.equal(res2.error, undefined);
+  assert.deepEqual(res2.usedLibs, ["scan"]);
+  assert.match(res2.text, /\{2: 1\} \{2: 1\}/);
+
+  // Trigger real kernel restart and verify scan() + scan.scan() still work with live current_frame
+  const crashed = await python.run("while True: pass");
+  assert.equal(crashed.kernelRestarted, true);
+  const res3 = await python.run("print(scan(), scan.scan())");
+  assert.equal(res3.error, undefined);
+  assert.deepEqual(res3.usedLibs, ["scan"]);
+  assert.match(res3.text, /\{2: 1\} \{2: 1\}/);
+
+  // Invalid @tool signature returns clean error without crashing kernel
+  const bad = await python.run("@tool\ndef bad_sig(a, b):\n    return a + b\n");
+  assert.match(bad.error ?? "", /must accept 0 or 1 argument/);
+  python.close();
+});
+
+test("syncMemoryChecks ignores None in checked denominator, backtests history, scores live actions, and survives restart", async () => {
+  const { python } = await session({ timeoutMs: 1200 });
+  await python.run("submit_actions(['UP', 'DOWN'], stop_on_noop=False)");
+  const stats = await python.syncMemoryChecks([
+    { id: "rules/up_changes", expr: "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action == 'UP' else None" },
+    { id: "rules/down_moves", expr: "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action == 'DOWN' else None" },
+    { id: "rules/syntax_err", expr: "t.action ==" },
+  ]);
+  // UP happened once and changed cells -> 1/1 held; DOWN was None -> NOT counted in up_changes checked!
+  assert.equal(stats["rules/up_changes"].checked, 1);
+  assert.equal(stats["rules/up_changes"].support, 1);
+  assert.equal(stats["rules/up_changes"].counter, 0);
+  // DOWN happened once and did NOT change cells -> 0/1 held, 1 failed with witness
+  assert.equal(stats["rules/down_moves"].checked, 1);
+  assert.equal(stats["rules/down_moves"].counter, 1);
+  assert.match(stats["rules/down_moves"].witness ?? "", /L1 s2 DOWN/);
+  assert.match(stats["rules/syntax_err"].error ?? "", /SyntaxError/);
+
+  // Live action scoring echoes verify failure
+  const live = await python.run("r = submit_actions('DOWN', stop_on_noop=False)\nprint(r['lines'][0])");
+  assert.match(live.text, /\[verify\/rules\/down_moves failed:/);
+  assert.equal(python.memoryCheckStats["rules/down_moves"].counter, 2);
+  assert.equal(python.memoryCheckStats["rules/up_changes"].checked, 1);
+
+  // Real kernel restart replays transitionResults and preserves backtest stats
+  const crashed = await python.run("while True: pass");
+  assert.equal(crashed.kernelRestarted, true);
+  const afterRestart = await python.syncMemoryChecks([
+    { id: "rules/up_changes", expr: "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action == 'UP' else None" },
+    { id: "rules/down_moves", expr: "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action == 'DOWN' else None" },
+  ]);
+  assert.equal(afterRestart["rules/up_changes"].checked, 1);
+  assert.equal(afterRestart["rules/up_changes"].support, 1);
+  assert.equal(afterRestart["rules/down_moves"].counter, 2);
+  python.close();
+});

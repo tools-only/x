@@ -13,11 +13,11 @@ The `python` namespace persists across calls and refreshes after each action:
 - Python calls cost context and turn budget. Aim to inspect and act in ONE script; pure observation without `submit_actions` is capped at 2 calls per turn. Never print full 64x64 boards or dump all `frames_of()` — call `anim_summary()` once, and if still unclear, take a 1-step probe.
 
 ## Five harness components
-Use when useful (keep game progress ahead of component maintenance):
-- **Memory**: short versioned state (`Confirmed`, `Competing H1 vs H2`, `Falsified`, `Next Probe`), injected automatically across context trims and level changes. Manage via `reflect_component`.
-- **Tools**: write reusable cross-level Python helpers in `work/lib/<name>.py`; defining `def <name>(args):` or `def run(args):` (or zero-arg `def <name>():`) auto-publishes it as a bound tool, and modules can also be imported in Python.
-- **Skills**: reusable exploration/solving methods. State shows names and one-line summaries; read full text on demand via `read_component`.
+Use when useful (keep game progress ahead of component maintenance). On `GAME_OVER`, `LEVEL COMPLETE`, or periodic `STUCK`/`STALL` checkpoints, state shows Layer 1 task facts, Layer 2 active capabilities, and the outcome of any recent evolution; either adjust task actions or make 1 minimal capability update and verify it next:
+- **Memory**: short versioned state (`Confirmed`, `Competing H1 vs H2`, `Falsified`, `Next Probe`), injected automatically across context trims and level changes. Optional `verify={"rule": "expr over t"}` (returns `True`/`False`/`None`, e.g. `verify={"moves": "diff(t.before_frame, t.after_frame)['count'] > 0 if t.action != 'RESET' else None"}`) backtests on past `transitions` and scores future moves.
+- **Tools**: decorate a 0-arg or 1-arg Python function with `@tool` (e.g. `@tool\ndef scan(): ...`) or write `work/lib/<name>.py`; auto-mounts as a bound tool with live globals (`current_frame`, `transitions`), callable immediately as `name()` or via `import name`.
+- **Skills**: reusable exploration/solving workflows. State shows names and one-line summaries; read full text on demand via `read_component`.
 - **Prompt**: a short versioned reminder (<= 600 chars) shown in state when active.
 - **Subagents**: when stalled, call `consult(name="reframer", question=...)` (or a custom subagent) for a clean-context view; subagents cannot act.
 
-`reflect_component(op="define"|"redefine"|"restore", kind, name, body, summary?, version?)` manages `memory`, `skill`, `prompt`, `subagent`. Use `read_component(kind, name)` for exact text.
+`reflect_component(op="define"|"redefine"|"restore", kind, name, body, summary?, version?, verify?)` manages `memory`, `skill`, `prompt`, `subagent`. Use `read_component(kind, name)` for exact text.

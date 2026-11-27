@@ -62,3 +62,23 @@ Agent 自行调用 `reflect_component` 定义/修订/恢复 Memory、Skill、Pro
    - `src/autoresearch_pi/arc_layered_e2e.py` 新增 `_classify_segment_activity()`：通过 `layered.jsonl` 增量游标识别 `component_change` / `read_component` / `consult(ok)` / `tool_published` / 合法 `work/` 改动，连续最多 2 次建设性无动作 segment 不计入 `idle_segments`，防止误杀组件整理与问询回合；`summary.json` 汇总 `components`、`subagents` 与 `length_truncations`，CLI 新增 `--no-image` 快捷参数。
    - 补齐 `length` 截断有界恢复：连续 `length` 在第 1 次恢复注入 `LENGTH RECOVERY` 简短行动提示并在 `before_provider_request` 中关闭思考开关/适度放宽单次输出上限（`<= 8192`），达到上限次数后以 `segment_end.reason = "length_exhausted"` 通知 runner 终止为 `stop_reason = "length_truncation"`，避免无限重发或退化为 `idle`。
 - **最新验证（本次提交前）**：`git diff --check`、`py_compile`、`tests/test_arc_layered_evolution.py`（3/3）、`tests/arc_layered_components.test.ts`（2/2）、`tests/arc_layered_python.test.ts` 定向（13/13，含绕过写拦截负例）以及 Node 22 `stripTypeScriptTypes` 对全量修改 `.ts` 文件的语法转换均通过；`tests/arc_layered_extension.test.ts`、scripted Pi smoke 与真实 Qwen 3.8 27B 运行仍受本机缺少 `node_modules` 与未授权预算限制保持未验证。
+
+## 2026-11-26 当前范式下的自进化最小闭环收口（基于 5 局实跑反馈）
+
+- **真实失败与断点定位**：实跑 `codex/layered-dual-self-evolution`（`a5ce4ab7`）5 局游戏显示，`dualAudit` 反复触发（`ar` 33 次含 31 次 `STUCK`、`cd82` 27 次、`dc22` 21 次、`cn04` 12 次），5 局均未产出可执行 harness 演化，仅有零星 `memory` 文本修改，重复审查块持续挤占 context。根因定位在 5 处具体转移断点：
+  1. **触发无冷却**：`stale_steps >= stuckAfter` 每步连发，且与 `STALL`/`GAME_OVER`/`LEVEL COMPLETE` 叠发，导致 30+ 份重复审计刷屏；
+  2. **演化工具摩擦**：`@tool` 将 `ns[name]` 覆写为不可调用的 `ModuleType`（同 cell `fn()` 崩溃）且拒绝默认参数；创建工具还会消耗 `observeCallsThisTurn` 并弹出 `[observe 1/2: no action taken]` 催促；
+  3. **使用与验证记账失真**：纯观察型 `work/lib` 工具在 Python 内调用未触发 `submit_actions` 时完全不计入 `stats.json`（随后被误报 0 使用）；`Memory.verify` 将不适用（`None`）计入 `checked` 分母、按 `after_frame.level` 错桶，且 `context` hook 热注入漏掉 `[verify: ...]`；
+  4. **闭环反馈缺失**：完成一次演化后，下一边界不反馈该次演化之后的新增状态、死亡与调用结果；
+  5. **落盘与汇总漏洞**：`summary.json` 重复 `"components"` 键覆盖丢失原有组件指标，runner 兜底 replay 在 `WIN` 时将关号算为 `win_levels + 1`，且 `GAME_OVER` 清空轨迹导致 `consult` 拿不到失败前轨迹。
+- **窄命题与最小闭环改动（不改大架构，沿用当前 `qwen27b-harness` 范式）**：
+  1. **边界冷却与控长**：`STUCK`/`STALL` 审计增加 12 步冷却与单关最多 3 次上限（新态/`RESET`/换关重臂），`GAME_OVER` 每死仅审一次，单块收紧上限（`STUCK <= 950`、`GAME_OVER <= 1350`、`LEVEL COMPLETE <= 1600` 字符），去除重复块。
+  2. **低摩擦可执行演化**：`demo/arc_layered_prelude.py` 引入 `_CallableToolModule` 并在 `_bind()`/`_load()`/`_WorkLoader` 同步刷新实时全局，使 `@tool` 支持 0/1 参（含默认值）且 `fn()`/`fn.fn()`/`import fn` 同 cell 与重启后均可调；每回合首次成功挂载工具免除 `observeCallsThisTurn` 惩罚；`demo/arc_layered_components.ts` 与 `demo/arc_layered_python.ts` 接入 `Memory.verify`（`None` 不计入 `checked`、按 `before_frame.level` 归桶、`transitionResults` 跨重启回测、`content()` 与 `context` hook 双处注入 `[verify: ...]`）。
+  3. **准确归因与 1 行演化反馈**：`prelude.py` 返回 `used_libs`，让 Python 内观察/分析型工具调用同样计入 `stats.json` 与 `lib_invocation`；`demo/arc_layered_extension.ts` 记录 `lastEvolution`（`reflect_component`/`tool_published`/`consult(ok)`），在下一边界以 1 行 `Last evolution (...)` 客观反馈使用率/验证分及之后的新状态/死亡数，并提供中性决策提示与可编辑能力空间（不强引导具体工具）。同时修复 `foldPreActionObservations()` 仅折叠 `python` 纯观察、`GAME_OVER` 保留 `lastFailedAttemptSteps` 供 `consult`、`session_shutdown` 刷盘及 `process.env.ARC_LAYERED_MAX_LENGTH_RECOVERIES` 引用缺陷。
+  4. **汇总与兜底落盘**：`src/autoresearch_pi/arc_layered_e2e.py` 合并保留全部 `summary["components"]` 字段并新增 `dual_audits_by_boundary`、`audits_followed_by_evolution`、`lib_invocations`/`lib_ok`、`memory_verify_syncs`/`failures`、`at_tool_published`；新增 `_flush_final_level_replay()` 在 `PiKernel.close()` 后按 `min(levels_completed + 1, win_levels)` 兜底刷新最终关 `work/replay/level_<N>.md`。
+  5. **Prompt 收敛**：`demo/prompts/arc_layered_system_harness.md`（3,259 字节）保留全部原有合同并补充 `verify` 与 `@tool` 1 行语法示例及中性边界说明。
+- **四层验收状态（本次提交）**：
+  - **功能正确**：本地通过 `git diff --check`、`py_compile`、`pytest tests/test_arc_layered_evolution.py`（4/4，含 `WIN` 关号夹紧与 `verify` 回放）、`tests/arc_layered_components.test.ts`（3/3）+ `tests/arc_layered_inventory.test.ts`（1/1）、真实 WASI 内核 `tests/arc_layered_python.test.ts` 定向 7/7（含 `@tool` 同 cell/重启调用与 `usedLibs`、`syncMemoryChecks` 忽略 `None`/实时失败见证/重启恢复）、以及 Node 22 `stripTypeScriptTypes` 对全部 6 个修改 `.ts` 文件的语法解析校验。`tests/arc_layered_extension.test.ts` 因本机未安装 `node_modules`（缺少 `typebox`）**未运行（未验证）**。
+  - **全链路可达**：未验证（本机无本地 Pi `node_modules`）。
+  - **自主采用**：未验证（待授权预算在真实 Qwen 3.8 27B 实跑，检查 `dual_audits_shown` 是否从 12–33 次降至个位数、`audits_followed_by_evolution` 与 `lib_invocations`/`bound_ok`/`memory_verify_syncs` 是否从 0 破零）。
+  - **净收益**：未验证（需与 `a5ce4ab7` 及 `qwen27b` 基线同预算独立对照任务过关率与父子总成本）。

@@ -572,7 +572,7 @@ test("same-turn tool mount feedback, failure notices, stale notice, and carried 
   await call();
   const deathText = textOf((await handlers.before_agent_start({})).message.content);
   assert.match(deathText, /Fatal transition: step 31, action DOWN \(REPEATS death at step 12\)/);
-  assert.match(deathText, /Memory's Falsified section via reflect_component/);
+  assert.match(deathText, /Layer 2 \(Active capabilities & execution\):/);
 });
 
 test("stall includes effort/progress line and length truncation performs bounded recovery", async () => {
@@ -670,4 +670,87 @@ test("boardInventory appears on fresh board and consult in harnessProfile and ca
 
   const off = setup({ harnessProfile: true, boardInventory: false });
   assert.doesNotMatch(textOf((await off.handlers.before_agent_start({})).message.content), /Board inventory/);
+});
+
+test("foldPreActionObservations folds python observations only and preserves consult/read_component/reflect_component", () => {
+  const messages = [
+    { role: "assistant", content: [
+      { type: "toolCall", id: "p1", name: "python", arguments: {} },
+      { type: "toolCall", id: "c1", name: "consult", arguments: {} },
+      { type: "toolCall", id: "r1", name: "read_component", arguments: {} },
+      { type: "toolCall", id: "m1", name: "reflect_component", arguments: {} },
+    ] },
+    { role: "toolResult", toolCallId: "p1", content: [{ type: "text", text: "grid scan output" }] },
+    { role: "toolResult", toolCallId: "c1", content: [{ type: "text", text: "consult framing answer" }] },
+    { role: "toolResult", toolCallId: "r1", content: [{ type: "text", text: "skill body text" }] },
+    { role: "toolResult", toolCallId: "m1", content: [{ type: "text", text: "memory/rules v1 active" }] },
+    { role: "toolResult", toolName: "python", content: [{ type: "text", text: "moved\n[env] executed 1" }] },
+  ];
+  const res = foldPreActionObservations(messages);
+  assert.equal(res.folded, 1);
+  assert.match(res.messages[1].content[0].text, /folded pre-action observe/);
+  assert.equal(res.messages[2].content[0].text, "consult framing answer");
+  assert.equal(res.messages[3].content[0].text, "skill body text");
+  assert.equal(res.messages[4].content[0].text, "memory/rules v1 active");
+});
+
+test("stuck audits obey cooldown and per-level cap, and Last evolution feedback closes the loop", async () => {
+  const { handlers, tools, game, python, rows, call, root } = setup({ harnessProfile: true, stuckAfter: 8 });
+  await handlers.before_agent_start({});
+  // Simulate 30 consecutive stuck steps without new state -> should cap at 3 audits (not 30!)
+  let auditTexts = 0;
+  for (let i = 1; i <= 30; i += 1) {
+    game.stale_steps = 8 + i - 1;
+    game.actions_used = i;
+    game.step = i;
+    const msg = textOf((await handlers.before_agent_start({})).message.content);
+    if (msg.includes("Layer 2 (Active capabilities & execution):")) auditTexts += 1;
+  }
+  assert.equal(auditTexts, 3);
+  assert.equal(rows("dual_audit_shown").length, 3);
+
+  // Evolution + verify sync + live context injection + GAME_OVER consult trajectory + Last evolution feedback
+  python.memoryCheckStats = {};
+  python.syncMemoryChecks = async (checks: Array<{ id: string; expr: string }>) => {
+    python.memoryCheckStats = Object.fromEntries(checks.map(c => [c.id, {
+      support: 2, counter: 1, checked: 3, by_level: { "1": { support: 2, counter: 1, checked: 3 } },
+      witness: "L1 s3 DOWN (0 cells)", error: null,
+    }]));
+    return python.memoryCheckStats;
+  };
+  const ref = await tools.reflect_component.execute("id", {
+    op: "define", kind: "memory", name: "rules", body: "Confirmed: UP moves", verify: { move_ok: "t.action == 'UP'" },
+  });
+  assert.match(textOf(ref.content), /\[verify: move_ok: 2\/3 held, 1 failed \(L1 s3 DOWN \(0 cells\)\)\]/);
+
+  // Context hook live-injects [verify: ...] onto the state message
+  const stateMsg = { role: "custom", customType: STATE_TYPE, content: [{ type: "text", text: "state header" }] };
+  const ctxOut = handlers.context({ messages: [stateMsg] }, { model: { contextWindow: 128000 } });
+  assert.match(ctxOut.messages[0].content[0].text, /MEMORY rules v1: Confirmed: UP moves \[verify: move_ok: 2\/3 held, 1 failed/);
+
+  // Death records failed attempt, preserves trajectory for consult, shows Last evolution, and flushes replay on shutdown
+  game.state = "GAME_OVER";
+  game.step = 35;
+  python.run = async () => ({ text: "dead", truncated: false, acted: batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 35, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 4,
+    change_box: [1, 1, 2, 2],
+  }] }), images: [], metrics: {}, usedLibs: [] });
+  handlers.turn_start();
+  await call();
+  const deathText = textOf((await handlers.before_agent_start({})).message.content);
+  assert.match(deathText, /Last evolution \(L1 s30\): memory\/rules v1 -> \[verify: move_ok: 2\/3 held/);
+  assert.match(deathText, /diff=4 cells box=\[1,1,2,2\]/);
+
+  let consultBriefing = "";
+  const consultCtx: any = { model: { id: "same-model" }, modelRegistry: {
+    streamSimple: (_m: any, input: any) => {
+      consultBriefing = input.messages[0].content[0].text;
+      return { result: async () => ({ content: [{ type: "text", text: "try LEFT" }], stopReason: "stop", usage: { input: 10, output: 5, totalTokens: 15 } }) };
+    } } };
+  await tools.consult.execute("id", { name: "reframer", question: "Why death?" }, undefined, undefined, consultCtx);
+  assert.match(consultBriefing, /s35 DOWN DEATH/);
+
+  handlers.session_shutdown();
+  assert.match(readFileSync(join(root, "work", "replay", "level_1.md"), "utf8"), /## Layer 2: Active capabilities & execution/);
 });

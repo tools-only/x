@@ -49,3 +49,24 @@ test("component lifecycle stats split by level, record witnesses, and persist ac
   assert.equal(reopened.stats("tool", "broken_tool")?.consecutive_publish_failures, 1);
   assert.equal(reopened.stats("skill", "probe")?.total.reads, 1);
 });
+
+test("memory verify validates rules, hashes canonically, and restores prior verify expressions", () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-verify-"));
+  const store = new LayeredComponents(root);
+  const v1 = store.reflect("define", "memory", "rules", "Confirmed: A", "", undefined, {
+    b_rule: "t.action == 'UP'",
+    a_rule: "diff(t.before_frame, t.after_frame)['count'] > 0",
+  });
+  assert.deepEqual(Object.keys(v1.verify ?? {}), ["a_rule", "b_rule"]);
+  const v2 = store.reflect("redefine", "memory", "rules", "Confirmed: B");
+  assert.equal(v2.verify, undefined);
+  const v3 = store.reflect("restore", "memory", "rules", undefined, "", 1);
+  assert.deepEqual(v3.verify, v1.verify);
+  const reopened = new LayeredComponents(root);
+  assert.deepEqual(reopened.current("memory", "rules")?.verify, v1.verify);
+  assert.throws(() => reopened.reflect("define", "skill", "bad_v", "body", "sum", undefined, { r: "True" }), /memory components only/);
+  assert.throws(() => reopened.reflect("redefine", "memory", "rules", "body", "", undefined, { BAD: "True" }), /lowercase/);
+  assert.throws(() => reopened.reflect("redefine", "memory", "rules", "body", "", undefined, { ok: "a\nb" }), /one line/);
+  assert.throws(() => reopened.reflect("redefine", "memory", "rules", "body", "", undefined,
+    { r1: "True", r2: "True", r3: "True", r4: "True", r5: "True", r6: "True", r7: "True" }), /at most 6/);
+});

@@ -18,10 +18,15 @@ export type ActionBatch = { executed: number; actions: string[]; lines: string[]
 export type StepFact = { step: number; action: string; tries: number; same: boolean; last_try: number;
   new: boolean; level: number; changed: boolean; death: boolean; level_up: boolean;
   source: string | null; fatal: boolean; claims_failed: string[]; claims_held: string[];
+  verify_failed?: string[]; changed_cells?: number; change_box?: [number, number, number, number] | null;
+  changed_symbols?: number[];
   predict_off: number | null; same_death: boolean | number | null; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
 export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
-  kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[] };
+  kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[]; decoratedTools?: string[];
+  usedLibs?: string[] };
+export type MemoryCheckStats = Record<string, { support: number; counter: number; checked: number;
+  by_level: Record<string, { support: number; counter: number; checked?: number }>; witness: string | null; error: string | null }>;
 
 export const COLOR_LEGEND = "W=white, w=light gray, g=gray, G=dark gray, c=charcoal, B=black, M=magenta, P=pink, " +
   "R=red, b=blue, S=sky blue, Y=yellow, O=orange, r=dark red, N=light green, p=purple";
@@ -52,6 +57,7 @@ export class BridgeClient {
 export class LayeredPython {
   private kernel: PythonKernel;
   private history: Array<Record<string, unknown>> = [];
+  private transitionResults: Array<Record<string, unknown>> = [];
   private sent = 0;
   private raw: any;
   private lastResult: Record<string, unknown> = {};
@@ -87,6 +93,8 @@ export class LayeredPython {
   private sourceRepeats = new Map<string, number>();
   private levelStartBudgetLeft: number | undefined;
   private capabilityUsage: Record<string, { loaded: number; invoked: number; action_producing: number }> = {};
+  private memoryChecks: Array<{ id: string; expr: string }> = [];
+  memoryCheckStats: MemoryCheckStats = {};
 
   constructor(private bridge: BridgeClient, private config: LayeredConfig) {
     const limits = { timeout_ms: config.timeoutMs };
@@ -212,6 +220,21 @@ export class LayeredPython {
     return existsSync(path) ? readFileSync(path, "utf8") : undefined;
   }
 
+  async syncMemoryChecks(checks: Array<{ id: string; expr: string }>): Promise<MemoryCheckStats> {
+    this.memoryChecks = checks;
+    if (!this.raw) return this.memoryCheckStats;
+    if (!this.kernel.alive) this.sent = 0;
+    const request = { sync_only: true, code: "", memory_checks: checks, new_history: this.history.slice(this.sent),
+      reset_history: this.sent === 0, numeric_grid: this.config.numericGrid, valid_actions: this.state().valid_actions,
+      valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult, harness_state: this.harnessState(),
+      startup_source: this.startupSource(), model_source: this.scanModelSource(),
+      claims: this.scanClaims(), lib: this.scanLib(), transition_results: this.transitionResults };
+    const result = await this.kernel.run(request, async req => this.file(req));
+    this.sent = this.history.length;
+    this.memoryCheckStats = result.result.memory_checks ?? {};
+    return this.memoryCheckStats;
+  }
+
   private triage(steps: StepFact[]) {
     const rules = this.config.miniReview ?? {};
     const maxPerLevel = rules.maxPerLevel ?? 2, repeatTries = rules.repeatTries ?? 3;
@@ -261,6 +284,7 @@ export class LayeredPython {
     const result = { action: label, changed_cells: after.observation_delta?.changed_cells ?? 0, level: entry.level,
       levels_completed: after.levels_completed, state: after.state, level_changed: levelChanged,
       game_over: after.state === "GAME_OVER", win: after.state === "WIN", step: entry.step };
+    this.transitionResults.push(result);
     this.lastResult = result;
     const line = `${label}: ${result.changed_cells} cells changed, level ${entry.level}, ${after.state}`;
     this.recentLines.push(line);
@@ -306,7 +330,8 @@ export class LayeredPython {
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
       harness_state: this.harnessState(),
-      startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources, lib: this.scanLib() };
+      startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources, lib: this.scanLib(),
+      memory_checks: this.memoryChecks, transition_results: this.transitionResults };
     this.sent = this.history.length;
     const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
     let run: { result: Record<string, any>; metrics: Record<string, number> } | undefined;
@@ -317,6 +342,7 @@ export class LayeredPython {
       error = run.result.error ?? undefined;
       text = run.result.text + (error ? (run.result.text ? "\n" : "") + error : "");
       images = Array.isArray(run.result.images) ? run.result.images : [];
+      if (run.result.memory_checks) this.memoryCheckStats = run.result.memory_checks;
       if (run.result.last_result) this.lastResult = run.result.last_result;
       metrics = { ...run.metrics };
       for (const note of run.result.notes ?? []) {
@@ -400,7 +426,9 @@ export class LayeredPython {
     if (notes.length) acted.notes = notes;
     if (steps.length) acted.steps = steps;
     return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
-      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed }, notes, steps };
+      ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed }, notes, steps,
+      decoratedTools: Array.isArray(run?.result?.decorated_tools) ? run.result.decorated_tools : [],
+      usedLibs: Array.isArray(run?.result?.used_libs) ? run.result.used_libs : [] };
   }
 
   close() { this.kernel.close(); }

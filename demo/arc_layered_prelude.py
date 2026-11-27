@@ -64,6 +64,27 @@ class Transition:
         return "Transition(action=%r, after=%r)" % (self.action, self.after_frame)
 
 
+class _CallableToolModule(types.ModuleType):
+    def __init__(self, name, entry_name):
+        super().__init__(name)
+        self._entry_name = entry_name
+
+    def __call__(self, *args, **kwargs):
+        entry = self.__dict__.get(self._entry_name) or self.__dict__.get("run")
+        if callable(entry):
+            return entry(*args, **kwargs)
+        raise TypeError("'%s' module is not callable" % self.__name__)
+
+
+_LIVE_KEYS = ("current_frame", "previous_frame", "history", "transitions", "last_transition",
+              "last_action", "last_action_result", "valid_actions", "harness_state")
+
+
+def _live_globals():
+    ns = _S.get("ns") or {}
+    return {k: ns[k] for k in _LIVE_KEYS if k in ns}
+
+
 def _wrap_lib_module(lib_name, module):
     path = "work/lib/%s.py" % lib_name
     for attr, obj in list(module.__dict__.items()):
@@ -74,6 +95,7 @@ def _wrap_lib_module(lib_name, module):
         def _make_wrapper(fn, name):
             def _wrapped(*args, **kwargs):
                 _S["called_lib"] = name
+                _S.setdefault("used_libs", set()).add(name)
                 return fn(*args, **kwargs)
             _wrapped.__name__ = fn.__name__
             _wrapped.__doc__ = fn.__doc__
@@ -100,8 +122,9 @@ def _sync_work(req, rebuild=False):
             name = item["name"]
             entry = {"source": item["source"], "module": None, "error": None, "doc": ""}
             try:
-                entry["module"] = ns[name] = _wrap_lib_module(name, _load("work/lib/%s.py" % name, item["source"]))
-                entry["doc"] = _doc(entry["module"].__doc__)
+                mod = _wrap_lib_module(name, _load("work/lib/%s.py" % name, item["source"]))
+                entry["module"] = ns[name] = sys.modules[name] = mod
+                entry["doc"] = _doc(mod.__doc__ or getattr(mod.__dict__.get(name), "__doc__", None))
                 _note("loaded lib/%s as `%s`%s" % (name, name, ": " + entry["doc"] if entry["doc"] else ""))
             except BaseException as exc:
                 entry["error"] = "%s: %s" % (type(exc).__name__, exc)
@@ -487,6 +510,7 @@ class _WorkLoader:
         if self.package:
             module.__path__ = ["work/" + self.name.replace(".", "/")]
         module.__dict__.update(_API)
+        module.__dict__.update(_live_globals())
         exec(compile(_file("read", self.path), self.path, "exec"), module.__dict__)
 
 
@@ -529,10 +553,18 @@ def _bind():
     transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T]
     last = transitions[-1] if transitions else None
     harness = dict(_S.get("harness") or {})
-    ns.update(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
-              history=history, transitions=transitions, last_transition=last,
-              last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
-              valid_actions=list(_S["valid"]), harness_state=harness)
+    live = dict(current_frame=_frame(_H[-1]), previous_frame=last.before_frame if last else None,
+                history=history, transitions=transitions, last_transition=last,
+                last_action=last.action if last else None, last_action_result=dict(_S["last_result"]),
+                valid_actions=list(_S["valid"]), harness_state=harness)
+    ns.update(live)
+    for entry in (_S.get("lib") or {}).values():
+        mod = entry.get("module")
+        if mod is not None:
+            mod.__dict__.update(live)
+    for mod in list(sys.modules.values()):
+        if str(getattr(mod, "__file__", "")).startswith("work/lib/"):
+            mod.__dict__.update(live)
 
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
@@ -776,10 +808,14 @@ def _causal_briefing(limit=36):
 def _observe(before, forecast, source):
     t, after = _T[-1], _H[-1]
     fact = _ledger(t)
+    d = diff(before["grids"][-1], after["grids"][-1])
+    changed_syms = sorted({v for _, _, a_v, b_v in d.get("cells", []) for v in (a_v, b_v)})
     fact.update(level=before["raw"]["level"], changed=gameplay_changed(before["grids"][-1], after["grids"][-1]),
+                changed_cells=d["count"], change_box=list(d["bbox"]) if "bbox" in d else None,
+                changed_symbols=changed_syms,
                 death=after["raw"]["state"] == "GAME_OVER" and before["raw"]["state"] != "GAME_OVER",
                 level_up=after["raw"]["levels_completed"] != before["raw"]["levels_completed"], source=source,
-                fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[],
+                fatal=bool(forecast.get("is_fatal")), claims_failed=[], claims_held=[], verify_failed=[],
                 predict_off=_off(forecast["predict"], after["grids"][-1], before["grids"][-1]) if "predict" in forecast else None)
     if t["action"] == "RESET" or fact["level_up"]:
         _S.setdefault("mouse_tries", {}).clear()
@@ -819,6 +855,11 @@ def _observe(before, forecast, source):
             verdict = _judge_claim(name, claim, t)
             if verdict is not None:
                 fact["claims_held" if verdict else "claims_failed"].append(name)
+    for cid, entry in sorted((_S.get("memory_checks") or {}).items()):
+        if entry.get("code") is not None:
+            verdict = _judge_memory(cid, entry, t)
+            if verdict is False:
+                fact["verify_failed"].append(cid)
     _S.setdefault("steps", []).append(fact)
     return fact
 
@@ -847,13 +888,21 @@ def _echo(fact):
     for name in fact["claims_failed"]:
         witness = (_S.get("claim_outbox") or {}).get(name, {}).get("witness")
         out += "  [claims/%s failed%s]" % (name, ": " + witness if witness else "")
+    for cid in fact.get("verify_failed") or []:
+        witness = (_S.get("memory_checks") or {}).get(cid, {}).get("stats", {}).get("witness")
+        out += "  [verify/%s failed%s]" % (cid, ": " + witness if witness else "")
     return out
 
 
 def _load(path, source):
-    module = types.ModuleType(path[5:-3].replace("/", "."))
+    mod_name = path[5:-3].replace("/", ".")
+    if path.startswith("work/lib/") and path.endswith(".py"):
+        module = _CallableToolModule(mod_name, path[9:-3])
+    else:
+        module = types.ModuleType(mod_name)
     module.__file__ = path
     module.__dict__.update(_API)
+    module.__dict__.update(_live_globals())
     exec(compile(source, path, "exec"), module.__dict__)
     return module
 
@@ -930,6 +979,98 @@ def _judge_claim(claim_name, claim, t):
     return None
 
 
+def _judge_memory(cid, entry, t):
+    if entry.get("code") is None:
+        return None
+    tr = Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"]))
+    env = {"__builtins__": _S["ns"]["__builtins__"], **_API, "t": tr,
+           "before": tr.before_frame, "after": tr.after_frame, "action": tr.action}
+    try:
+        verdict = eval(entry["code"], env)
+    except BaseException as exc:
+        entry["stats"]["error"] = "%s: %s" % (type(exc).__name__, exc)
+        return None
+    if verdict is True or verdict is False:
+        stats = entry["stats"]
+        stats["checked"] += 1
+        level = str(t["before"]["raw"]["level"])
+        per_level = stats.setdefault("by_level", {}).setdefault(level, {"support": 0, "counter": 0, "checked": 0})
+        per_level["checked"] += 1
+        if verdict:
+            stats["support"] += 1
+            per_level["support"] += 1
+        else:
+            stats["counter"] += 1
+            per_level["counter"] += 1
+            stats["witness"] = "L%s s%s %s (%s cells)" % (
+                level, t["after"]["raw"]["step"], t["action"], t["result"].get("changed_cells", "?"))
+        return bool(verdict)
+    return None
+
+
+def _sync_memory(checks, force_rebacktest=False):
+    store = _S.setdefault("memory_checks", {})
+    supplied = set()
+    for item in checks or []:
+        cid, expr = str(item["id"]), str(item["expr"])
+        supplied.add(cid)
+        cur = store.get(cid)
+        if cur is not None and cur["expr"] == expr and not force_rebacktest:
+            continue
+        stats = {"support": 0, "counter": 0, "checked": 0, "by_level": {}, "witness": None, "error": None}
+        try:
+            compiled = compile(expr, "memory_verify/%s" % cid, "eval")
+        except BaseException as exc:
+            stats["error"] = "%s: %s" % (type(exc).__name__, exc)
+            store[cid] = {"expr": expr, "code": None, "stats": stats}
+            continue
+        entry = {"expr": expr, "code": compiled, "stats": stats}
+        for t in _T:
+            _judge_memory(cid, entry, t)
+        store[cid] = entry
+    for cid in list(store):
+        if cid not in supplied:
+            del store[cid]
+
+
+def tool(fn):
+    return fn
+
+
+def _extract_decorated_tools(tree, code):
+    imports = []
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            seg = ast.get_source_segment(code, stmt)
+            if seg:
+                imports.append(seg)
+    header = ("\n".join(imports) + "\n\n") if imports else ""
+    out = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not any(isinstance(d, ast.Name) and d.id == "tool" for d in node.decorator_list):
+            continue
+        if not re.match(r"^[a-z][a-z0-9_]{0,40}$", node.name):
+            raise ValueError("@tool function name must be lowercase letters, digits or underscore: %r" % node.name)
+        a = node.args
+        if a.posonlyargs or a.vararg or a.kwonlyargs or a.kwarg or len(a.args) > 1:
+            raise ValueError("@tool function '%s' must accept 0 or 1 argument" % node.name)
+        seg = ast.get_source_segment(code, node)
+        if not seg:
+            raise ValueError("could not extract source for @tool function '%s'" % node.name)
+        other_decs = []
+        for d in node.decorator_list:
+            if isinstance(d, ast.Name) and d.id == "tool":
+                continue
+            dseg = ast.get_source_segment(code, d)
+            if dseg:
+                other_decs.append("@" + dseg)
+        prefix = header + ("\n".join(other_decs) + "\n" if other_decs else "")
+        out.append((node.name, prefix + seg + "\n"))
+    return out
+
+
 def _makedirs(path, *args, **kwargs):
     if _is_work_path(path):
         return None
@@ -945,7 +1086,8 @@ def _mkdir(path, *args, **kwargs):
 _os_makedirs, _os_mkdir = os.makedirs, os.mkdir
 os.makedirs, os.mkdir = _makedirs, _mkdir
 _API = dict(open=_open, submit_actions=submit_actions, diff=diff, ascii=ascii, frames_of=frames_of,
-            anim_summary=anim_summary, frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed)
+            anim_summary=anim_summary, frame_diff=frame_diff, segment=segment, gameplay_changed=gameplay_changed,
+            tool=tool)
 
 
 def _cell(req):
@@ -956,14 +1098,21 @@ def _cell(req):
     if req["reset_history"]:
         _H.clear()
         _T.clear()
+    results = list(req.get("transition_results") or [])
+    action_entries = sum(1 for raw in req["new_history"] if raw.get("action"))
+    result_idx = max(0, len(results) - action_entries)
     for raw in req["new_history"]:
-        _append(raw, req["numeric_grid"])
+        res = None
+        if raw.get("action") and result_idx < len(results):
+            res = results[result_idx]
+            result_idx += 1
+        _append(raw, req["numeric_grid"], res)
     fresh = _S["ns"] is None
     if fresh:
         names = dict(vars(builtins), open=_open)
         _S["ns"] = {"__builtins__": names, "__name__": "__main__", "submit_actions": submit_actions,
                     "diff": diff, "ascii": ascii, "frames_of": frames_of, "anim_summary": anim_summary,
-                    "frame_diff": frame_diff}
+                    "frame_diff": frame_diff, "tool": tool}
         if _S["graph_on"]:
             _S["ns"].update(graph_summary=graph_summary, bfs_graph=bfs_graph, replay_to=replay_to)
         if not any(isinstance(finder, _WorkFinder) for finder in sys.meta_path):
@@ -977,17 +1126,38 @@ def _cell(req):
             _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
     _sync_work(req, bool(req["new_history"]))
     _bind()
+    if "memory_checks" in req:
+        _sync_memory(req.get("memory_checks") or [], force_rebacktest=bool(req["reset_history"]))
+    if req.get("sync_only"):
+        return {"text": "", "error": None, "images": [], "last_result": dict(_S["last_result"]),
+                "steps": [], "notes": _S.pop("notes", []),
+                "memory_checks": {cid: dict(item["stats"]) for cid, item in (_S.get("memory_checks") or {}).items()},
+                "decorated_tools": []}
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
     if startup_note:
         out.write(startup_note + "\n")
     _S["called_lib"] = None
+    _S["used_libs"] = set()
+    decorated = []
+    mounted_decorated = []
     try:
         tree = ast.parse(req["code"], "<python>")
+        decorated = _extract_decorated_tools(tree, req["code"])
         last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             exec(compile(tree, "<python>", "exec"), ns)
+            for name, source in decorated:
+                _file("write", "work/lib/%s.py" % name, source)
+                mod = _wrap_lib_module(name, _load("work/lib/%s.py" % name, source))
+                _S.setdefault("lib", {})[name] = {
+                    "source": source, "module": mod, "error": None,
+                    "doc": _doc(mod.__doc__ or getattr(mod.__dict__.get(name), "__doc__", None)),
+                }
+                ns[name] = sys.modules[name] = mod
+                mounted_decorated.append(name)
+                _note("@tool mounted: %s" % name)
             if last is not None:
                 value = eval(compile(ast.Expression(last.value), "<python>", "eval"), ns)
             if ns.get("result") is not None:
@@ -1004,6 +1174,9 @@ def _cell(req):
     text = text + ("\n" + "\n".join(_S.get("notes") or []) if _S.get("notes") else "")
     return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
             "last_result": dict(_S["last_result"]), "steps": _S.pop("steps", []), "notes": _S.pop("notes", []),
+            "memory_checks": {cid: dict(item["stats"]) for cid, item in (_S.get("memory_checks") or {}).items()},
+            "decorated_tools": mounted_decorated,
+            "used_libs": sorted(_S.pop("used_libs", set())),
             "claims": {"counts": _S.pop("claim_outbox", {}), "reset": sorted(_S.pop("claim_reset", set())), "errors": claim_errors,
                        "docs": {name: c["doc"] for name, c in (_S.get("claims") or {}).items()}},
             "model": {"funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],

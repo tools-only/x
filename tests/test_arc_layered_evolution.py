@@ -44,7 +44,40 @@ def test_classify_segment_activity_decouples_constructive_work_and_length():
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "component_change"}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "consult", "ok": True}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "tool_published"}], 0, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "tool_decorated"}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "read_component"}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [], 1, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "observe_limit"}], 0, 0) == "observe_limit"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [], 0, 0) == "idle"
+
+
+def test_flush_final_level_replay_clamps_win_level_and_renders_components(tmp_path):
+    from autoresearch_pi.arc_layered_e2e import _flush_final_level_replay
+
+    harness = tmp_path / "harness"
+    comp_dir = harness / "components" / "memory" / "rules"
+    comp_dir.mkdir(parents=True)
+    (harness / "components" / "HEAD.json").write_text(json.dumps({"memory/rules": 1}), encoding="utf-8")
+    (comp_dir / "v1.json").write_text(
+        json.dumps({"kind": "memory", "name": "rules", "version": 1, "body": "Confirmed: A", "verify": {"up": "t.action == 'UP'"}}),
+        encoding="utf-8",
+    )
+    (harness / "decisions.jsonl").write_text(
+        "\n".join([
+            json.dumps({"step": 1, "level": 1, "action": "UP", "tries": 0, "same": False, "new": True, "changed": True, "death": False, "level_up": True}),
+            json.dumps({"step": 2, "level": 2, "action": "RIGHT", "tries": 0, "same": False, "new": True, "changed": True, "death": False, "level_up": True}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    rows = [
+        {"kind": "memory_verify_sync", "name": "rules", "version": 1, "stats": {"rules/up": {"support": 1, "counter": 0, "checked": 1, "witness": None, "error": None}}},
+        {"kind": "python", "level": 2, "error": None, "truncated": False},
+    ]
+    state = {"state": "WIN", "levels_completed": 2, "win_levels": 2, "action_budget": {"total_used": 2}}
+    out = _flush_final_level_replay(tmp_path, state, rows, {})
+    assert out == tmp_path / "work" / "replay" / "level_2.md"
+    text = out.read_text(encoding="utf-8")
+    assert "# Level 2 review" in text
+    assert "Outcome: WIN; actions used 2; completed 2/2." in text
+    assert "memory/rules v1 [verify: up: 1/1 held]" in text
+    assert "## Editable capability space" in text
