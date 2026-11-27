@@ -281,6 +281,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "wall_seconds": wall_seconds, "segment_seconds": segment_seconds, "segment_tokens": segment_tokens,
             "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
             "consult_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_CONSULT") != "0",
+            "evolution_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_EVOLUTION") != "0",
             "board_inventory_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_BOARD_INVENTORY") != "0",
             "no_image": pi_env.get("ARC_LAYERED_NO_IMAGE") == "1",
             "fresh_level_session": fresh_level_session, "command": command,
@@ -429,17 +430,21 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     changed, parse_errors = _scan_work(root, harness, summary.get("segments", 0), work_hashes)
     budget = state.get("action_budget") or {}
     requests = _request_accounting(_read_jsonl(harness / "request-events.jsonl"))
-    child_usage = [row for row in _read_jsonl(harness / "usage.jsonl") if row.get("kind") == "subagent"]
+    usage_rows = _read_jsonl(harness / "usage.jsonl")
+    child_usage = [row for row in usage_rows if row.get("kind") == "subagent"]
+    evo_usage = [row for row in usage_rows if row.get("kind") == "evolution"]
     child_known = sum(int(row.get("total") or (int(row.get("input") or 0) + int(row.get("output") or 0))) for row in child_usage)
-    if child_usage:
-        requests["by_kind"]["subagent"] = {
-            "attempts": len(child_usage), "completed": sum(row.get("cost_status") == "reported" for row in child_usage),
-            "unknown_cost_attempts": sum(row.get("cost_status") != "reported" for row in child_usage),
-        }
-        requests["attempts"] += len(child_usage)
-        requests["known_tokens_lower_bound"] += child_known
-        requests["unknown_cost_attempts"] += sum(row.get("cost_status") != "reported" for row in child_usage)
-        requests["complete_cost_known"] = requests["unknown_cost_attempts"] == 0
+    evo_known = sum(int(row.get("total") or (int(row.get("input") or 0) + int(row.get("output") or 0))) for row in evo_usage)
+    for kind_label, subset, known_tokens in (("subagent", child_usage, child_known), ("evolution", evo_usage, evo_known)):
+        if subset:
+            requests["by_kind"][kind_label] = {
+                "attempts": len(subset), "completed": sum(row.get("cost_status") == "reported" for row in subset),
+                "unknown_cost_attempts": sum(row.get("cost_status") != "reported" for row in subset),
+            }
+            requests["attempts"] += len(subset)
+            requests["known_tokens_lower_bound"] += known_tokens
+            requests["unknown_cost_attempts"] += sum(row.get("cost_status") != "reported" for row in subset)
+            requests["complete_cost_known"] = requests["unknown_cost_attempts"] == 0
     comp_stats_path = harness / "components" / "stats.json"
     comp_stats = json.loads(comp_stats_path.read_text(encoding="utf-8")) if comp_stats_path.is_file() else {}
     if profile == "qwen27b-harness":
@@ -457,6 +462,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                 pending_audit = False
         return converted
 
+    evo_rounds = [r for r in rows if r.get("kind") == "evolution_round"]
     summary.update({
         "actions": budget.get("total_used"), "levels_completed": state.get("levels_completed"), "win_levels": state.get("win_levels"),
         "final_state": state.get("state"), "wall_seconds": round(time.monotonic() - started, 1),
@@ -484,6 +490,16 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "dual_audits_by_boundary": dict(Counter(r.get("boundary") for r in rows if r.get("kind") == "dual_audit_shown" and r.get("boundary"))),
             "audits_followed_by_evolution": _audits_followed_by_evolution(rows),
             "stats": comp_stats,
+        },
+        "evolution_rounds": {
+            "count": len(evo_rounds),
+            "ok": sum(1 for r in evo_rounds if r.get("ok") is True),
+            "failed": sum(1 for r in evo_rounds if r.get("ok") is False),
+            "evolved": sum(1 for r in evo_rounds if r.get("ok") is True and (r.get("decision") == "evolved" or bool(r.get("mutations")))),
+            "no_change": sum(1 for r in evo_rounds if r.get("ok") is True and r.get("decision") == "no_change" and not r.get("mutations")),
+            "by_boundary": dict(Counter(r.get("boundary") for r in evo_rounds if r.get("boundary"))),
+            "tokens_lower_bound": evo_known,
+            "ms_total": sum(int(r.get("ms") or 0) for r in evo_rounds),
         },
         "subagents": {"consult_ok": sum(1 for r in rows if r.get("kind") == "consult" and r.get("ok") is True),
                       "consult_failed": sum(1 for r in rows if r.get("kind") == "consult" and r.get("ok") is False),

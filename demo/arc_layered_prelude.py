@@ -569,6 +569,8 @@ def _bind():
 
 def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_full_reset=False,
                    skip_known_noops=False, force=False, stop_on_noop=True):
+    if _S.get("forbid_actions"):
+        raise PermissionError("submit_actions is disabled during evolution review; inspect state/transitions or define @tool helpers only")
     if expect is not None and not _S.get("expect_on"):
         raise ValueError("expect is disabled in this run; drop the expect argument")
     if expect is not None and not (callable(expect) or (isinstance(expect, int) and not isinstance(expect, bool))
@@ -1094,7 +1096,8 @@ def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
               skip_noops=bool(req.get("skip_noops")), expect_on=bool(req.get("expect_enabled")),
-              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {})
+              graph_on=bool(req.get("graph_enabled")), harness=req.get("harness_state") or {},
+              forbid_actions=bool(req.get("forbid_actions")))
     if req["reset_history"]:
         _H.clear()
         _T.clear()

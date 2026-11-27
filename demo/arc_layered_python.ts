@@ -318,22 +318,30 @@ export class LayeredPython {
     return { data: null };
   }
 
-  async run(code: string, signal?: AbortSignal): Promise<PythonOutcome> {
+  async run(code: string, signal?: AbortSignal, opts?: { forbidActions?: boolean }): Promise<PythonOutcome> {
+    const forbidActions = Boolean(opts?.forbidActions);
     if (!this.kernel.alive) this.sent = 0;
     const batch: ActionBatch & { halt?: string } = { executed: 0, actions: [], lines: [], level_changed: false, game_over: false, win: false };
     let attempted = false;
-    this.calls += 1;
+    if (!forbidActions) this.calls += 1;
     this.batchHadExpect = false;
     const claimSources = this.scanClaims();
     const request = { code, new_history: this.history.slice(this.sent), reset_history: this.sent === 0,
       numeric_grid: this.config.numericGrid,
       valid_actions: this.state().valid_actions, valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult,
       skip_noops: !!this.config.skipNoops, expect_enabled: !!this.config.expect, graph_enabled: !!this.config.graph,
-      harness_state: this.harnessState(),
+      harness_state: this.harnessState(), forbid_actions: forbidActions,
       startup_source: this.startupSource(), model_source: this.scanModelSource(), claims: claimSources, lib: this.scanLib(),
       memory_checks: this.memoryChecks, transition_results: this.transitionResults };
     this.sent = this.history.length;
-    const onRequest = async (req: KernelRequest) => req.t === "act" ? (attempted = true, this.act(req, batch)) : this.file(req);
+    const onRequest = async (req: KernelRequest) => {
+      if (req.t === "act") {
+        if (forbidActions) return { stopped: "submit_actions is disabled during evolution review" };
+        attempted = true;
+        return this.act(req, batch);
+      }
+      return this.file(req);
+    };
     let run: { result: Record<string, any>; metrics: Record<string, number> } | undefined;
     let text: string, error: string | undefined, kernelRestarted = false, metrics: Record<string, number> = {}, images: ShownImage[] = [];
     let failedEditNote = "";
@@ -383,15 +391,17 @@ export class LayeredPython {
       text = `${text.slice(0, head)}\n... [${text.length - this.config.outputChars} chars omitted from the middle] ...\n${text.slice(-tail)}` +
         `\n[output truncated: avoid printing full grids or all frames_of(); aggregate in Python (diff / anim_summary / frame_diff) and print <= 30 lines]`;
     }
-    if (error) {
-      this.errors.push(error.slice(0, 200));
-      this.errors = this.errors.slice(-5);
+    if (!forbidActions) {
+      if (error) {
+        this.errors.push(error.slice(0, 200));
+        this.errors = this.errors.slice(-5);
+      }
+      this.consecutivePythonErrors = batch.executed ? 0 : error ? this.consecutivePythonErrors + 1 : 0;
+      if (this.consecutivePythonErrors >= 2)
+        text += `\n[cost note] ${this.consecutivePythonErrors} consecutive Python errors without an action. Check the error or restore the last working file.`;
+      if (!batch.executed && failedEditNote)
+        text += `\n[cost note] ${failedEditNote} has failed three consecutive edits. Review the error before revising it again.`;
     }
-    this.consecutivePythonErrors = batch.executed ? 0 : error ? this.consecutivePythonErrors + 1 : 0;
-    if (this.consecutivePythonErrors >= 2)
-      text += `\n[cost note] ${this.consecutivePythonErrors} consecutive Python errors without an action. Check the error or restore the last working file.`;
-    if (!batch.executed && failedEditNote)
-      text += `\n[cost note] ${failedEditNote} has failed three consecutive edits. Review the error before revising it again.`;
     if (attempted) {
       const state = this.state();
       text += `\n[env] executed ${batch.executed}${batch.actions.length ? ` (${batch.actions.join(" ")})` : ""}` +

@@ -30,6 +30,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   noImage?: boolean;
   harnessProfile?: boolean;
   consult?: boolean;
+  evolution?: boolean;
   boardInventory?: boolean;
   maxLengthRecoveries?: number;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
@@ -41,6 +42,18 @@ type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMini
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 type AttemptMetrics = { py_calls: number; py_errors: number; truncated: number; observe_limits: number; errors: string[] };
 const EDITABLE_SPACE = "Editable capability space: memory (with optional verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult).";
+const EVOLUTION_SYSTEM_PROMPT = [
+  "You are running an isolated, clean-context self-evolution review between task turns. You cannot take environment actions (submit_actions is disabled).",
+  "Inspect Layer 1 (task trajectory, failure/stall facts, board inventory) and Layer 2 (active capabilities, tool/verify/execution stats, and last evolution outcome).",
+  "Decide whether current capabilities already suffice or whether 1 minimal capability update would address a real gap in the editable space:",
+  "- memory: reflect_component(op, kind='memory', name, body, verify?) where optional verify={'rule': '1-line Python expr over t returning True/False/None'}",
+  "- tools: python_inspect(code) with @tool on a 0-arg or 1-arg function (or writing work/lib/<name>.py); test it immediately on current_frame/transitions",
+  "- skills: reflect_component(op, kind='skill', name, body, summary) for a reusable workflow",
+  "- prompt: reflect_component(op, kind='prompt', name, body) (<= 600 chars)",
+  "- subagent: reflect_component(op, kind='subagent', name, body) for a custom consult role",
+  "Keep updates minimal (0 or 1 targeted change; verify any new tool or verify rule before finishing). Ground claims strictly in observed facts.",
+  "End by calling finish_evolution(decision='evolved'|'no_change', note='one concise line').",
+].join("\n");
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
 
@@ -577,7 +590,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
-    opts?: { compact?: boolean; includeInventory?: boolean; metrics?: AttemptMetrics; evolution?: EvolutionRecord | null },
+    opts?: { compact?: boolean; includeInventory?: boolean; metrics?: AttemptMetrics; evolution?: EvolutionRecord | null; emitLog?: boolean; limit?: number },
   ): string {
     const compact = Boolean(opts?.compact);
     const layer1: string[] = [];
@@ -601,8 +614,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
     const layer2 = layer2Snapshot(auditLevel, opts?.metrics ?? attemptMetrics, opts?.evolution !== undefined ? opts.evolution : lastEvolution);
     lastAuditBoundary = boundary;
-    log("dual_audit_shown", { boundary, level: auditLevel, step: state.step, steps: steps.length });
-    const limit = boundary === "level_complete" ? 1600 : boundary === "game_over" ? 1350 : 950;
+    if (opts?.emitLog !== false) log("dual_audit_shown", { boundary, level: auditLevel, step: state.step, steps: steps.length });
+    const limit = opts?.limit ?? (boundary === "level_complete" ? 1600 : boundary === "game_over" ? 1350 : 950);
     return [
       "Layer 1 (Task facts):",
       ...(layer1.length ? layer1 : ["- no transitions recorded yet"]),
@@ -610,17 +623,19 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     ].filter(Boolean).join("\n").slice(0, limit);
   }
 
-  function content(batch: ActionBatch | null, nudge = false): Content {
+  function content(batch: ActionBatch | null, nudge = false, evoOpts?: { evolutionReceipt?: string; boundaryHandled?: boolean }): Content {
     const state = python.state(), events: string[] = [];
+    const boundaryHandled = Boolean(evoOpts?.boundaryHandled);
     const isFreshBoard = !shownFrame || shownLevel !== state.level || Boolean(batch?.reset);
     if (isFreshBoard) levelChangedColors.clear();
     else if (shownFrame && state.frame !== shownFrame) recordFrameColorChanges(shownFrame, state.frame, levelChangedColors);
     if (consecutiveLengthStops > 0) {
       events.push(`LENGTH RECOVERY (${consecutiveLengthStops}/${maxLengthRecoveries}): the previous reply hit the output token limit before calling a tool. Output minimal reasoning and call python or reflect_component now.`);
     }
+    if (evoOpts?.evolutionReceipt) events.push(evoOpts.evolutionReceipt);
     let inventoryShown = false;
-    let dualAuditEmitted = false;
-    const canStuckAudit = stuckAuditsThisLevel < 3 && (lastStuckAuditStep < 0 || state.actions_used - lastStuckAuditStep >= 12);
+    let dualAuditEmitted = boundaryHandled;
+    const canStuckAudit = !boundaryHandled && stuckAuditsThisLevel < 3 && (lastStuckAuditStep < 0 || state.actions_used - lastStuckAuditStep >= 12);
     if (boardInventoryEnabled && isFreshBoard) {
       const inv = boardInventory(state.frame);
       if (inv.line) { events.push(inv.line); inventoryShown = true; }
@@ -696,11 +711,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`OBSERVE LIMIT: static inspection already ran ${consecutiveObserveTurns} turn(s) on this unchanged board without acting. Take a 1-step probe or plan now.`);
     if (batch?.level_changed) {
       if (options.harnessProfile) {
-        const audit = dualAudit("level_complete", finishedLevelSteps, state, finishedLevelNumber || Math.max(1, state.level - 1), {
-          compact: false, includeInventory: false, metrics: finishedLevelMetrics ?? attemptMetrics, evolution: finishedLevelEvolution,
-        });
-        dualAuditEmitted = true;
-        events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done.\n${audit}`);
+        if (boundaryHandled) {
+          events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done.`);
+        } else {
+          const audit = dualAudit("level_complete", finishedLevelSteps, state, finishedLevelNumber || Math.max(1, state.level - 1), {
+            compact: false, includeInventory: false, metrics: finishedLevelMetrics ?? attemptMetrics, evolution: finishedLevelEvolution,
+          });
+          dualAuditEmitted = true;
+          events.push(`LEVEL COMPLETE: ${state.levels_completed} of ${state.win_levels} levels are done.\n${audit}`);
+        }
         finishedLevelSteps = [];
         finishedLevelNumber = 0;
         finishedLevelMetrics = null;
@@ -714,7 +733,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
     if (state.state === "GAME_OVER") {
       if (options.harnessProfile) {
-        if (lastDeathAuditStep !== state.step) {
+        if (!boundaryHandled && lastDeathAuditStep !== state.step) {
           lastDeathAuditStep = state.step;
           const failSteps = lastFailedAttemptSteps.length ? lastFailedAttemptSteps : attemptSteps;
           const audit = dualAudit("game_over", failSteps, state, state.level, {
@@ -1116,53 +1135,213 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
       } });
   }
+  const evolutionEnabled = options.evolution ?? Boolean(options.harnessProfile);
+  const reflectSchema = Type.Object({ op: Type.Union([Type.Literal("define"), Type.Literal("redefine"), Type.Literal("restore")]),
+    kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
+    name: Type.String(), body: Type.Optional(Type.String()), summary: Type.Optional(Type.String()), version: Type.Optional(Type.Number()),
+    verify: Type.Optional(Type.Record(Type.String(), Type.String())) });
+  const readSchema = Type.Object({ kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
+    name: Type.String(), version: Type.Optional(Type.Number()) });
+
+  async function executeReflectComponent(
+    params: { op: "define" | "redefine" | "restore"; kind: string; name: string; body?: string; summary?: string; version?: number; verify?: Record<string, string> },
+    source: "parent" | "evolution",
+  ): Promise<{ ok: boolean; text: string; label?: string }> {
+    if (!components) return { ok: false, text: "components disabled" };
+    try {
+      const item = components.reflect(params.op, params.kind as Kind, params.name, params.body, params.summary, params.version, params.verify);
+      const st = safeState();
+      components.recordChange(item.kind, item.name, st.level, st.step);
+      log("component_change", { op: params.op, kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
+        verify_rules: item.verify ? Object.keys(item.verify) : [], after_audit: lastAuditBoundary || null, source });
+      lastEvolution = { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
+        actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
+      let reply = `${item.kind}/${item.name} v${item.version} active`;
+      if (item.kind === "memory" && python.syncMemoryChecks) {
+        const stats = await python.syncMemoryChecks(collectMemoryChecks());
+        const rules = Object.keys(item.verify ?? {});
+        const checkStats = Object.fromEntries(rules.map(r => [`${item.name}/${r}`, stats[`${item.name}/${r}`] ?? null]));
+        log("memory_verify_sync", { name: item.name, version: item.version, rules, level: st.level, step: st.step, stats: checkStats, source });
+        const summary = formatVerifySummary(item.name, item.verify, stats);
+        if (summary) reply += `\n${summary.trim()}`;
+      }
+      return { ok: true, text: reply, label: `${item.kind}/${item.name} v${item.version}` };
+    } catch (error) {
+      return { ok: false, text: String(error) };
+    }
+  }
+
+  function executeReadComponent(
+    params: { kind: string; name: string; version?: number },
+    source: "parent" | "evolution",
+  ): { ok: boolean; text: string } {
+    if (!components) return { ok: false, text: "components disabled" };
+    try {
+      const item = params.version ? components.read(params.kind as Kind, params.name, params.version)
+        : components.current(params.kind as Kind, params.name);
+      if (!item) throw Error("no active component");
+      const st = safeState();
+      components.recordRead(item.kind, item.name, st.level, st.step);
+      log("read_component", { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step, source });
+      const verifyBlock = item.verify && Object.keys(item.verify).length
+        ? `\nverify: ${JSON.stringify(item.verify)}${formatVerifySummary(item.name, item.verify, python.memoryCheckStats)}`
+        : "";
+      return { ok: true, text: `${item.kind}/${item.name} v${item.version}\n${item.body}${verifyBlock}` };
+    } catch (error) {
+      return { ok: false, text: String(error) };
+    }
+  }
+
+  async function runBoundaryEvolution(
+    boundary: "game_over" | "level_complete" | "stall" | "stuck",
+    steps: StepFact[],
+    state: LayeredState,
+    auditLevel: number,
+    ctx: any,
+    opts?: { metrics?: AttemptMetrics; evolution?: EvolutionRecord | null },
+  ): Promise<string | undefined> {
+    if (!components || !ctx?.model || !ctx?.modelRegistry?.streamSimple) return undefined;
+    const timeoutMs = Number(process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS ?? 120000);
+    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 3);
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
+    const started = Date.now();
+    const mutations: string[] = [];
+    let evoDecision: "evolved" | "no_change" = "no_change";
+    let note = "";
+    let roundsRun = 0;
+    const parentThinking = typeof (pi as any).getThinkingLevel === "function" ? (pi as any).getThinkingLevel() : undefined;
+    const evoMaxTokens = process.env.ARC_LAYERED_EVOLUTION_OUTPUT_TOKENS
+      ? Number(process.env.ARC_LAYERED_EVOLUTION_OUTPUT_TOKENS)
+      : (options.outputTokens || (ctx.model as any).maxTokens || undefined);
+    const evoTools = [
+      { name: "reflect_component", description: "Define, revise or restore a versioned memory (with optional verify), skill, prompt or subagent.", parameters: reflectSchema },
+      { name: "read_component", description: "Read an existing component body.", parameters: readSchema },
+      { name: "python_inspect", description: "Run non-acting Python in the live kernel to inspect frames/transitions or author & test @tool helpers (submit_actions is disabled).",
+        parameters: Type.Object({ code: Type.String({ description: "Non-acting Python code to run" }) }) },
+      { name: "finish_evolution", description: "Finish this evolution review and return control to task play.",
+        parameters: Type.Object({ decision: Type.Union([Type.Literal("evolved"), Type.Literal("no_change")]), note: Type.String() }) },
+    ];
+    try {
+      const auditText = dualAudit(boundary, steps, state, auditLevel, {
+        compact: false, includeInventory: true, metrics: opts?.metrics, evolution: opts?.evolution, emitLog: true, limit: 2400,
+      });
+      const activeText = components.list().filter(i => i.kind === "memory" || i.kind === "prompt")
+        .map(item => formatComponentLine(item)).join("\n");
+      const skillsText = components.list("skill").map(item => `${item.name} v${item.version} — ${item.summary}`).join("; ");
+      const valid = (state.valid_actions ?? []).join(" ");
+      const budget = [
+        state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "",
+        state.budget_left !== undefined ? `run budget ${state.budget_left}` : "",
+      ].filter(Boolean).join(", ");
+      const dossier = [
+        `Boundary: ${boundary.toUpperCase()} | level ${state.level}/${state.win_levels}, step ${state.step}, state=${state.state}${budget ? `, ${budget}` : ""} | valid: ${valid}`,
+        auditText,
+        activeText ? `Current Memory/Prompt:\n${activeText.slice(0, 1800)}` : "Current Memory/Prompt: none",
+        skillsText ? `Current Skills: ${skillsText.slice(0, 600)}` : "",
+      ].filter(Boolean).join("\n\n").slice(0, 6000);
+      const useImage = !options.noImage && Array.isArray(state.frame) && state.frame.length > 0 && Array.isArray(state.frame[0]) && state.frame[0].length > 0;
+      const userContent: Content = [{ type: "text", text: dossier }, ...(useImage ? [{
+        type: "image" as const, mimeType: "image/png",
+        data: framePng(state.frame, options.scale, options.gridLines).toString("base64"),
+      }] : [])];
+      const messages: any[] = [{ role: "user", content: userContent, timestamp: Date.now() }];
+      let lengthRetries = 0;
+      let done = false;
+      for (let round = 1; round <= maxRounds && !done; round += 1) {
+        roundsRun = round;
+        try { writeFileSync(join(store, "heartbeat"), String(Date.now())); } catch {}
+        const roundStart = Date.now();
+        const useThinking = lengthRetries === 0 && parentThinking && parentThinking !== "off";
+        const streamOpts: Record<string, unknown> = {
+          signal: controller.signal,
+          ...(evoMaxTokens ? { maxTokens: evoMaxTokens } : {}),
+          ...(useThinking ? { reasoning: parentThinking } : {}),
+        };
+        const reply: any = await ctx.modelRegistry.streamSimple(ctx.model, {
+          systemPrompt: EVOLUTION_SYSTEM_PROMPT, messages, tools: evoTools,
+        } as any, streamOpts as any).result();
+        write("usage.jsonl", { decision, kind: "evolution", boundary, round, model: ctx.model.id,
+          ...usageRecord(reply), ms: Date.now() - roundStart, stop_reason: reply.stopReason });
+        if (reply.stopReason === "error" || reply.stopReason === "aborted")
+          throw Error(reply.errorMessage ?? `evolution ${reply.stopReason}`);
+        messages.push(reply);
+        const calls = (reply.content ?? []).filter((part: any) => part.type === "toolCall");
+        const replyText = (reply.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n").trim();
+        if (!calls.length) {
+          if (reply.stopReason === "length" && !replyText && lengthRetries < 1) {
+            lengthRetries += 1;
+            messages.push({ role: "user", content: [{ type: "text", text: "Output concise tool call or finish_evolution now." }], timestamp: Date.now() });
+            continue;
+          }
+          if (replyText) note = replyText.split("\n")[0].trim().slice(0, 160);
+          break;
+        }
+        for (const call of calls) {
+          const args = (call.arguments ?? {}) as Record<string, any>;
+          let text = "", isError = false;
+          if (call.name === "reflect_component") {
+            const res = await executeReflectComponent(args as any, "evolution");
+            text = res.text; isError = !res.ok;
+            if (res.ok && res.label) mutations.push(res.label);
+          } else if (call.name === "read_component") {
+            const res = executeReadComponent(args as any, "evolution");
+            text = res.text; isError = !res.ok;
+          } else if (call.name === "python_inspect") {
+            const outcome = await python.run(String(args.code ?? ""), controller.signal, { forbidActions: true });
+            const pub = publishTools();
+            for (const name of outcome.decoratedTools ?? []) {
+              log("tool_decorated", { name, level: state.level, step: state.step, after_audit: boundary, source: "evolution" });
+            }
+            for (const p of pub.published) mutations.push(`tool/${p.name} v${p.version}`);
+            text = outcome.text;
+            for (const p of pub.published) text += `\n[tool mounted: ${p.name} v${p.version} — callable directly as ${p.name}() or bound tool]`;
+            for (const f of pub.failed) text += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
+            isError = Boolean(outcome.error) || pub.failed.length > 0;
+          } else if (call.name === "finish_evolution") {
+            evoDecision = args.decision === "evolved" || mutations.length > 0 ? "evolved" : "no_change";
+            note = String(args.note ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+            text = `evolution finished (${evoDecision})`;
+            done = true;
+          } else {
+            text = `unknown evolution tool: ${call.name}`;
+            isError = true;
+          }
+          messages.push({ role: "toolResult", toolCallId: call.id, toolName: call.name,
+            content: [{ type: "text", text }], isError, timestamp: Date.now() });
+        }
+      }
+      if (mutations.length > 0) evoDecision = "evolved";
+      publishTools();
+      const uniqueMutations = [...new Set(mutations)];
+      log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: true, decision: evoDecision,
+        mutations: uniqueMutations, note, rounds: roundsRun, ms: Date.now() - started });
+      const mutSummary = uniqueMutations.length ? ` [${uniqueMutations.join(", ")}]` : "";
+      return `EVOLUTION (${boundary}): ${evoDecision}${mutSummary}${note ? ` — ${note}` : ""}`;
+    } catch (error) {
+      log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: false, error: String(error).slice(0, 200),
+        mutations: [...new Set(mutations)], rounds: roundsRun, ms: Date.now() - started });
+      return mutations.length ? `EVOLUTION (${boundary}): partial [${[...new Set(mutations)].join(", ")}]` : undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   if (components) {
     pi.registerTool({ name: "reflect_component", label: "reflect_component", executionMode: "sequential",
       description: "Define, revise or restore a versioned memory, skill, prompt or subagent role. Memory accepts optional verify: {rule_name: one-line Python expr over t}.",
-      parameters: Type.Object({ op: Type.Union([Type.Literal("define"), Type.Literal("redefine"), Type.Literal("restore")]),
-        kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
-        name: Type.String(), body: Type.Optional(Type.String()), summary: Type.Optional(Type.String()), version: Type.Optional(Type.Number()),
-        verify: Type.Optional(Type.Record(Type.String(), Type.String())) }),
+      parameters: reflectSchema,
       async execute(_id, params) {
         consecutiveLengthStops = 0;
-        try {
-          const item = components.reflect(params.op, params.kind as Kind, params.name, params.body, params.summary, params.version, params.verify);
-          const st = safeState();
-          components.recordChange(item.kind, item.name, st.level, st.step);
-          log("component_change", { op: params.op, kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
-            verify_rules: item.verify ? Object.keys(item.verify) : [], after_audit: lastAuditBoundary || null });
-          lastEvolution = { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
-            actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
-          let reply = `${item.kind}/${item.name} v${item.version} active`;
-          if (item.kind === "memory" && python.syncMemoryChecks) {
-            const stats = await python.syncMemoryChecks(collectMemoryChecks());
-            const rules = Object.keys(item.verify ?? {});
-            const checkStats = Object.fromEntries(rules.map(r => [`${item.name}/${r}`, stats[`${item.name}/${r}`] ?? null]));
-            log("memory_verify_sync", { name: item.name, version: item.version, rules, level: st.level, step: st.step, stats: checkStats });
-            const summary = formatVerifySummary(item.name, item.verify, stats);
-            if (summary) reply += `\n${summary.trim()}`;
-          }
-          return { details: {}, content: [{ type: "text", text: reply }] };
-        } catch (error) { return { details: {}, isError: true, content: [{ type: "text", text: String(error) }] }; }
+        const res = await executeReflectComponent(params as any, "parent");
+        return { details: {}, ...(res.ok ? {} : { isError: true }), content: [{ type: "text", text: res.text }] };
       } });
     pi.registerTool({ name: "read_component", label: "read_component", executionMode: "sequential",
       description: "Read one versioned component body, especially a skill when its index is relevant.",
-      parameters: Type.Object({ kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
-        name: Type.String(), version: Type.Optional(Type.Number()) }),
+      parameters: readSchema,
       async execute(_id, params) {
         consecutiveLengthStops = 0;
-        try {
-          const item = params.version ? components.read(params.kind as Kind, params.name, params.version)
-            : components.current(params.kind as Kind, params.name);
-          if (!item) throw Error("no active component");
-          const st = safeState();
-          components.recordRead(item.kind, item.name, st.level, st.step);
-          log("read_component", { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step });
-          const verifyBlock = item.verify && Object.keys(item.verify).length
-            ? `\nverify: ${JSON.stringify(item.verify)}${formatVerifySummary(item.name, item.verify, python.memoryCheckStats)}`
-            : "";
-          return { details: {}, content: [{ type: "text", text: `${item.kind}/${item.name} v${item.version}\n${item.body}${verifyBlock}` }] };
-        } catch (error) { return { details: {}, isError: true, content: [{ type: "text", text: String(error) }] }; }
+        const res = executeReadComponent(params as any, "parent");
+        return { details: {}, ...(res.ok ? {} : { isError: true }), content: [{ type: "text", text: res.text }] };
       } });
   }
 
@@ -1181,7 +1360,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       return { details: {}, content: [{ type: "text", text: `notebook ${params.section} ${params.op} ok` }] };
     } });
 
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (_event, ctx) => {
     if (!started) await python.init();
     if (components && python.syncMemoryChecks) {
       const checks = collectMemoryChecks();
@@ -1194,7 +1373,38 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     endReason = lastStop = undefined;
     const batch = pending;
     pending = null;
-    return { systemPrompt: system, message: { customType: STATE_TYPE, content: content(batch), display: false } };
+    let evolutionReceipt: string | undefined;
+    let boundaryHandled = false;
+    if (components && evolutionEnabled && ctx?.model && ctx?.modelRegistry?.streamSimple) {
+      const state = python.state();
+      const canRun = state.state !== "WIN" && state.budget_left !== 0 && state.level_budget_left !== 0;
+      if (canRun) {
+        if (batch?.level_changed) {
+          evolutionReceipt = await runBoundaryEvolution("level_complete", finishedLevelSteps, state,
+            finishedLevelNumber || Math.max(1, state.level - 1), ctx,
+            { metrics: finishedLevelMetrics ?? attemptMetrics, evolution: finishedLevelEvolution });
+          boundaryHandled = true;
+        } else if (state.state === "GAME_OVER" && lastDeathAuditStep !== state.step) {
+          lastDeathAuditStep = state.step;
+          const failSteps = lastFailedAttemptSteps.length ? lastFailedAttemptSteps : attemptSteps;
+          evolutionReceipt = await runBoundaryEvolution("game_over", failSteps, state, state.level, ctx);
+          boundaryHandled = true;
+        } else {
+          const canStuckAudit = stuckAuditsThisLevel < 3 && (lastStuckAuditStep < 0 || state.actions_used - lastStuckAuditStep >= 12);
+          const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || (fact.same_death !== null && fact.same_death !== undefined && fact.same_death !== false));
+          const stalled = options.consult !== false && (state.stale_steps >= 12 || regionStall);
+          const stuck = options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter;
+          if (canStuckAudit && (stalled || stuck) && state.state !== "GAME_OVER") {
+            lastStuckAuditStep = state.actions_used;
+            stuckAuditsThisLevel += 1;
+            evolutionReceipt = await runBoundaryEvolution(stalled ? "stall" : "stuck",
+              attemptSteps.length ? attemptSteps : levelSteps, state, state.level, ctx);
+            boundaryHandled = true;
+          }
+        }
+      }
+    }
+    return { systemPrompt: system, message: { customType: STATE_TYPE, content: content(batch, false, { evolutionReceipt, boundaryHandled }), display: false } };
   });
   pi.on("turn_start", () => { actedThisTurn = false; observeCallsThisTurn = 0; observeLimitHitThisTurn = false; toolBuildFreeUsedThisTurn = false; });
   pi.on("session_before_compact", () => ({ cancel: true }));
@@ -1376,6 +1586,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
     noImage: env.ARC_LAYERED_NO_IMAGE === "1",
     harnessProfile: env.ARC_LAYERED_PROFILE === "qwen27b-harness", consult: env.ARC_LAYERED_CONSULT !== "0",
+    evolution: env.ARC_LAYERED_PROFILE === "qwen27b-harness" && env.ARC_LAYERED_EVOLUTION !== "0",
     boardInventory: env.ARC_LAYERED_PROFILE === "qwen27b-harness" && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),

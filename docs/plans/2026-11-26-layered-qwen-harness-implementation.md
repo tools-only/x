@@ -82,3 +82,9 @@ Agent 自行调用 `reflect_component` 定义/修订/恢复 Memory、Skill、Pro
   - **全链路可达**：未验证（本机无本地 Pi `node_modules`）。
   - **自主采用**：未验证（待授权预算在真实 Qwen 3.8 27B 实跑，检查 `dual_audits_shown` 是否从 12–33 次降至个位数、`audits_followed_by_evolution` 与 `lib_invocations`/`bound_ok`/`memory_verify_syncs` 是否从 0 破零）。
   - **净收益**：未验证（需与 `a5ce4ab7` 及 `qwen27b` 基线同预算独立对照任务过关率与父子总成本）。
+
+## 2026-11-26 方案 A：独立干净上下文的边界演化子调用
+
+- **问题与窄命题**：将 `dualAudit` 文本贴在主任务 `STATE_TYPE` 消息里时，模型仍处于连续游玩上下文惯性中，且 `submit_actions` 与演化工具竞争同一回合，既挤占主任务 context，又难以触发真实 harness 演化。窄命题：在真实边界（`GAME_OVER`、`LEVEL COMPLETE`、冷却后的 `STUCK`/`STALL`，默认启用、`ARC_LAYERED_EVOLUTION=0` 可关闭）通过同模型 `ctx.modelRegistry.streamSimple` 启动**独立干净上下文**的短演化轮（最多 3 轮工具、120s 超时），**不暴露 `submit_actions`**，仅暴露 `reflect_component`、`read_component`、`python_inspect`（复用同一活体 Python 内核但通过 `forbidActions: true` 在宿主与内核双层禁掉 `submit_actions`，可直接写并实测 `@tool`）与 `finish_evolution(decision="evolved"|"no_change", note)`；主任务上下文不再塞入大段审计块，只接收 1 行 `EVOLUTION (...)` 回执及即时生效的活跃组件。
+- **成本与观测**：每次演化调用记入 `harness/usage.jsonl`（`kind: "evolution"`）与 `harness/layered.jsonl`（`evolution_round`），并在 `src/autoresearch_pi/arc_layered_e2e.py` 的 `request_accounting` 与 `summary["evolution_rounds"]`、`run-config.json`（`evolution_enabled`）全额计入父子总成本。
+- **四层验收**：`forbidActions` 双层拦截与 `@tool` 创作经真实 WASI 内核测试验证；`tests/arc_layered_extension.test.ts`（含独立上下文演化多轮单测）、scripted Pi smoke 与真实 Qwen 3.8 27B 自主采用与净收益保持未验证（本机无 `node_modules` / 未授权真实运行预算）。

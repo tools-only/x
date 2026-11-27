@@ -754,3 +754,76 @@ test("stuck audits obey cooldown and per-level cap, and Last evolution feedback 
   handlers.session_shutdown();
   assert.match(readFileSync(join(root, "work", "replay", "level_1.md"), "utf8"), /## Layer 2: Active capabilities & execution/);
 });
+
+test("clean-context boundary evolution runs with evolution-only tools and keeps parent context free of audit walls", async () => {
+  const { handlers, game, python, rows, call, root } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({});
+  python.memoryCheckStats = {};
+  python.syncMemoryChecks = async (checks: Array<{ id: string; expr: string }>) => {
+    python.memoryCheckStats = Object.fromEntries(checks.map(c => [c.id, {
+      support: 1, counter: 0, checked: 1, by_level: { "1": { support: 1, counter: 0, checked: 1 } },
+      witness: null, error: null,
+    }]));
+    return python.memoryCheckStats;
+  };
+  let forbidSeen = false;
+  const origRun = python.run;
+  python.run = async (code: string, sig?: AbortSignal, opts?: { forbidActions?: boolean }) => {
+    if (opts?.forbidActions) {
+      forbidSeen = true;
+      return { text: "inspected ok", truncated: false, acted: null, images: [], metrics: {}, decoratedTools: ["finder"], usedLibs: [] };
+    }
+    return origRun(code, sig);
+  };
+
+  game.state = "GAME_OVER";
+  game.step = 5;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 5, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 2,
+  }] });
+  handlers.turn_start();
+  await call();
+
+  let streamCalls = 0;
+  let seenToolNames: string[] = [];
+  const ctx: any = {
+    model: { id: "same-model", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_model: any, input: any) => {
+        streamCalls += 1;
+        seenToolNames = (input.tools ?? []).map((t: any) => t.name);
+        if (streamCalls === 1) {
+          return { result: async () => ({
+            role: "assistant", stopReason: "toolUse", usage: { input: 200, output: 50, totalTokens: 250 },
+            content: [
+              { type: "toolCall", id: "e1", name: "python_inspect", arguments: { code: "print(current_frame.shape)" } },
+              { type: "toolCall", id: "e2", name: "reflect_component", arguments: {
+                op: "define", kind: "memory", name: "rules", body: "Falsified: DOWN is fatal", verify: { ok: "t.action != 'DOWN'" } } },
+            ],
+          }) };
+        }
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 260, output: 30, totalTokens: 290 },
+          content: [
+            { type: "toolCall", id: "e3", name: "finish_evolution", arguments: { decision: "evolved", note: "recorded fatal rule" } },
+          ],
+        }) };
+      },
+    },
+  };
+
+  const parentMsg = textOf((await handlers.before_agent_start({}, ctx)).message.content);
+  assert.equal(streamCalls, 2);
+  assert.equal(forbidSeen, true);
+  assert.deepEqual(seenToolNames, ["reflect_component", "read_component", "python_inspect", "finish_evolution"]);
+  assert.match(parentMsg, /EVOLUTION \(game_over\): evolved \[memory\/rules v1\] — recorded fatal rule/);
+  assert.match(parentMsg, /MEMORY rules v1: Falsified: DOWN is fatal \[verify: ok: 1\/1 held\]/);
+  assert.doesNotMatch(parentMsg, /Layer 2 \(Active capabilities & execution\):/);
+  const evoRows = rows("evolution_round");
+  assert.equal(evoRows.length, 1);
+  assert.equal(evoRows[0].ok, true);
+  assert.equal(evoRows[0].decision, "evolved");
+  const usageText = readFileSync(join(root, "harness", "usage.jsonl"), "utf8");
+  assert.match(usageText, /"kind":"evolution"/);
+});

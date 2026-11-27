@@ -807,3 +807,28 @@ test("syncMemoryChecks ignores None in checked denominator, backtests history, s
   assert.equal(afterRestart["rules/down_moves"].counter, 2);
   python.close();
 });
+
+test("forbidActions blocks submit_actions while allowing @tool creation and live frame inspection", async () => {
+  const { python } = await session();
+  const blocked = await python.run("submit_actions('UP')", undefined, { forbidActions: true });
+  assert.equal(blocked.acted, null);
+  assert.match(blocked.error ?? "", /submit_actions is disabled during evolution review/);
+  assert.equal(python.state().actions_used, 0);
+
+  const built = await python.run([
+    "@tool",
+    "def probe():",
+    "    return current_frame.shape",
+    "probe()",
+  ].join("\n"), undefined, { forbidActions: true });
+  assert.equal(built.error, undefined);
+  assert.deepEqual(built.decoratedTools, ["probe"]);
+  assert.match(built.text, /\(8, 8\)/);
+  assert.equal(python.state().actions_used, 0);
+
+  // Subsequent normal play call can use the tool AND act normally
+  const normal = await python.run("print(probe(), submit_actions('UP')['executed_count'])");
+  assert.equal(normal.error, undefined);
+  assert.match(normal.text, /\(8, 8\) 1/);
+  python.close();
+});
