@@ -38,6 +38,7 @@ from .arc_thin_e2e import (
 from .arc_blind_policy import run_arc_blind_policy
 from .arc_agi_3_e2e import _pi_cli_version, _resolve_pi_cli
 from .terminal_bench_e2e import run_terminal_bench_e2e
+from .scienceworld_e2e import run_scienceworld_e2e
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -315,6 +316,23 @@ def main(argv: list[str] | None = None) -> int:
     terminal.add_argument("--timeout", type=float, default=3600.0)
     terminal.add_argument("--model", default=None)
     terminal.add_argument("--context-compaction", action="store_true")
+    scienceworld = sub.add_parser("scienceworld-e2e", help="run one ScienceWorld task through the layered text extension")
+    scienceworld.add_argument("--root", type=Path, default=None)
+    scienceworld.add_argument("--task", required=True)
+    scienceworld.add_argument("--variations", required=True, help="comma-separated variation indices")
+    scienceworld.add_argument("--max-steps", type=int, default=100)
+    scienceworld.add_argument("--profile", choices=("layered", "harness"), default="harness")
+    scienceworld.add_argument("--provider", required=True)
+    scienceworld.add_argument("--model", required=True)
+    scienceworld.add_argument("--thinking", default=None)
+    scienceworld.add_argument("--max-output-tokens", type=int, default=4096)
+    scienceworld.add_argument("--wall-seconds", type=float, default=1800.0)
+    scienceworld.add_argument("--budget-usd", type=float, default=20.0)
+    scienceworld.add_argument("--dotenv-root", type=Path, default=None)
+    scienceworld.add_argument("--agent-dir", type=Path, default=None)
+    scienceworld.add_argument("--bridge-python", type=Path, default=None)
+    scienceworld.add_argument("--scienceworld-path", type=Path, default=None)
+    scienceworld.add_argument("--jre-home", type=Path, default=None)
     args = parser.parse_args(argv)
     if args.jev_routing is not None:
         os.environ[JEV_ROUTING_ENV] = args.jev_routing
@@ -595,6 +613,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(summary.read_text(encoding="utf-8"), end="")
         return 0 if json.loads(summary.read_text(encoding="utf-8")).get("passed") else 1
+    if args.command == "scienceworld-e2e":
+        root = (args.root or paths.runs_dir / f"pi-scienceworld-{args.task}").resolve()
+        variations = [int(x) for x in args.variations.split(",") if x.strip()]
+        kwargs: dict = {}
+        if args.dotenv_root is not None:
+            kwargs["dotenv_root"] = args.dotenv_root
+        if args.agent_dir is not None:
+            kwargs["agent_dir"] = args.agent_dir
+        if args.bridge_python is not None:
+            kwargs["bridge_python"] = args.bridge_python
+        if args.scienceworld_path is not None:
+            kwargs["scienceworld_path"] = args.scienceworld_path
+        if args.jre_home is not None:
+            kwargs["jre_home"] = args.jre_home
+        summary = run_scienceworld_e2e(
+            root, task=args.task, variations=variations, max_steps=args.max_steps,
+            provider=args.provider, model=args.model, profile=args.profile, thinking=args.thinking,
+            max_output_tokens=args.max_output_tokens, wall_seconds=args.wall_seconds,
+            budget_usd=args.budget_usd, **kwargs,
+        )
+        value = json.loads(summary.read_text(encoding="utf-8"))
+        print(json.dumps(value, ensure_ascii=False, indent=2))
+        return 0 if value.get("stop_reason") == "win" else 1
     return 0
 
 

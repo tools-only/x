@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { BridgeClient, COLOR_LEGEND, LayeredPython, type ActionBatch, type LayeredState, type MemoryCheckStats, type StepFact } from "./arc_layered_python.ts";
+import { BridgeClient, LayeredPython, type ActionBatch, type LayeredState, type MemoryCheckStats, type StepFact } from "./arc_layered_python.ts";
+import { arcEnvAdapter } from './arc_env_adapter.ts';
+import type { LayeredEnvAdapter } from './layered_env_adapter.ts';
 import { RequestTrace, usageRecord } from "./arc_request_trace.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
 import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
@@ -400,7 +402,7 @@ export function compactHistory(input: any[], summary: string) {
   return [{ role: "user", content: [{ type: "text", text: summary }] }, ...input.slice(last)];
 }
 
-export function installLayered(pi: ExtensionAPI, python: Python, options: LayeredOptions) {
+export function installLayered(pi: ExtensionAPI, python: Python, options: LayeredOptions, adapter: LayeredEnvAdapter = arcEnvAdapter) {
   const store = join(options.root, "harness");
   mkdirSync(store, { recursive: true });
   const write = (file: string, row: Record<string, unknown>) => appendFileSync(join(store, file), JSON.stringify(row) + "\n", "utf8");
@@ -411,10 +413,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const flags: Record<string, boolean> = { expect: false, graph: false, work: false, model: false, tags: false,
     claims: false, ...options.flags };
   flags.no_model = !flags.model;
-  const system = prompt(options.harnessProfile ? "arc_layered_system_harness.md" : "arc_layered_system.md")
-    .replace(/\{\{\?(\w+)\}\}\n?([\s\S]*?)\{\{\/\1\}\}\n?/g, (_, name, body) => flags[name] ? body : "")
-    .replaceAll("{{color_legend}}", COLOR_LEGEND)
-    .replaceAll("{{max_actions_per_call}}", String(options.maxActionsPerCall));
+  const system = adapter.systemPrompt(flags, options.maxActionsPerCall, Boolean(options.harnessProfile));
   let memory: Record<string, string> = {};
   const components = options.harnessProfile ? new LayeredComponents(join(store, "components")) : undefined;
   let notebook: Record<string, string> = {};
