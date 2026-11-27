@@ -88,16 +88,18 @@ export function renderDecisionWindow(blocks: DecisionTraceBlock[], maxChars: num
 const EVOLUTION_SYSTEM_PROMPT = [
   "You are running an isolated, clean-context self-evolution review between task turns. You cannot take environment actions (submit_actions is disabled).",
   "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active component bodies, internal legibility stats, prior reviews), and the current frame.",
-  "If the dossier already gives enough evidence to keep capabilities as-is or apply a memory/prompt/skill/subagent update, do NOT call python_inspect — decide directly.",
-  "Only call python_inspect when you need to verify specific frame/transition details or to author & test a @tool / verify rule. Batch all checks into one python_inspect call.",
+  "Convert your diagnosis into an executable or falsifiable capability when there is a real gap, or finish with decision='no_change' if existing capabilities suffice:",
+  "1. Repeatable check/comparison/filter -> author a 0-arg or 1-arg @tool via python_inspect and test it on current_frame/transitions in the same script.",
+  "2. Causal/state hypothesis -> update Memory via reflect_component with ONLY crisp Confirmed facts, Falsified routes (with step), and ONE Next Discriminating Probe (expected A vs B), plus >=1 verify={'rule': '1-line Python expr over t returning True/False/None'} whenever testable on transitions. Do NOT write vague prose advice ('stop repeating', 'try other actions').",
+  "3. Otherwise -> call finish_evolution(decision='no_change', note=...) directly; never rewrite synonymous prose just to emit 'evolved'.",
   "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
-  "Editable space (keep updates minimal: 0 or 1 targeted change; prefer updates that take effect immediately without an extra read, such as memory with verify, @tool, or short prompt; update stale memory if it failed to break a stall):",
-  "- memory: reflect_component(op, kind='memory', name, body, verify?) where optional verify={'rule': '1-line Python expr over t returning True/False/None'}",
-  "- tools: python_inspect(code) with @tool on a 0-arg or 1-arg function (or writing work/lib/<name>.py); test it immediately on current_frame/transitions",
-  "- skills: reflect_component(op, kind='skill', name, body, summary) for a reusable cross-level workflow",
+  "Editable space (0 or 1 targeted change; update stale memory if it failed to break a stall):",
+  "- tools: python_inspect(code) with @tool on a 0-arg or 1-arg function (or work/lib/<name>.py); test it immediately",
+  "- memory: reflect_component(op, kind='memory', name, body, verify?)",
+  "- skills: reflect_component(op, kind='skill', name, body, summary) only for reusable cross-level workflows",
   "- prompt: reflect_component(op, kind='prompt', name, body) (<= 600 chars)",
   "- subagent: reflect_component(op, kind='subagent', name, body) for a custom consult role",
-  "Round budget: you have a bounded number of rounds (shown in tool results). You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution in the same turn once verified.",
+  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution in the same turn once verified.",
   "Ground claims strictly in observed facts. End by calling finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
 
@@ -610,7 +612,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     } else if (evo.kind === "memory") {
       const cur = components.current("memory", evo.name);
       const vs = cur ? formatVerifySummary(cur.name, cur.verify, python.memoryCheckStats).trim() : "";
-      if (vs) detail = `${vs}, `;
+      detail = vs ? `${vs}, ` : "verify=0 rules, ";
     }
     return `Last evolution (L${evo.level} s${evo.step}): ${label} -> ${detail}+${evo.newStatesSince} new states, ${evo.deathsSince} deaths over ${evo.actionsSince} actions`;
   }
@@ -721,13 +723,6 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (inv.line) { events.push(inv.line); inventoryShown = true; }
     }
     if (components) {
-      for (const kind of ["memory", "prompt"] as const) for (const item of components.list(kind)) {
-        events.push(formatComponentLine(item));
-      }
-      const skills = components.list("skill");
-      const index = skills.map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; ");
-      if (index && (index !== lastSkillIndex || batch?.level_changed)) events.push("SKILLS: " + index);
-      lastSkillIndex = index;
       const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || (fact.same_death !== null && fact.same_death !== undefined && fact.same_death !== false));
       const stalled = options.consult !== false && (state.stale_steps >= 12 || regionStall);
       if (stalled && canStuckAudit && !batch?.level_changed && state.state !== "GAME_OVER") {
@@ -1044,7 +1039,6 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           attemptSteps.length = 0;
           lastFailedAttemptSteps = [];
           attemptMetrics = freshAttemptMetrics();
-          lastStuckAuditStep = -1;
         } else {
           attemptSteps.push(fact);
           if (fact.new) lastStuckAuditStep = -1;
@@ -1250,13 +1244,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       lastEvolution = { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
         actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
       let reply = `${item.kind}/${item.name} v${item.version} active`;
-      if (item.kind === "memory" && python.syncMemoryChecks) {
-        const stats = await python.syncMemoryChecks(collectMemoryChecks());
-        const rules = Object.keys(item.verify ?? {});
-        const checkStats = Object.fromEntries(rules.map(r => [`${item.name}/${r}`, stats[`${item.name}/${r}`] ?? null]));
-        log("memory_verify_sync", { name: item.name, version: item.version, rules, level: st.level, step: st.step, stats: checkStats, source });
-        const summary = formatVerifySummary(item.name, item.verify, stats);
-        if (summary) reply += `\n${summary.trim()}`;
+      if (item.kind === "memory") {
+        if (python.syncMemoryChecks) {
+          const stats = await python.syncMemoryChecks(collectMemoryChecks());
+          const rules = Object.keys(item.verify ?? {});
+          const checkStats = Object.fromEntries(rules.map(r => [`${item.name}/${r}`, stats[`${item.name}/${r}`] ?? null]));
+          log("memory_verify_sync", { name: item.name, version: item.version, rules, level: st.level, step: st.step, stats: checkStats, source });
+          const summary = formatVerifySummary(item.name, item.verify, stats);
+          if (summary) reply += `\n${summary.trim()}`;
+        }
+        if (source === "evolution" && !Object.keys(item.verify ?? {}).length) {
+          reply += "\n[note: saved memory with 0 verify rules — if this addresses a repeatable check or falsifiable hypothesis, prefer adding a verify rule or authoring & testing a @tool via python_inspect before finish_evolution]";
+        }
       }
       return { ok: true, text: reply, label: `${item.kind}/${item.name} v${item.version}` };
     } catch (error) {
@@ -1606,21 +1605,29 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         messages = compacted;
       }
     }
-    if (components) {
-      const lastIndex = messages.findLastIndex(message => message.customType === STATE_TYPE && Array.isArray(message.content));
-      const stateMessage = lastIndex < 0 ? undefined : messages[lastIndex];
-      if (stateMessage) {
-        const current = stateMessage.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
-        const missing = components.list().filter(item => item.kind === "memory" || item.kind === "prompt")
-          .map(item => formatComponentLine(item))
-          .filter(line => !current.includes(line));
-        const skills = components.list("skill").map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; ");
-        if (skills && !current.includes(`SKILLS: ${skills}`)) missing.push(`SKILLS: ${skills}`);
-        if (missing.length) messages = messages.map((message, i) => i === lastIndex ? { ...message,
-          content: [{ type: "text", text: `${stateMessage.content[0].text}\n${missing.join("\n")}` }, ...stateMessage.content.slice(1)] } : message);
+    if (components && messages.length > 0) {
+      const lastIdx = messages.length - 1;
+      const lastMsg = messages[lastIdx];
+      if (lastMsg && Array.isArray(lastMsg.content)) {
+        const current = lastMsg.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n");
+        const lines: string[] = [];
+        for (const item of components.list().filter(i => i.kind === "memory" || i.kind === "prompt")) {
+          const line = formatComponentLine(item);
+          if (!current.includes(line)) lines.push(line);
+        }
+        const toolsIndex = components.list("tool").map(item => `${item.name}() — ${item.summary} (v${item.version})`).join("; ");
+        if (toolsIndex && !current.includes(`TOOLS: ${toolsIndex}`)) lines.push(`TOOLS: ${toolsIndex}`);
+        const skillsIndex = components.list("skill").map(item => `${item.name} — ${item.summary} (v${item.version})`).join("; ");
+        if (skillsIndex && !current.includes(`SKILLS: ${skillsIndex}`)) lines.push(`SKILLS: ${skillsIndex}`);
+        if (lines.length) {
+          const block = lines.join("\n");
+          const firstTextIdx = lastMsg.content.findIndex((part: any) => part.type === "text");
+          const nextContent = firstTextIdx >= 0
+            ? lastMsg.content.map((part: any, i: number) => i === firstTextIdx ? { ...part, text: `${part.text}\n${block}` } : part)
+            : [...lastMsg.content, { type: "text", text: block }];
+          messages = messages.map((message, i) => i === lastIdx ? { ...message, content: nextContent } : message);
+        }
       }
-    }
-    if (components) {
       const active = components.list().filter(item => item.kind === "memory" || item.kind === "prompt");
       const visible = messages.map(message => Array.isArray(message.content)
         ? message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") : "").join("\n");

@@ -74,10 +74,12 @@ test("harness profile reflects memory and injects its active version", async () 
   const read = await tools.read_component.execute("id", { kind: "memory", name: "current" });
   assert.match(read.content[0].text, /H1: test next/);
   const next = await handlers.before_agent_start({});
-  assert.match(textOf(next.message.content), /MEMORY current v1: H1: test next/);
+  assert.doesNotMatch(textOf(next.message.content), /MEMORY current v1/);
+  const ctxMsg = handlers.context({ messages: [{ role: "custom", customType: STATE_TYPE, content: next.message.content }] }, { model: { contextWindow: 128000 } }).messages;
+  assert.match(textOf(ctxMsg[0].content), /MEMORY current v1: H1: test next/);
 });
 
-test("context exposes current component revisions and skill index after an older state survives", async () => {
+test("context exposes current component revisions and skill index only on the latest message", async () => {
   const { handlers, tools, rows } = setup({ harnessProfile: true });
   await handlers.before_agent_start({});
   await tools.reflect_component.execute("id", { op: "define", kind: "memory", name: "current", body: "first" });
@@ -85,9 +87,11 @@ test("context exposes current component revisions and skill index after an older
   const old = (await handlers.before_agent_start({})).message;
   await tools.reflect_component.execute("id", { op: "redefine", kind: "memory", name: "current", body: "revised" });
   await tools.reflect_component.execute("id", { op: "redefine", kind: "skill", name: "probe", body: "inspect then act", summary: "act after inspection" });
-  const out = handlers.context({ messages: [old] }, { model: { contextWindow: 128000 } }).messages;
-  assert.match(textOf(out[0].content), /MEMORY current v2: revised/);
-  assert.match(textOf(out[0].content), /SKILLS: probe — act after inspection \(v2\)/);
+  const newer = (await handlers.before_agent_start({})).message;
+  const out = handlers.context({ messages: [old, newer] }, { model: { contextWindow: 128000 } }).messages;
+  assert.doesNotMatch(textOf(out[0].content), /MEMORY current/);
+  assert.match(textOf(out[1].content), /MEMORY current v2: revised/);
+  assert.match(textOf(out[1].content), /SKILLS: probe — act after inspection \(v2\)/);
   assert.equal(rows("live_injected").filter(row => row.component_kind === "memory").at(-1).version, 2);
 });
 
@@ -813,12 +817,14 @@ test("clean-context boundary evolution runs with evolution-only tools and keeps 
     },
   };
 
-  const parentMsg = textOf((await handlers.before_agent_start({}, ctx)).message.content);
+  const parentStart = await handlers.before_agent_start({}, ctx);
+  const parentMsg = textOf(parentStart.message.content);
   assert.equal(streamCalls, 2);
   assert.equal(forbidSeen, true);
   assert.deepEqual(seenToolNames, ["reflect_component", "read_component", "python_inspect", "finish_evolution"]);
   assert.match(parentMsg, /EVOLUTION \(game_over\): evolved \[memory\/rules v1\] — recorded fatal rule/);
-  assert.match(parentMsg, /MEMORY rules v1: Falsified: DOWN is fatal \[verify: ok: 1\/1 held\]/);
+  const ctxOut = handlers.context({ messages: [{ role: "custom", customType: STATE_TYPE, content: parentStart.message.content }] }, { model: { contextWindow: 102400 } }).messages;
+  assert.match(textOf(ctxOut[0].content), /MEMORY rules v1: Falsified: DOWN is fatal \[verify: ok: 1\/1 held\]/);
   assert.doesNotMatch(parentMsg, /Layer 2 \(Active capabilities & execution\):/);
   const evoRows = rows("evolution_round");
   assert.equal(evoRows.length, 1);
