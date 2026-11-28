@@ -1178,3 +1178,63 @@ test("multi-step plan field from planner @tool is tracked in branch_handoff", as
     python.close();
   }
 });
+
+test("@tool preserves leading metadata header comments above @tool and trial_at allows literal defaults", async () => {
+  const workDir = join(mkdtempSync(join(tmpdir(), "layered-tool-headers-")), "work");
+  const { python } = await session({ workDir });
+  try {
+    await python.run("submit_actions(['UP'], stop_on_noop=False)");
+    const res = await python.run([
+      "# layer: L4",
+      "# scope: game",
+      "# when: before acting near hazards",
+      "# out/branch: guarded candidate list",
+      "@tool",
+      "def guarded_probe(actions=None):",
+      "    return {'count': len(transitions), 'actions': actions}",
+      "def multi_default(actions=None, limit=2):",
+      "    return {'limit': limit}",
+      "print(trial_at(0, guarded_probe), trial_at(0, multi_default))",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.equal(res.error, undefined);
+    assert.match(res.text, /'count': 0/);
+    assert.match(res.text, /'limit': 2/);
+    const saved = readFileSync(join(workDir, "lib", "guarded_probe.py"), "utf8");
+    assert.match(saved, /# layer: L4/);
+    assert.match(saved, /# when: before acting near hazards/);
+
+    const bad = await python.run([
+      "def bad_default(ref=transitions):",
+      "    return len(ref)",
+      "trial_at(0, bad_default)",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.match(bad.error ?? "", /ValueError: trial function must not capture live values/);
+  } finally {
+    python.close();
+  }
+});
+
+test("work/model.py tracks current-level forward live accuracy separately from retrospective back-test and resets on edit", async () => {
+  const { python } = await session();
+  try {
+    await python.run("submit_actions(['UP'], stop_on_noop=False)");
+    await python.run("with open('work/model.py', 'w') as f:\n    f.write('def predict(frame, action):\\n    return frame.grid\\n')");
+    await python.run("pass");
+    let snap = python.capabilitySnapshot?.()?.model as any;
+    assert.equal(snap?.by_level?.["1"]?.tested, 1);
+    assert.deepEqual(snap?.live ?? {}, {});
+
+    await python.run("submit_actions(['DOWN'], stop_on_noop=False)");
+    snap = python.capabilitySnapshot?.()?.model as any;
+    assert.equal(snap?.by_level?.["1"]?.tested, 2);
+    assert.equal(snap?.live?.["1"]?.tested, 1);
+
+    await python.run("with open('work/model.py', 'w') as f:\n    f.write('# v2\\ndef predict(frame, action):\\n    return frame.grid\\n')");
+    await python.run("pass");
+    snap = python.capabilitySnapshot?.()?.model as any;
+    assert.equal(snap?.by_level?.["1"]?.tested, 2);
+    assert.deepEqual(snap?.live ?? {}, {});
+  } finally {
+    python.close();
+  }
+});

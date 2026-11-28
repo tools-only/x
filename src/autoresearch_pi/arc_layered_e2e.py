@@ -568,6 +568,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         "component_adoption": {
             "memory_live_injected": sum(1 for r in rows if r.get("kind") == "live_injected" and r.get("component_kind") == "memory"),
             "prompt_live_injected": sum(1 for r in rows if r.get("kind") == "live_injected" and r.get("component_kind") == "prompt"),
+            "orchestration_live_injected": sum(1 for r in rows if r.get("kind") == "live_injected" and r.get("component_kind") == "orchestration"),
             "component_reads": sum(1 for r in rows if r.get("kind") == "read_component"),
             "tool_invocations_ok": sum(1 for r in rows if r.get("kind") in ("bound_invocation", "lib_invocation") and r.get("ok") is True),
             "tool_branch_aligned": sum(row["aligned"] for row in branch_handoffs),

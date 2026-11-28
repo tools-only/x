@@ -47,7 +47,46 @@ type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMini
   & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot" | "syncMemoryChecks" | "validateMemoryChecks" | "memoryCheckStats" | "runtimeTypeCard">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 type AttemptMetrics = { py_calls: number; py_errors: number; truncated: number; observe_limits: number; errors: string[] };
-const EDITABLE_SPACE = "Editable capability space: memory (with optional verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult).";
+const EDITABLE_SPACE = "Editable capability space: memory (L4 strategy card or L3 causal with verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult), orchestration (mode/handoff/rhythm).";
+export type OrchestrationMode = "EXPLORE" | "EXPLOIT" | "REFRAME";
+type ParsedOrchestration = {
+  mode?: OrchestrationMode;
+  handoff?: string;
+  batch_hint?: string;
+  reframe_after_deaths?: number;
+  note?: string;
+};
+export function parseOrchestrationBody(body: string): ParsedOrchestration {
+  const trimmed = body.trim();
+  if (!trimmed) return {};
+  if (trimmed.startsWith("{")) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      const rawMode = String(obj.mode ?? "").toUpperCase();
+      return {
+        ...(rawMode === "EXPLORE" || rawMode === "EXPLOIT" || rawMode === "REFRAME" ? { mode: rawMode as OrchestrationMode } : {}),
+        ...(typeof obj.handoff === "string" ? { handoff: obj.handoff.trim().slice(0, 140) } : {}),
+        ...(typeof obj.batch_hint === "string" ? { batch_hint: obj.batch_hint.trim().slice(0, 80) } : {}),
+        ...(Number.isFinite(Number(obj.reframe_after_deaths)) && Number(obj.reframe_after_deaths) >= 1
+          ? { reframe_after_deaths: Math.floor(Number(obj.reframe_after_deaths)) } : {}),
+      };
+    } catch {}
+  }
+  const modeMatch = /^\s*mode\s*[:=]\s*(EXPLORE|EXPLOIT|REFRAME)\b/mi.exec(trimmed);
+  const handoffMatch = /^\s*handoff\s*[:=]\s*(.+)$/mi.exec(trimmed);
+  const batchMatch = /^\s*batch_hint\s*[:=]\s*(.+)$/mi.exec(trimmed);
+  const deathsMatch = /^\s*reframe_after_deaths\s*[:=]\s*(\d+)\b/mi.exec(trimmed);
+  const parsed: ParsedOrchestration = {
+    ...(modeMatch ? { mode: modeMatch[1].toUpperCase() as OrchestrationMode } : {}),
+    ...(handoffMatch ? { handoff: handoffMatch[1].trim().slice(0, 140) } : {}),
+    ...(batchMatch ? { batch_hint: batchMatch[1].trim().slice(0, 80) } : {}),
+    ...(deathsMatch && Number(deathsMatch[1]) >= 1 ? { reframe_after_deaths: Number(deathsMatch[1]) } : {}),
+  };
+  if (!parsed.mode && !parsed.handoff && !parsed.batch_hint && !parsed.reframe_after_deaths) {
+    parsed.note = trimmed.replace(/\s+/g, " ").slice(0, 140);
+  }
+  return parsed;
+}
 type DecisionTraceBlock = {
   decision: number;
   level: number;
@@ -120,25 +159,26 @@ const EVOLUTION_SYSTEM_PROMPT = [
   "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active components, Epistemic status, Process profile, Component use, Last evolution feedback, prior reviews), and the current frame.",
   "Meta-evolution loop (anchor to ONE concrete decision point k or cross-level delta):",
   "1. Critique the solver's method, strategy, and thinking at step k — identify the deepest root flaw along the scientific ladder:",
-  "   - Observation & modeling method (L1/L3): acting before reading key local changes/structure, repeating ad-hoc inspection scripts, or lacking an executable world model (`work/model.py`) with measured back-test accuracy.",
-  "   - Hypothesis & probing method (L3/L4): sending unchecked/vacuous-expect or oversized unverified batches instead of small discriminating probes that separate competing explanations, or ignoring SURPRISE / verify contradictions / model `last_fail` instead of revising beliefs.",
-  "   - Search & offline planning strategy (L2/L4): stepping blindly or replaying dead ends instead of searching inside a verified `work/model.py` or a composable L4 planner / experiment-designer `@tool` that returns multi-step `plan: [...]`.",
-  "   - Planning & execution orchestration (L4/L5): staying trapped in one framing or failing to use mounted model/tools/skills.",
+  "   - Observation & modeling method (L1/L3): acting before reading key local changes/structure, repeating ad-hoc inspection scripts, or failing to maintain lightweight hypotheses, confirmed rules, and falsifiers (or lacking a scoped local check when decisions stall).",
+  "   - Hypothesis & probing method (L3/L4): sending unchecked/vacuous-expect or oversized unverified batches instead of small discriminating probes that separate competing explanations, or ignoring SURPRISE / verify contradictions / mismatches instead of revising beliefs.",
+  "   - Search & offline planning strategy (L2/L4): stepping blindly or replaying dead ends instead of consulting a scoped L3/L4 decision helper (allowing 'unknown'/None when uncertain) or keeping multi-step plans strictly inside verified scope.",
+  "   - Planning & execution orchestration (L4/L5): staying trapped in one framing or failing to use mounted strategy/tools/skills.",
   "2. Carry the evolved method in the lightest effective harness component (0 or 1 targeted change; NEVER write vague pep-talks like 'be careful' or 'try harder'):",
-  "   - Executable World Model (`work/model.py` via python_inspect): write `open('work/model.py', 'w')` defining `predict(frame, action) -> grid | sparse_dict` (and optional `state_key(frame)`, `is_fatal(frame, action)`). The host automatically back-tests it against all recorded transitions and surfaces accuracy + `last_fail`. Prefer authoring or repairing `work/model.py` whenever `Epistemic status` shows `world_model=none` or back-test mismatches after mechanics are observed.",
-  "   - Composable Strategy / Planner / Experiment-Designer `@tool` (L3/L4 via python_inspect): include `# layer: L1..L5`, `# scope: game|level`, `# when:`, `# out/branch:`. Functions may `import model` or previously mounted `@tool`s (including inside `trial_at(k, fn)` in prefix-safe read-only mode). Planners should output `{\"plan\": [...], ...}` (multi-step action sequence + expected result) or `{\"recommended_actions\": [...], ...}` (or `branch_action` for a single step). Define `@tool def fn(): ...` and run `trial_at(k, fn)` in the SAME `python_inspect` call.",
-  "   - Falsifiable causal model & probe (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L3', scope='level'|'game', name, body, verify?)): crisp Goal metric, Confirmed conditions, Eliminated branches, ONE Next controlled probe, and prefer structured `verify={'rule': {'when': '...', 'assert': '...'}}` whenever single-step testable so future contradictions trigger automatically.",
-  "   - Reusable problem-solving method / workflow (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): concrete multi-step procedure for modeling, controlled probing, branch search, or verification (read on demand via read_component).",
+  "   - Falsifiable strategy card & causal memory (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L4'|'L3', scope='level'|'game', name, body, verify?)): keep ONE level-scoped L4 `[STRATEGY]` card (<=700 chars) with Goal, Strategy, Hypotheses, and Next + falsifier. Goal states a candidate win condition and an observable progress measure. If the objective is unknown, propose one or two competing goal hypotheses and a single-action probe that can distinguish them, even after diagnosing a failure. On revision, retain confirmed constraints in a short Confirmed entry or scoped L3 memory. Prefer a verify rule for testable L3 facts with `verify={'rule': {'when': '...', 'assert': '...'}}`.",
+  "   - Scoped Local Check / Planner `@tool` (L3/L4 via python_inspect): include `# layer: L1..L5`, `# scope: game|level`, `# when:`, `# out/branch:`. Functions may `import model` or previously mounted `@tool`s (including inside `trial_at(k, fn)`). Local hazard/score/decision `@tool`s should only predict what the current decision needs and may return `None` / `'unknown'` when uncertain; bounded planners should output `{\"plan\": [...], ...}` or `{\"recommended_actions\": [...], ...}` only over verified transitions. Define `@tool def fn(): ...` and run `trial_at(k, fn)` in the SAME `python_inspect` call.",
+  "   - Optional Executable World Model (`work/model.py` via python_inspect — ON-DEMAND ONLY): write `open('work/model.py', 'w')` defining `predict(frame, action) -> grid | sparse_dict` (and optional `state_key(frame)`, `is_fatal(frame, action)`). The host back-tests history and separately tracks current-level forward `live` accuracy. Do NOT treat `world_model=none` as a defect by itself; write or repair `work/model.py` ONLY when similar predictions repeat across turns, current-level samples suffice, and a `[STRATEGY]` card or scoped `@tool` is insufficient.",
+  "   - Reusable problem-solving method / workflow (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): concrete multi-step procedure for probing, local modeling, branch search, or verification (read on demand via read_component).",
   "   - Execution discipline / thinking rule (`prompt` via reflect_component(op=add/revise/retire/promote/demote, kind='prompt', layer='L5', scope='game'|'level', name, body), <= 600 chars): enforceable operating rule fixing recurring Process profile failures (e.g., prediction coverage, probe size before batching, checking mounted helpers).",
   "   - Clean-context reframing (`subagent` via reflect_component(op=add/revise/retire, kind='subagent', layer='L5', scope='game'|'level', name, summary, body)): specialist role invoked via consult when stuck in a local framing.",
-  "3. Verify & curate: check Epistemic status, Process profile, and Last evolution feedback to see whether prior evolved methods actually changed behavior (world-model back-test, guided_recent, unchecked_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with a working model/planner or unfalsified discriminating probe.",
+  "   - Phase & handoff orchestration (`orchestration` via reflect_component(op=add/revise/retire, kind='orchestration', layer='L5', scope='game', name, body), <= 500 chars): single active policy steering solving mode (EXPLORE/EXPLOIT/REFRAME), component handoff order, batch_hint, and reframe_after_deaths.",
+  "3. Verify & curate: check Epistemic status, Strategy & orchestration, Process profile, and Last evolution feedback to see whether prior evolved methods actually changed behavior (world-model back-test, guided_recent, unchecked_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with a working strategy/model or unfalsified discriminating probe.",
   "Kernel API (read-only + @tool / model.py publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
   "Scope & trigger rules (strict):",
-  "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill), cross-level `@tool`s/`work/model.py`, and level_complete-promoted causal Memory.",
-  "- Executable-first offloading (CRITICAL): when the solver repeats failed routes/edges, replays post-RESET deaths, or lacks state/goal/frontier visibility, ALWAYS prefer authoring `work/model.py` or a read-only L3/L4 `@tool` via `python_inspect` (offloading search/prediction/tracking out of the solver) or a concrete `Memory + verify` rule over writing prose instructions. Avoid piling up reactive telemetry-only guards when `Epistemic status` lacks a working world model or offline planner.",
+  "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill/Orchestration), cross-level `@tool`s/`work/model.py`, and level_complete-promoted causal Memory.",
+  "- Executable-first offloading (CRITICAL): when the solver repeats failed routes/edges, replays post-RESET deaths, or lacks state/goal/frontier visibility, ALWAYS prefer revising the `[STRATEGY]` card, authoring a scoped read-only L3/L4 `@tool` (allowed to return `'unknown'`/`None`), or writing a concrete `Memory + verify` rule over rewriting generic prose; author `work/model.py` only when repeated forward trajectory prediction on the current level clearly warrants it.",
   "- Prompt & Skill anti-divergence circuit-breaker: maintain at most 1 core L5 Prompt (<= 600 chars) and 1-2 L4 Skills total, with ZERO level-specific coordinates. A Prompt may be revised AT MOST 2 times per level — if repeats or deaths persist after revising a Prompt, STOP rewriting Prompt prose and build `work/model.py`, an executable `@tool`, a falsifiable `Memory + verify`, or choose `no_change`. Avoid creating Skills when existing Skills have `reads=0` (prefer directly callable `@tool`, `work/model.py`, or inline `Memory`).",
   "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before consolidating cross-level strategy and calling finish_evolution.",
-  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool or work/model.py) together with finish_evolution once verified. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
+  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool or work/model.py) together with finish_evolution once verified. Finish as soon as the highest-priority gap is addressed. Batch the finish call with the update when its evidence is already established. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -283,7 +323,7 @@ function writeLevelReview(
   if (extra?.components) {
     const comps = extra.components;
     const compLines: string[] = [];
-    for (const kind of ["memory", "prompt", "skill", "tool", "subagent"] as const) {
+    for (const kind of ["memory", "prompt", "skill", "tool", "subagent", "orchestration"] as const) {
       const items = comps.list(kind);
       if (!items.length) {
         compLines.push(`- ${kind}: none`);
@@ -300,7 +340,7 @@ function writeLevelReview(
         } else if (kind === "tool" || kind === "subagent") {
           compLines.push(`- ${kind}/${item.name} v${item.version}: L${level} ${cur?.ok ?? 0}/${cur?.invocations ?? 0} ok, total ${st?.total.ok ?? 0}/${st?.total.invocations ?? 0} ok`);
         } else {
-          compLines.push(`- prompt/${item.name} v${item.version}`);
+          compLines.push(`- ${kind}/${item.name} v${item.version}`);
         }
       }
     }
@@ -521,6 +561,43 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let lastEvoTraceIndex = 0;
   let boundaryReviewsThisLevel: Array<{ step: number; boundary: string; decision: string; exit_reason: string; mutations: string[]; note: string }> = [];
   let lastConsultOnLevel: { name: string; step: number; question: string; answer: string } | null = null;
+  function isCurrentLevelModelWorking(modelSnap: any, level: number): boolean {
+    if (!modelSnap || modelSnap.error) return false;
+    const key = String(level);
+    const liveCur = modelSnap.live?.[key];
+    const backCur = modelSnap.by_level?.[key];
+    const bucket = (liveCur?.tested ?? 0) >= 3 ? liveCur : backCur;
+    if (!bucket || (bucket.tested ?? 0) <= 0) return false;
+    return (bucket.correct / Math.max(1, bucket.tested)) >= 0.7;
+  }
+  function deriveOrchestration(state: LayeredState, live: Component[], strategyBroken = false) {
+    const orchItem = live.find(item => item.kind === "orchestration");
+    const parsed = orchItem ? parseOrchestrationBody(orchItem.body) : {};
+    const orchStats = orchItem ? components?.stats("orchestration", orchItem.name) : undefined;
+    const orchUpdatedStep = orchStats && orchStats.updated_level === state.level ? orchStats.updated_step : -1;
+    const deathsOnLevel = levelSteps.filter(f => f.level === state.level && f.death).length;
+    const deathsSinceOrch = levelSteps.filter(f => f.level === state.level && f.death && f.step > orchUpdatedStep).length;
+    const reframeThreshold = parsed.reframe_after_deaths ?? 2;
+    const inReframe = deathsSinceOrch >= reframeThreshold || strategyBroken || state.stale_steps >= 16;
+    const modelSnap = python.capabilitySnapshot?.()?.model as any;
+    const hasWorkingModel = isCurrentLevelModelWorking(modelSnap, state.level);
+    const hasStrategyCard = live.some(item => item.kind === "memory" && item.layer === "L4" && (item.scope ?? "level") === "level");
+    const hasStableProgress = levelSteps.filter(f => f.level === state.level && (f.changed || f.new) && !f.death).length >= 2 && consecutiveSurprises === 0;
+    const autoMode: OrchestrationMode = inReframe ? "REFRAME"
+      : ((hasStrategyCard && !strategyBroken && hasStableProgress) || hasWorkingModel) ? "EXPLOIT"
+      : "EXPLORE";
+    const mode: OrchestrationMode = inReframe ? "REFRAME" : (parsed.mode ?? autoMode);
+    const hasSkill = live.some(item => item.kind === "skill");
+    const defaultHandoff = mode === "REFRAME"
+      ? (options.consult !== false ? "consult(reframer/subagent) before repeating failing local tools; revise [STRATEGY]" : "stop repeating failing route; test alternative hypothesis in [STRATEGY]")
+      : mode === "EXPLOIT"
+        ? "align with [STRATEGY] subgoal -> run goal-aligned tool/plan -> batch with tight expect="
+        : (hasSkill ? "read matching SKILL if when fits -> 1-2 step discriminating probe with tight expect=" : "1-2 step discriminating probe with tight expect= to test [STRATEGY] hypotheses");
+    const label = orchItem ? ` (${orchItem.name} v${orchItem.version})` : "";
+    const batchPart = parsed.batch_hint ? ` | batch: ${parsed.batch_hint}` : "";
+    const line = `ORCHESTRATION [${mode}]${label}: ${parsed.handoff ?? parsed.note ?? defaultHandoff}${batchPart}`;
+    return { mode, orchItem, parsed, deathsOnLevel, inReframe, line };
+  }
   const ensureTraceBlock = (st?: LayeredState): DecisionTraceBlock => {
     if (!currentTraceBlock) {
       const s = st ?? safeState();
@@ -729,6 +806,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const consults = consultsByLevel.get(auditLevel) ?? 0;
     const compLine = [
       describeKind("memory"), describeKind("prompt"), describeKind("skill"), describeKind("tool"),
+      describeKind("orchestration"),
       `${describeKind("subagent")}; consults L${auditLevel}=${consults}/2`,
       ...(pubFails.length ? [`publish_failed=[${pubFails.join(", ")}]`] : []),
     ].join(" | ");
@@ -741,7 +819,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       `- Capabilities: ${compLine}`,
       `- Execution: ${execLine}`,
       ...(evoLine ? [`- ${evoLine}`] : []),
-      `- Decision: adjust task actions only, or make 1 minimal update in the editable space (memory + optional verify, prompt, skills, tools via @tool or work/lib/, subagents via consult) and verify it next.`,
+      `- Decision: adjust task actions only, or make 1 minimal update in the editable space (memory + optional verify, prompt, skills, tools via @tool or work/lib/, subagents via consult, orchestration) and verify it next.`,
     ].join("\n");
   }
 
@@ -776,6 +854,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const layer2 = layer2Snapshot(auditLevel, opts?.metrics ?? attemptMetrics, opts?.evolution !== undefined ? opts.evolution : lastEvolution);
     const legibilityLines: string[] = [];
     if (rich) {
+      const strategy = components?.list("memory").find(item => item.layer === "L4" && (item.scope ?? "level") === "level" && item.status !== "dormant" && item.status !== "variant_broken");
+      const strategyStep = strategy ? components?.stats("memory", strategy.name)?.updated_step ?? state.step : state.step;
+      const sinceStrategy = levelSteps.filter(step => step.level === auditLevel && step.step > strategyStep);
+      const skillReads = components?.list("skill").map(item => `${item.name}=${components?.stats("skill", item.name)?.total.reads ?? 0}`).join(",") || "none";
+      legibilityLines.push(`- strategy_card=${strategy ? `present(v${strategy.version}, actions_since=${sinceStrategy.length}, new_states=${sinceStrategy.filter(step => step.new).length})` : "none"}; skill_reads=${skillReads}`);
       const surprises = decisionTrace.slice(-12).flatMap(turn => turn.pythonCalls.flatMap(call =>
         call.result.split("\n").filter(line => /SURPRISE/i.test(line)).map(line => line.slice(0, 160))));
       if (surprises.length) legibilityLines.push(`- SURPRISE: ${surprises.slice(-6).join("; ")}`);
@@ -820,11 +903,14 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         if (modelSnap.error) {
           modelStr = `world_model=error(${String(modelSnap.error).slice(0, 80)})`;
         } else {
-          const curBucket = modelSnap.by_level?.[String(auditLevel)];
+          const lvlKey = String(auditLevel);
+          const curBucket = modelSnap.by_level?.[lvlKey];
+          const liveBucket = modelSnap.live?.[lvlKey];
           const lvlPart = curBucket ? ` (L${auditLevel}:${curBucket.correct}/${curBucket.tested})` : "";
+          const livePart = (liveBucket?.tested ?? 0) > 0 ? ` L${auditLevel}_live=${liveBucket.correct}/${liveBucket.tested}` : "";
           const failPart = modelSnap.last_fail ? ` last_fail=s${modelSnap.last_fail.step} ${modelSnap.last_fail.action} off:${modelSnap.last_fail.off}` : "";
           const rtPart = modelSnap.runtime_error ? ` runtime_err=${String(modelSnap.runtime_error).slice(0, 70)}` : "";
-          modelStr = `world_model=${(modelSnap.funcs ?? []).join("+") || "present"} backtest=${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}${lvlPart}${failPart}${rtPart}`;
+          modelStr = `world_model=${(modelSnap.funcs ?? []).join("+") || "present"} backtest=${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}${lvlPart}${livePart}${failPart}${rtPart}`;
         }
       }
       const liveTools = components?.list("tool").filter(t => t.status !== "dormant" && t.status !== "variant_broken") ?? [];
@@ -836,6 +922,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const recent12 = levelSteps.slice(-12);
       const guidedRecent = recent12.filter(f => Boolean(f.source) || f.predict_off !== null).length;
       legibilityLines.push(`- Epistemic status (L${auditLevel}): ${modelStr}; tools_by_layer=L1/L2:${l12Tools},L3:${l3Tools},L4:${l4Tools},other:${otherTools}; informative_transitions=${informativeTransitions}; guided_recent=${guidedRecent}/${recent12.length}`);
+      if (components) {
+        const liveNow = components.list().filter(item => item.status !== "dormant" && item.status !== "variant_broken");
+        const stratCard = liveNow.find(item => item.kind === "memory" && item.layer === "L4" && (item.scope ?? "level") === "level");
+        const stratContradicted = Boolean(stratCard && (stratCard.status === "contradicted" || Object.keys(stratCard.verify ?? {}).some(r => {
+          const st = python.memoryCheckStats?.[`${stratCard.name}/${r}`];
+          return Number(st?.counter ?? 0) > 0 && !st?.unscoped;
+        })));
+        const orch = deriveOrchestration(state, liveNow, stratContradicted);
+        const skillReads = components.list("skill").reduce((s, sk) => s + (components.stats("skill", sk.name)?.total.reads ?? 0), 0);
+        legibilityLines.push(`- Strategy & orchestration (L${auditLevel}): mode=${orch.mode}; strategy_card=${stratCard ? `${stratCard.name}@v${stratCard.version}` : "none"}; skills_reads=${skillReads}; deaths_L${auditLevel}=${orch.deathsOnLevel}; consults=${consultsByLevel.get(auditLevel) ?? 0}/2`);
+      }
       if (boundaryReviewsThisLevel.length) {
         legibilityLines.push(`- Prior reviews on L${auditLevel}: ${boundaryReviewsThisLevel.map(r => `s${r.step} ${r.boundary}->${r.decision}(${r.exit_reason}${r.mutations.length ? `:${r.mutations.join(",")}` : ""}${r.note ? `:"${r.note}"` : ""})`).join("; ")}`);
       }
@@ -1426,14 +1523,14 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     } });
   const evolutionEnabled = options.evolution ?? Boolean(options.harnessProfile);
   const reflectSchema = Type.Object({ op: Type.Union([Type.Literal("add"), Type.Literal("revise"), Type.Literal("retire"), Type.Literal("restore"), Type.Literal("merge"), Type.Literal("promote"), Type.Literal("demote")]),
-    kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent"), Type.Literal("tool")]),
+    kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent"), Type.Literal("tool"), Type.Literal("orchestration")]),
     sources: Type.Optional(Type.Array(Type.String())),
     scope: Type.Optional(Type.Union([Type.Literal("level"), Type.Literal("game")])),
     layer: Type.Optional(Type.Union([Type.Literal("L1"), Type.Literal("L2"), Type.Literal("L3"), Type.Literal("L4"), Type.Literal("L5")])),
     name: Type.String(), body: Type.Optional(Type.String()), summary: Type.Optional(Type.String()), version: Type.Optional(Type.Number()),
     verify: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Object({ when: Type.String(), assert: Type.String() })]),
       { description: "Optional verify rules: either {when, assert} (auto-formatted to '(assert) if (when) else None') or a 1-line Python expr over t returning True/False/None (return None for non-matching transitions)." })) });
-  const readSchema = Type.Object({ kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent")]),
+  const readSchema = Type.Object({ kind: Type.Union([Type.Literal("memory"), Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("subagent"), Type.Literal("orchestration")]),
     name: Type.String(), version: Type.Optional(Type.Number()) });
 
   async function executeReflectComponent(
@@ -1442,7 +1539,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   ): Promise<{ ok: boolean; text: string; label?: string }> {
     if (!components) return { ok: false, text: "components disabled" };
 
-    if (!["memory", "skill", "prompt", "subagent", "tool"].includes(params.kind)) return { ok: false, text: "invalid component kind" };
+    if (!["memory", "skill", "prompt", "subagent", "tool", "orchestration"].includes(params.kind)) return { ok: false, text: "invalid component kind" };
+    const existing = components.current(params.kind as Kind, params.name);
+    const strategyCard = params.kind === "memory" && (params.layer ?? existing?.layer) === "L4" && (params.scope ?? existing?.scope ?? "level") === "level";
+    if (strategyCard && params.body && params.body.length > 700) return { ok: false, text: "Strategy memory must be at most 700 characters." };
+    if (strategyCard && !["retire", "demote"].includes(params.op) && components.list("memory").some(item => item.name !== params.name && item.layer === "L4" && (item.scope ?? "level") === "level" && item.status !== "dormant" && item.status !== "variant_broken"))
+      return { ok: false, text: "A level strategy memory already exists; revise it." };
+    if (params.kind === "orchestration" && !["retire", "demote"].includes(params.op) && components.list("orchestration").some(item => item.name !== params.name && item.status !== "dormant" && item.status !== "variant_broken"))
+      return { ok: false, text: "An active orchestration policy already exists; revise it." };
+    if (params.kind === "prompt" && (params.layer ?? existing?.layer) === "L5" && (params.scope ?? existing?.scope) === "game" && params.body && params.body.length > 400)
+      return { ok: false, text: "Game-level L5 prompt must be at most 400 characters." };
     if (params.kind === "tool" && !["promote", "demote", "retire"].includes(params.op)) return { ok: false, text: "Use python_inspect to author tools" };
     if (source === "evolution" && params.kind === "prompt" && (params.op === "revise" || params.op === "redefine")) {
       const used = promptRevisionsThisLevel.get(params.name) ?? 0;
@@ -1537,8 +1643,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     opts?: { metrics?: AttemptMetrics; evolution?: EvolutionRecord | null },
   ): Promise<string | undefined> {
     if (!components || !ctx?.model || !ctx?.modelRegistry?.streamSimple) return undefined;
-    const timeoutMs = Number(process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS ?? 240000);
-    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 3);
+    const timeoutMs = Number(process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS ?? 300000);
+    const maxRounds = Number(process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS ?? 4);
     const contextWindow = Number((ctx.model as any)?.contextWindow ?? 102400);
     const maxDossierChars = Math.min(
       Number(process.env.ARC_LAYERED_EVOLUTION_CONTEXT_CHARS ?? 24000),
@@ -1553,17 +1659,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     let verifiedToolSample = "";
     let evoDecision: "evolved" | "no_change" | "incomplete" = "incomplete";
     let claimedDecision: string | undefined;
-    let exitReason: "finish_evolution" | "max_rounds_exhausted" | "text_stop" | "error" = "max_rounds_exhausted";
+    let exitReason: "finish_evolution" | "max_rounds_exhausted" | "deadline_headroom" | "text_stop" | "error" = "max_rounds_exhausted";
     let note = "";
     let roundsRun = 0;
     let repairUsed = 0, effectiveMaxRounds = maxRounds;
+    let modelMutatedThisAudit = false;
     const parentThinking = typeof (pi as any).getThinkingLevel === "function" ? (pi as any).getThinkingLevel() : undefined;
     const requestedEvoTokens = process.env.ARC_LAYERED_EVOLUTION_OUTPUT_TOKENS
       ? Number(process.env.ARC_LAYERED_EVOLUTION_OUTPUT_TOKENS)
       : (options.outputTokens || (ctx.model as any).maxTokens || undefined);
     const evoMaxTokens = requestedEvoTokens && Math.min(requestedEvoTokens, ctx.model.maxTokens ?? requestedEvoTokens);
     const evoTools = [
-      { name: "reflect_component", description: "Add, revise, retire, restore, merge, promote or demote a versioned component (memory with optional verify, L5 prompt <=600 chars, L4 skill, subagent, or tool lifecycle) with scope=level|game and layer=L1..L5.", parameters: reflectSchema },
+      { name: "reflect_component", description: "Add, revise, retire, restore, merge, promote or demote a versioned component (memory with optional verify, level-scoped L4 strategy memory <=700 chars, L5 prompt <=600 chars, L4 skill, subagent, L5 orchestration <=500 chars, or tool lifecycle) with scope=level|game and layer=L1..L5.", parameters: reflectSchema },
       { name: "read_component", description: "Read an existing component body.", parameters: readSchema },
       { name: "python_inspect", description: "Run non-acting Python in the live kernel to inspect frames/transitions or author & test @tool helpers or work/model.py (submit_actions is disabled).",
         parameters: Type.Object({ code: Type.String({ description: "Non-acting Python code to run" }) }) },
@@ -1579,7 +1686,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const modelPath = join(options.root, "work", "model.py");
       const hasModelFile = existsSync(modelPath);
       const modelSnap = python.capabilitySnapshot?.()?.model as any;
-      const slotLine = `Harness slots (active): prompt=${nonDormant.filter(i => i.kind === "prompt").length}/1, skill=${nonDormant.filter(i => i.kind === "skill").length}/2, memory=${nonDormant.filter(i => i.kind === "memory").length}/6, tool=${nonDormant.filter(i => i.kind === "tool").length}, subagent=${nonDormant.filter(i => i.kind === "subagent").length}, model=${hasModelFile ? 1 : 0}`;
+      const slotLine = `Harness slots (active): prompt=${nonDormant.filter(i => i.kind === "prompt").length}/1, skill=${nonDormant.filter(i => i.kind === "skill").length}/2, memory=${nonDormant.filter(i => i.kind === "memory").length}/6, tool=${nonDormant.filter(i => i.kind === "tool").length}, subagent=${nonDormant.filter(i => i.kind === "subagent").length}, orchestration=${nonDormant.filter(i => i.kind === "orchestration").length}/1, model=${hasModelFile ? 1 : 0}`;
       const metaTag = (item: Component) => `[layer=${item.layer ?? "?"} scope=${item.scope ?? "level"} status=${item.status ?? "active"}${item.when ? ` when=${item.when}` : ""}]`;
       const activeItems: string[] = [];
       if (hasModelFile) {
@@ -1599,8 +1706,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         } else if (item.kind === "skill") {
           const st = components.stats("skill", item.name);
           activeItems.push(`SKILL ${item.name} v${item.version} ${tag} (reads=${st?.total.reads ?? 0}, summary=${item.summary}):\n${item.body}`);
-        } else if (item.kind === "subagent") {
-          activeItems.push(`SUBAGENT ${item.name} v${item.version} ${tag}:\n${item.body}`);
+        } else if (item.kind === "subagent" || item.kind === "orchestration") {
+          activeItems.push(`${item.kind.toUpperCase()} ${item.name} v${item.version} ${tag}:\n${item.body}`);
         } else {
           activeItems.push(`${tag} ${formatComponentLine(item)}`);
         }
@@ -1614,9 +1721,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const traceSlice = decisionTrace.slice(lastEvoTraceIndex);
       const decisionWindowText = renderDecisionWindow(traceSlice, windowBudget);
       const levelCompleteRule = boundary === "level_complete"
-        ? "Boundary rule (LEVEL_COMPLETE): use at most 1 python_inspect call (or 0 if dossier facts suffice), then CONSOLIDATE cross-level strategy — generalize verified dynamics into work/model.py or promote/author a coordinate-free scope='game' L3/L4 model, planner, or skill (retiring level-only hacks); choose no_change only if reusable game-scope capabilities already cover the solved mechanics, then call finish_evolution."
+        ? "Boundary rule (LEVEL_COMPLETE): use at most 1 python_inspect call (or 0 if dossier facts suffice), then compare the final pre-clear and post-action observations to identify a candidate observable win condition and progress measure. Record the evidence and uncertainty, and make the condition an early probe on the next level. Then CONSOLIDATE cross-level strategy — generalize verified mechanics into a coordinate-free scope='game' L3/L4 skill, memory rule, scoped @tool, orchestration policy, or (only when repeated prediction warrants it) work/model.py (retiring level-only hacks); choose no_change only if reusable game-scope capabilities already cover the supported win-condition and progress evidence as well as the solved mechanics, then call finish_evolution."
         : boundary === "strategy_readiness"
-          ? "Boundary rule (STRATEGY_READINESS): enough informative transitions have been observed without a working world model or L3/L4 planner. Prioritize encoding an executable dynamics model in work/model.py (back-tested on history) or a composable L4 planner/experiment-designer @tool over reactive telemetry."
+          ? "Boundary rule (STRATEGY_READINESS): enough informative transitions have been observed without a structured [STRATEGY] card, scoped L3/L4 decision @tool, or working current-level model. Prioritize maintaining a crisp L4 [STRATEGY] memory card (goal, hypotheses, next probe + falsifier) or a scoped local @tool (returning 'unknown'/None when uncertain) over reactive telemetry; author work/model.py only when repeated forward trajectory prediction on the current level clearly warrants it."
           : "";
       const dossier = [
         headerPart,
@@ -1634,7 +1741,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const messages: any[] = [{ role: "user", content: userContent, timestamp: Date.now() }];
       let lengthRetries = 0;
       let done = false;
+      let previousRoundStarted = started;
       for (let round = 1; round <= effectiveMaxRounds && !done; round += 1) {
+        const now = Date.now();
+        const remainingMs = timeoutMs - (now - started);
+        if (mutations.length && remainingMs < Math.max(45000, now - previousRoundStarted)) {
+          exitReason = "deadline_headroom";
+          break;
+        }
+        previousRoundStarted = now;
         roundsRun = round;
         try { writeFileSync(join(store, "heartbeat"), String(Date.now())); } catch {}
         const roundStart = Date.now();
@@ -1735,7 +1850,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             for (const f of pub.failed) text += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
             let modelBlocked = false;
             if (modelChanged) {
-              if (mutations.length > 0 || pub.published.length > 0) {
+              if ((mutations.length > 0 && !modelMutatedThisAudit) || pub.published.length > 0) {
                 modelBlocked = true;
                 text += "\n[model publish blocked: at most one component or model may be updated per audit]";
               } else if (!outcome.error && pub.failed.length === 0) {
@@ -1745,7 +1860,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
                   text += `\n[model publish failed: work/model.py — ${m?.error ?? "must define at least one of predict, state_key, is_fatal"}]`;
                 } else {
                   const acc = m.tested ? ` (${m.correct ?? 0}/${m.tested})` : "";
-                  mutations.push(`model/world_model${acc}`);
+                  const label = `model/world_model${acc}`;
+                  const existingIdx = mutations.findIndex(x => x.startsWith("model/world_model"));
+                  if (existingIdx >= 0) mutations[existingIdx] = label;
+                  else mutations.push(label);
+                  modelMutatedThisAudit = true;
                   log("model_published", {
                     funcs: m.funcs, tested: m.tested ?? 0, correct: m.correct ?? 0, by_level: m.by_level ?? {},
                     level: state.level, step: state.step, after_audit: boundary, source: "evolution",
@@ -1936,17 +2055,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         } else {
           const informativeTransitions = levelSteps.filter(f => f.changed || f.new).length;
           const modelSnap = python.capabilitySnapshot?.()?.model as any;
-          const hasWorkingModel = Boolean(
-            modelSnap && !modelSnap.error && (modelSnap.tested ?? 0) > 0 && ((modelSnap.correct ?? 0) / Math.max(1, modelSnap.tested ?? 0)) >= 0.7,
-          );
-          const hasStrategyTool = components.list("tool").some(item => item.layer === "L3" || item.layer === "L4");
+          const hasWorkingModel = isCurrentLevelModelWorking(modelSnap, state.level);
+          const hasStrategyTool = components.list("tool").some(item => (item.layer === "L3" || item.layer === "L4") && item.status !== "dormant" && item.status !== "variant_broken");
+          const hasStrategyCard = components.list("memory").some(item => item.layer === "L4" && (item.scope ?? "level") === "level" && item.status !== "dormant" && item.status !== "variant_broken" && item.status !== "contradicted");
           const readinessDue = correctiveAudits < 8
             && strategyReadinessAuditedLevel !== state.level
             && state.state !== "GAME_OVER"
             && informativeTransitions >= 6
             && state.step - lastAnyAuditStep >= 4
             && !hasWorkingModel
-            && !hasStrategyTool;
+            && !hasStrategyTool
+            && !hasStrategyCard;
           if (readinessDue) {
             strategyReadinessAuditedLevel = state.level;
             correctiveAudits += 1; lastAnyAuditStep = state.step;
@@ -2044,7 +2163,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         const state = python.state();
         const reviewDue = Boolean(lastEvolution && lastEvolution.level === state.level && lastEvolution.actionsSince >= 15 && lastEvolution.newStatesSince === 0);
         const memories = live.filter(item => item.kind === "memory")
-          .sort((a, b) => ((a.scope ?? "level") === "level" ? 0 : 1) - ((b.scope ?? "level") === "level" ? 0 : 1))
+          .sort((a, b) => Number(!(a.layer === "L4" && a.scope === "level")) - Number(!(b.layer === "L4" && b.scope === "level")) || ((a.scope ?? "level") === "level" ? 0 : 1) - ((b.scope ?? "level") === "level" ? 0 : 1))
           .slice(0, 6)
           .map(item => {
             const contradicted = Object.keys(item.verify ?? {}).some(rule => {
@@ -2052,16 +2171,32 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
               return Number(stat?.counter ?? 0) > 0 && !stat?.unscoped;
             });
             if (contradicted || item.status === "contradicted") {
-              return { item, line: `[CONTRADICTED] ${item.name} v${item.version}` };
+              return { item, line: `${item.layer === "L4" && (item.scope ?? "level") === "level" ? "[STRATEGY] " : ""}[CONTRADICTED] ${item.name} v${item.version}` };
             }
             const statusTag = item.status && item.status !== "active" ? `[${item.status.toUpperCase()}] ` : "";
-            const dueTag = reviewDue && lastEvolution?.kind === "memory" && lastEvolution?.name === item.name ? " [REVIEW_DUE]" : "";
-            return { item, line: `${statusTag}${formatComponentLine(item)}${dueTag}` };
+            const since = levelSteps.filter(step => step.level === state.level && step.step > (components.stats(item.kind, item.name)?.updated_step ?? state.step));
+            const strategyDue = item.layer === "L4" && (item.scope ?? "level") === "level" && (since.some(step => step.death || (step.verify_failed?.length ?? 0) > 0) || (since.length >= 12 && !since.some(step => step.new)) || surpriseSteps.some(step => step > (components.stats(item.kind, item.name)?.updated_step ?? state.step)));
+            const dueTag = strategyDue || (reviewDue && lastEvolution?.kind === "memory" && lastEvolution?.name === item.name) ? " [REVIEW_DUE]" : "";
+            return { item, line: `${item.layer === "L4" && (item.scope ?? "level") === "level" ? "[STRATEGY] " : ""}${statusTag}${formatComponentLine(item)}${dueTag}` };
           });
         const prompts = live.filter(item => item.kind === "prompt").slice(0, 1).map(item => ({ item, line: formatComponentLine(item) }));
-        const items = [...prompts, ...memories, ...live.filter(item => item.kind === "tool").map(item => ({
-          item, line: `TOOL ${item.name}() v${item.version} — when: ${item.when ?? "inspect current state"}; out/branch: ${item.out_branch ?? item.summary}`,
-        }))];
+        const strategy = memories.find(entry => entry.item.layer === "L4" && (entry.item.scope ?? "level") === "level");
+        const strategyBroken = Boolean(strategy && (strategy.line.includes("[CONTRADICTED]") || strategy.line.includes("[REVIEW_DUE]")));
+        const orch = deriveOrchestration(state, live, strategyBroken);
+        const skillEntries = live.filter(item => item.kind === "skill").slice(0, 2).map(item => ({
+          item, line: `SKILL ${item.name} v${item.version} [when: ${item.when ?? "as applicable"}] — ${item.summary} (read_component)`,
+        }));
+        const toolEntries = live.filter(item => item.kind === "tool")
+          .sort((a, b) => (repeatMismatches.get(`${state.level}/${a.name}`) ?? 0) - (repeatMismatches.get(`${state.level}/${b.name}`) ?? 0))
+          .map(item => {
+            const mm = repeatMismatches.get(`${state.level}/${item.name}`) ?? 0;
+            const mmTag = mm > 0 ? ` [repeat_mismatch=${mm}]` : "";
+            return { item, line: `TOOL ${item.name}() v${item.version}${mmTag} — when: ${item.when ?? "inspect current state"}; out/branch: ${item.out_branch ?? item.summary}` };
+          });
+        const l3Memories = memories.filter(entry => entry !== strategy);
+        const items = orch.mode === "EXPLOIT"
+          ? [...(strategy ? [strategy] : []), ...prompts, ...toolEntries, ...skillEntries, ...l3Memories]
+          : [...(strategy ? [strategy] : []), ...prompts, ...skillEntries, ...l3Memories, ...toolEntries];
         const newest = items.filter(({ item, line }) => {
           const stats = components.stats(item.kind, item.name);
           const key = `${state.level}/${item.kind}/${item.name}/${item.version}`;
@@ -2069,38 +2204,81 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           return !line.startsWith("[CONTRADICTED]") && stats?.updated_level === state.level &&
             (!turns || turns.size < 2 || turns.has(decision + 1) && turns.size === 2);
         }).at(-1);
-        const ordered = newest ? [newest, ...items.filter(entry => entry !== newest)] : items;
-        const skills = live.filter(item => item.kind === "skill").map(item => item.name).join(", ");
+        const ordered = newest && newest !== strategy ? [...(strategy ? [strategy] : []), newest, ...items.filter(entry => entry !== newest && entry !== strategy)] : items;
+        const modelSnap = python.capabilitySnapshot?.()?.model as any;
+        const customAgents = live.filter(item => item.kind === "subagent").map(item => `${item.name}: ${item.summary}`);
+        const showConsults = orch.mode === "REFRAME" || state.stale_steps >= 16 || cognitiveAudits > 0;
+        const builtInReframer = orch.mode === "REFRAME" && options.consult !== false && !live.some(item => item.kind === "subagent" && item.name === "reframer")
+          ? ["reframer: clean-context reframing — 2 mutually exclusive explanations + 1 discriminating probe"]
+          : [];
+        const agents = showConsults ? [...builtInReframer, ...customAgents].join("; ") : "";
         let block = "## ACTIVE HARNESS";
-        for (const entry of ordered) {
-          const { item } = entry;
-          const line = entry === newest ? `[NEW] ${entry.line}` : entry.line;
-          if (block.length + line.length + 1 > 2500) continue;
-          block += `\n${line}`;
-          const key = `${state.level}/${item.kind}/${item.name}`;
-          for (const bucket of [key, `${key}/${item.version}`]) {
-            const turns = shownTurns.get(bucket) ?? new Set<number>();
-            turns.add(decision + 1);
-            shownTurns.set(bucket, turns);
+        const emitOrch = live.length > 0 || Boolean(modelSnap) || (orch.mode === "REFRAME" && options.consult !== false);
+        if (emitOrch) {
+          let orchText = orch.line;
+          if (orch.orchItem) {
+            const ovKey = `${state.level}/orchestration/${orch.orchItem.name}/${orch.orchItem.version}`;
+            const ovShown = shownTurns.get(ovKey);
+            const ovStats = components.stats("orchestration", orch.orchItem.name);
+            if (ovStats?.updated_level === state.level && (!ovShown || ovShown.size < 2 || ovShown.has(decision + 1))) {
+              orchText = `[NEW] ${orchText}`;
+            }
+          }
+          if (block.length + orchText.length + 1 <= 2500) {
+            block += `\n${orchText}`;
+            if (orch.orchItem) {
+              const oKey = `${state.level}/orchestration/${orch.orchItem.name}`;
+              for (const bucket of [oKey, `${oKey}/${orch.orchItem.version}`]) {
+                const turns = shownTurns.get(bucket) ?? new Set<number>();
+                turns.add(decision + 1);
+                shownTurns.set(bucket, turns);
+              }
+            }
           }
         }
-        const modelSnap = python.capabilitySnapshot?.()?.model as any;
+        let consultAdded = false;
+        const appendConsult = () => {
+          if (!consultAdded && agents && block.length + agents.length + 21 <= 2500) {
+            block += `\nSUBAGENTS (consult): ${agents}`;
+            consultAdded = true;
+          }
+        };
+        if (orch.mode === "REFRAME" && !strategy) appendConsult();
+        for (const entry of ordered) {
+          const { item } = entry;
+          const versionKey = `${state.level}/${item.kind}/${item.name}/${item.version}`;
+          const shown = shownTurns.get(versionKey);
+          const stats = components.stats(item.kind, item.name);
+          const recent = (item.kind === "skill" || entry === strategy) && stats?.updated_level !== undefined && !entry.line.includes("[CONTRADICTED]") && (!shown || shown.size < 2 || shown.has(decision + 1));
+          const line = entry === newest || recent ? `[NEW] ${entry.line}` : entry.line;
+          if (block.length + line.length + 1 <= 2500) {
+            block += `\n${line}`;
+            const key = `${state.level}/${item.kind}/${item.name}`;
+            for (const bucket of [key, `${key}/${item.version}`]) {
+              const turns = shownTurns.get(bucket) ?? new Set<number>();
+              turns.add(decision + 1);
+              shownTurns.set(bucket, turns);
+            }
+          }
+          if (orch.mode === "REFRAME" && entry === strategy) appendConsult();
+        }
         const modelLine = modelSnap
           ? (modelSnap.error
               ? `MODEL work/model.py [ERROR]: ${String(modelSnap.error).slice(0, 100)}`
               : (() => {
-                  const cur = modelSnap.by_level?.[String(state.level)];
-                  return `MODEL work/model.py (${(modelSnap.funcs ?? []).join("+") || "present"}): backtest ${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}${cur ? ` (L${state.level}: ${cur.correct}/${cur.tested})` : ""}${modelSnap.runtime_error ? ` [runtime_err: ${String(modelSnap.runtime_error).slice(0, 60)}]` : ""}`;
+                  const lvlKey = String(state.level);
+                  const cur = modelSnap.by_level?.[lvlKey];
+                  const liveCur = modelSnap.live?.[lvlKey];
+                  const liveTag = (liveCur?.tested ?? 0) > 0 ? ` [L${state.level} live: ${liveCur.correct}/${liveCur.tested}]` : "";
+                  return `MODEL work/model.py (${(modelSnap.funcs ?? []).join("+") || "present"}): backtest ${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}${cur ? ` (L${state.level}: ${cur.correct}/${cur.tested})` : ""}${liveTag}${modelSnap.runtime_error ? ` [runtime_err: ${String(modelSnap.runtime_error).slice(0, 60)}]` : ""}`;
                 })())
           : "";
-        const agents = live.filter(item => item.kind === "subagent" && (python.state().stale_steps >= 16 || cognitiveAudits > 0)).map(item => `${item.name}: ${item.summary}`).join("; ");
         if (modelLine && block.length + modelLine.length + 1 <= 2500) {
-          block = lastEvolution?.kind === "model" && lastEvolution.level === state.level
+          block = !strategy && lastEvolution?.kind === "model" && lastEvolution.level === state.level
             ? `## ACTIVE HARNESS\n[NEW] ${modelLine}${block.slice("## ACTIVE HARNESS".length)}`
             : `${block}\n${modelLine}`;
         }
-        if (agents && block.length + agents.length + 21 <= 2500) block += `\nSUBAGENTS (consult): ${agents}`;
-        if (skills && block.length + skills.length + 9 <= 2500) block += `\nSKILLS: ${skills}`;
+        appendConsult();
         if (block !== "## ACTIVE HARNESS" && !current.includes(block)) {
           const firstTextIdx = lastMsg.content.findIndex((part: any) => part.type === "text");
           const nextContent = firstTextIdx >= 0
@@ -2109,11 +2287,15 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           messages = messages.map((message, i) => i === lastIdx ? { ...message, content: nextContent } : message);
         }
       }
-      const active = components.list().filter(item => item.kind === "memory" || item.kind === "prompt");
+      const active = components.list().filter(item => item.kind === "memory" || item.kind === "prompt" || item.kind === "orchestration");
       const visible = messages.map(message => Array.isArray(message.content)
         ? message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") : "").join("\n");
-      for (const item of active) if (visible.includes(`${item.kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}`))
-        log("live_injected", { component_kind: item.kind, layer: item.layer ?? null, scope: item.scope, status: item.status, name: item.name, version: item.version, decision: decision + 1 });
+      for (const item of active) {
+        const matched = item.kind === "orchestration"
+          ? visible.includes(`(${item.name} v${item.version})`)
+          : visible.includes(`${item.kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}`);
+        if (matched) log("live_injected", { component_kind: item.kind, layer: item.layer ?? null, scope: item.scope, status: item.status, name: item.name, version: item.version, decision: decision + 1 });
+      }
     }
     latestContextEstimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     write("context.jsonl", { t: new Date().toISOString(), segment, decision: decision + 1,

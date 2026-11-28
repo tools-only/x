@@ -33,6 +33,74 @@ const say = (text: string, extra = {}) => ({ type: "message_end", message: { rol
 const settle = { type: "agent_before_settle", outcome: "completed", entries: [], continue: false };
 const textOf = (content: any[]) => content.filter(part => part.type === "text").map(part => part.text).join("\n");
 
+test("strategy is prioritized, skill summary is visible and contradiction folds strategy", async () => {
+  const root = mkdtempSync(join(tmpdir(), "strategy-panel-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "plan", "Goal: find progress\nStrategy: probe\nHypotheses: unknown\nNext: test; falsifier: no change", "", undefined, { rule: "True" }, { layer: "L4", scope: "level" });
+  store.recordChange("memory", "plan", 1, 0);
+  store.reflect("add", "skill", "method", "when: on change\nProbe then check", "Probe then check", undefined, undefined, { layer: "L4", scope: "game" });
+  store.recordChange("skill", "method", 1, 0);
+  const { handlers, python } = setup({ root, harnessProfile: true });
+  const opened = await handlers.before_agent_start({});
+  const render = () => textOf(handlers.context({ messages: [opened.message] }, {}).messages[0].content);
+  const first = render();
+  assert.match(first, /\[STRATEGY\] MEMORY plan/);
+  assert.match(first, /\[NEW\] SKILL method.*Probe then check/);
+  assert.ok(first.indexOf("[STRATEGY]") < first.indexOf("SKILL method"));
+  assert.ok(first.split("## ACTIVE HARNESS")[1].length + 17 <= 2500);
+  python.memoryCheckStats = { "plan/rule": { counter: 1 } };
+  assert.match(render(), /\[STRATEGY\] \[CONTRADICTED\] plan/);
+  store.onLevelTransition(1, 2);
+  const reopened = new LayeredComponents(join(root, "harness", "components"));
+  assert.equal(reopened.current("memory", "plan")?.status, "dormant");
+});
+
+test("new skill marker lasts two provider decisions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "skill-new-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "skill", "method", "when: change\nprobe", "probe", undefined, undefined, { scope: "game", layer: "L4" });
+  store.recordChange("skill", "method", 1, 0);
+  const { handlers } = setup({ root, harnessProfile: true });
+  const opened = await handlers.before_agent_start({});
+  const render = () => textOf(handlers.context({ messages: [opened.message] }, {}).messages[0].content);
+  for (let i = 0; i < 3; i++) {
+    const panel = render();
+    if (i < 2) assert.match(panel, /\[NEW\] SKILL method/);
+    else assert.doesNotMatch(panel, /\[NEW\] SKILL method/);
+    handlers.before_provider_request({ payload: {} }, { model: {} });
+  }
+});
+
+test("evolution rejects duplicate strategy and revises existing card", async () => {
+  const root = mkdtempSync(join(tmpdir(), "strategy-evolution-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "plan", "Goal: progress", "", undefined, undefined, { layer: "L4", scope: "level" });
+  const { handlers, game, python, call } = setup({ root, harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({}); handlers.turn_start();
+  game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{ step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false }] });
+  await call();
+  let round = 0, rejection = "";
+  const ctx: any = { model: { id: "same" }, modelRegistry: { streamSimple: (_model: any, input: any) => {
+    round++;
+    assert.match(input.systemPrompt, /strategy card|STRATEGY/);
+    assert.match(input.systemPrompt, /<=700 chars/);
+    assert.match(input.systemPrompt, /candidate win condition and an observable progress measure/);
+    assert.match(input.systemPrompt, /single-action probe that can distinguish them/);
+    assert.match(input.systemPrompt, /retain confirmed constraints.*scoped L3 memory/);
+    assert.match(input.tools.find((tool: any) => tool.name === "reflect_component").description, /L4 strategy memory <=700 chars/);
+    if (round === 2) rejection = textOf(input.messages.filter((m: any) => m.role === "toolResult").at(-1).content);
+    const args = round === 1 ? { op: "add", kind: "memory", name: "other", layer: "L4", scope: "level", body: "Goal: other" } : { op: "revise", kind: "memory", name: "plan", body: "Goal: revised" };
+    return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: {}, content: [{ type: "toolCall", id: `r${round}`, name: "reflect_component", arguments: args }] }) };
+  } } };
+  await handlers.before_agent_start({}, ctx);
+  assert.match(rejection, /already exists/);
+  const after = new LayeredComponents(join(root, "harness", "components"));
+  assert.equal(after.current("memory", "plan")?.body, "Goal: revised");
+  assert.equal(after.current("memory", "other"), undefined);
+});
+
+
 test("environment failure terminates the segment without another nudge", async () => {
   const { handlers, python, call, rows } = setup({ harnessProfile: true });
   await handlers.before_agent_start({});
@@ -110,7 +178,7 @@ test("Phase 1 context exposes current Memory and the skill index on the latest m
   assert.match(first.systemPrompt, /ACTIVE HARNESS/);
   assert.doesNotMatch(textOf(out[0].content), /MEMORY current/);
   assert.match(textOf(out[1].content), /MEMORY current v2: revised/);
-  assert.match(textOf(out[1].content), /SKILLS: probe/);
+  assert.match(textOf(out[1].content), /SKILL probe v1.*read_component/);
   assert.equal(rows("live_injected").at(-1).version, 2);
 });
 
@@ -1033,22 +1101,23 @@ test("repair round and runtimeTypeCard are delivered to boundary evolution", asy
   let calls = 0, dossier = "";
   const ctx: any = { model: { id: "same", contextWindow: 102400 }, modelRegistry: { streamSimple: (_m: any, input: any) => {
     calls++; dossier = input.messages[0].content[0].text;
-    const content = calls <= 3 ? [{ type: "toolCall", id: `bad${calls}`, name: "read_component", arguments: { kind: "memory", name: "missing" } }]
+    const content = calls <= 4 ? [{ type: "toolCall", id: `bad${calls}`, name: "read_component", arguments: { kind: "memory", name: "missing" } }]
       : [{ type: "toolCall", id: "add", name: "reflect_component", arguments: { op: "add", kind: "memory", name: "fixed_rule", body: "inspect before acting" } },
          { type: "toolCall", id: "done", name: "finish_evolution", arguments: { decision: "evolved", note: "fixed" } }];
     return { result: async () => ({ role: "assistant", stopReason: "toolUse", content, usage: {} }) };
   } } };
   await handlers.before_agent_start({}, ctx);
-  assert.equal(calls, 4);
+  assert.equal(calls, 5);
   assert.match(dossier, /RUNTIME TYPE CARD \(auto-introspected\):\nobservation: FakeObs/);
   assert.equal(rows("evolution_round")[0].repair_rounds, 1);
   assert.equal(rows("evolution_round")[0].decision, "evolved");
 });
 
-test("repair round is withheld for short deadlines and error-free rounds", async () => {
+test("repair round is withheld for short deadlines and error-free rounds, and saved updates survive low headroom", async () => {
   const previous = process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS;
   try {
-    for (const shortDeadline of [true, false]) {
+    for (const scenario of ["short-error", "full-no-change", "short-saved"]) {
+      const shortDeadline = scenario !== "full-no-change";
       if (shortDeadline) process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS = "20000";
       else delete process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS;
       const { handlers, game, python, rows, call } = setup({ harnessProfile: true, evolution: true, noImage: true });
@@ -1063,10 +1132,15 @@ test("repair round is withheld for short deadlines and error-free rounds", async
       const ctx: any = { model: { id: "same", contextWindow: 102400 }, modelRegistry: { streamSimple: () => {
         calls++;
         return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: {}, content: [{ type: "toolCall", id: `c${calls}`,
-          name: shortDeadline ? "read_component" : "python_inspect", arguments: shortDeadline ? { kind: "memory", name: "missing" } : { code: "1" } }] }) };
+          name: scenario === "short-saved" ? "reflect_component" : shortDeadline ? "read_component" : "python_inspect", arguments: scenario === "short-saved" ? { op: "add", kind: "memory", name: "saved_rule", body: "Inspect before acting" } : shortDeadline ? { kind: "memory", name: "missing" } : { code: "1" } }] }) };
       } } };
       await handlers.before_agent_start({}, ctx);
-      assert.equal(calls, 3);
+      assert.equal(calls, scenario === "short-saved" ? 1 : 4);
+      if (scenario === "short-saved") {
+        assert.equal(rows("evolution_round")[0].exit_reason, "deadline_headroom");
+        assert.equal(rows("evolution_round")[0].decision, "evolved");
+        assert.deepEqual(rows("evolution_round")[0].mutations, ["memory/saved_rule v1"]);
+      }
       assert.equal(rows("evolution_round")[0].repair_rounds, 0);
     }
   } finally {
@@ -1203,6 +1277,8 @@ test("harnessProfile gates stuck/stall until 16 stale steps and adds level_compl
   await call();
   await handlers.before_agent_start({}, ctx);
   assert.match(levelCompleteDossier, /Boundary rule \(LEVEL_COMPLETE\): use at most 1 python_inspect call/);
+  assert.match(levelCompleteDossier, /final pre-clear and post-action observations.*observable win condition and progress measure/);
+  assert.match(levelCompleteDossier, /early probe on the next level/);
 });
 
 test("Phase 2 contradiction audits deduplicate versions, cool down and cap at three", async () => {
@@ -1713,4 +1789,209 @@ test("strategy_readiness triggers once per level after >=6 informative transitio
   await call();
   await handlers.before_agent_start({}, ctx);
   assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness").length, 2);
+});
+
+test("orchestration 6th carrier drives REFRAME consult promotion, mismatch tool demotion, live_injected, and in-round model refinement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "orch-6th-carrier-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("define", "tool", "noisy_guard", "# when: always\ndef noisy_guard():\n  return {}", "noisy_guard()", undefined, undefined, { layer: "L4", scope: "game" });
+  store.reflect("define", "tool", "goal_scorer", "# when: always\ndef goal_scorer():\n  return {}", "goal_scorer()", undefined, undefined, { layer: "L4", scope: "game" });
+  const { handlers, game, python, rows, call } = setup({ root, harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16 });
+
+  let currentModel: any = null;
+  python.capabilitySnapshot = () => ({ claims: {}, model: currentModel });
+  let round = 0;
+  let dossierText = "";
+  const origRun = python.run.bind(python);
+  python.run = async (code: string) => {
+    if (code.includes("v1_model")) {
+      mkdirSync(join(root, "work"), { recursive: true });
+      writeFileSync(join(root, "work", "model.py"), "def predict(frame, action):\n    return frame.grid\n", "utf8");
+      currentModel = { funcs: ["predict"], tested: 9, correct: 1, by_level: { "1": { tested: 9, correct: 1 } } };
+      return { text: "v1 1/9", truncated: false, acted: null, images: [], metrics: {} };
+    }
+    if (code.includes("v2_model")) {
+      mkdirSync(join(root, "work"), { recursive: true });
+      writeFileSync(join(root, "work", "model.py"), "def predict(frame, action):\n    return {(0, 0): 1}\n", "utf8");
+      currentModel = { funcs: ["predict"], tested: 9, correct: 5, by_level: { "1": { tested: 9, correct: 5 } } };
+      return { text: "v2 5/9", truncated: false, acted: null, images: [], metrics: {} };
+    }
+    return { ...(await origRun()), steps: python.next?.steps ?? [] };
+  };
+
+  const ctx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_m: any, input: any) => {
+        round += 1;
+        if (round === 1) dossierText = input.messages[0].content[0].text;
+        const calls = round === 1
+          ? [{ type: "toolCall", id: "o1", name: "reflect_component", arguments: {
+              op: "add", kind: "orchestration", layer: "L5", scope: "game", name: "policy",
+              body: "mode: EXPLORE\nhandoff: read skill -> probe\nbatch_hint: 1-2 steps\nreframe_after_deaths: 2" } }]
+          : [{ type: "toolCall", id: "o2", name: "finish_evolution", arguments: { decision: "evolved", note: "added orchestration" } }];
+        return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 }, content: calls }) };
+      },
+    },
+  };
+
+  await handlers.before_agent_start({});
+  // Trigger 2 deaths + a repeat_mismatch on noisy_guard
+  const deathSteps = [
+    { step: 1, action: "UP", tries: 0, same: false, last_try: null, new: false, level: 1, changed: true, death: true, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, branch_handoff: { tool: "noisy_guard", suggested: "DOWN", actual: "UP", comparable: true, aligned: false, repeat_mismatch: true } },
+    { step: 2, action: "UP", tries: 1, same: true, last_try: 1, new: false, level: 1, changed: true, death: true, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: 1 },
+  ];
+  game.state = "GAME_OVER";
+  game.step = 2;
+  python.next = batch({ executed: 2, actions: ["UP", "UP"], game_over: true, steps: deathSteps });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  await handlers.before_agent_start({}, ctx);
+
+  assert.match(dossierText, /- Strategy & orchestration \(L1\): mode=REFRAME/);
+  assert.match(dossierText, /orchestration=0\/1/);
+  assert.equal(new LayeredComponents(join(root, "harness", "components")).current("orchestration", "policy")?.version, 1);
+
+  const panel = textOf(handlers.context({ messages: [{ role: "user", content: [{ type: "text", text: "state" }] }] }, { model: { contextWindow: 102400 } }).messages[0].content);
+  assert.match(panel, /ORCHESTRATION \[EXPLORE\] \(policy v1\): read skill -> probe \| batch: 1-2 steps/);
+  assert.ok(rows("live_injected").some((r: any) => r.component_kind === "orchestration" && r.name === "policy"));
+
+  // Simulate 2 more deaths after orchestration update -> REFRAME promotes reframer & demotes noisy_guard
+  game.step = 4;
+  python.next = batch({ executed: 2, actions: ["UP", "UP"], game_over: true, steps: [
+    { ...deathSteps[0], step: 3, branch_handoff: undefined },
+    { ...deathSteps[1], step: 4 },
+  ] });
+  handlers.turn_start();
+  await call();
+  const reframePanel = textOf(handlers.context({ messages: [{ role: "user", content: [{ type: "text", text: "state" }] }] }, { model: { contextWindow: 102400 } }).messages[0].content);
+  assert.match(reframePanel, /ORCHESTRATION \[REFRAME\] \(policy v1\)/);
+  assert.match(reframePanel, /SUBAGENTS \(consult\): reframer:/);
+  assert.match(reframePanel, /TOOL noisy_guard\(\) v1 \[repeat_mismatch=1\]/);
+  assert.ok(reframePanel.indexOf("TOOL goal_scorer") < reframePanel.indexOf("TOOL noisy_guard"));
+
+  // In-round refinement of work/model.py (Round 1 write v1 -> Round 2 refine v2) must succeed without rollback
+  round = 0;
+  const refineCtx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: () => {
+        round += 1;
+        const calls = round === 1
+          ? [{ type: "toolCall", id: "r1", name: "python_inspect", arguments: { code: "# v1_model" } }]
+          : round === 2
+            ? [{ type: "toolCall", id: "r2", name: "python_inspect", arguments: { code: "# v2_model" } }]
+            : [{ type: "toolCall", id: "r3", name: "finish_evolution", arguments: { decision: "evolved", note: "refined model" } }];
+        return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 }, content: calls }) };
+      },
+    },
+  };
+  game.level = 2;
+  game.state = "NOT_FINISHED";
+  game.step = 16;
+  game.stale_steps = 16;
+  game.actions_used = 16;
+  python.next = batch({ executed: 6, actions: Array(6).fill("DOWN"), level_changed: false, steps: Array.from({ length: 6 }, (_, i) => ({
+    step: 11 + i, action: "DOWN", tries: 0, same: false, last_try: null, new: true, level: 2, changed: true, death: false, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+  })) });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  const res = await handlers.before_agent_start({}, refineCtx);
+  assert.match(res.message.content[0].text, /EVOLUTION \((?:stall|stuck|strategy_readiness)\): evolved \[model\/world_model \(5\/9\)\]/);
+  assert.match(readFileSync(join(root, "work", "model.py"), "utf8"), /return \{\(0, 0\): 1\}/);
+});
+
+test("world model is optional: strategy card skips strategy_readiness, prior-level model does not mask current level, and live accuracy is surfaced", async () => {
+  const root = mkdtempSync(join(tmpdir(), "opt-world-model-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "level_strategy", "Goal: solve L1\nStrategy: probe\nNext: step UP", undefined, undefined, undefined, { layer: "L4", scope: "level", when: "always" });
+  const { handlers, game, python, rows, call } = setup({ root, harnessProfile: true, evolution: true, noImage: true, stuckAfter: 20 });
+
+  let modelSnap: any = null;
+  python.capabilitySnapshot = () => ({ claims: {}, model: modelSnap });
+  let dossierText = "";
+  const ctx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_m: any, input: any) => {
+        dossierText = input.messages[0].content[0].text;
+        return {
+          result: async () => ({
+            role: "assistant",
+            stopReason: "toolUse",
+            usage: { input: 20, output: 10, totalTokens: 30 },
+            content: [{ type: "toolCall", id: "f1", name: "finish_evolution", arguments: { decision: "no_change", note: "checked" } }],
+          }),
+        };
+      },
+    },
+  };
+
+  await handlers.before_agent_start({});
+  const origRun = python.run.bind(python);
+  python.run = async () => ({ ...(await origRun()), steps: python.next?.steps ?? [] });
+  game.step = 6;
+  game.actions_used = 6;
+  python.next = batch({
+    executed: 6,
+    actions: Array(6).fill("UP"),
+    steps: Array.from({ length: 6 }, (_, i) => ({
+      step: i + 1, action: "UP", tries: 0, same: false, last_try: null, new: true, level: 1, changed: true,
+      death: false, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+    })),
+  });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness").length, 0);
+
+  // Transition to L2 (archives level-scoped L1 strategy card) with L1 model 6/6 working, L2 live failing (0/3) -> strategy_readiness fires on L2
+  modelSnap = {
+    funcs: ["predict"],
+    tested: 9,
+    correct: 6,
+    by_level: { "1": { tested: 6, correct: 6 }, "2": { tested: 3, correct: 0 } },
+    live: { "2": { tested: 3, correct: 0 } },
+  };
+  game.level = 2;
+  game.step = 7;
+  game.actions_used = 7;
+  python.next = batch({
+    executed: 1,
+    actions: ["UP"],
+    level_changed: true,
+    steps: [{
+      step: 7, action: "UP", tries: 0, same: false, last_try: null, new: true, level: 1, changed: true,
+      death: false, level_up: true, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+    }],
+  });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  await handlers.before_agent_start({}, ctx);
+
+  game.step = 13;
+  game.actions_used = 13;
+  python.next = batch({
+    executed: 6,
+    actions: Array(6).fill("DOWN"),
+    level_changed: false,
+    steps: Array.from({ length: 6 }, (_, i) => ({
+      step: 8 + i, action: "DOWN", tries: 0, same: false, last_try: null, new: true, level: 2, changed: true,
+      death: false, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+    })),
+  });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness" && r.level === 2).length, 1);
+  assert.match(dossierText, /Epistemic status \(L2\): world_model=predict backtest=6\/9 \(L2:0\/3\) L2_live=0\/3/);
+
+  const panel = textOf(handlers.context({ messages: [{ role: "user", content: [{ type: "text", text: "state" }] }] }, { model: { contextWindow: 102400 } }).messages[0].content);
+  assert.match(panel, /MODEL work\/model\.py \(predict\): backtest 6\/9 \(L2: 0\/3\) \[L2 live: 0\/3\]/);
 });

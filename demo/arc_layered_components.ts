@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type Kind = "memory" | "skill" | "prompt" | "subagent" | "tool";
+export type Kind = "memory" | "skill" | "prompt" | "subagent" | "tool" | "orchestration";
 export type VerifyRuleInput = string | { when: string; assert: string };
 export type LifecycleStatus = "active" | "provisional" | "confirmed" | "contradicted" | "review_due" | "variant_broken" | "dormant";
 export type Component = { id?: string; kind: Kind; name: string; version: number; body: string; summary: string; hash: string; verify?: Record<string, string>; retired?: boolean; layer?: "L1" | "L2" | "L3" | "L4" | "L5"; scope?: "level" | "game"; status?: LifecycleStatus; last_promoted_level?: number; when?: string; out_branch?: string };
@@ -15,7 +15,7 @@ export type ComponentStats = {
   consecutive_failures: number; last_failure_witness?: string;
   consecutive_publish_failures: number; last_publish_error?: string;
 };
-const LIMIT: Record<Kind, number> = { memory: 2400, skill: 4000, prompt: 600, subagent: 1500, tool: 10000 };
+const LIMIT: Record<Kind, number> = { memory: 2400, skill: 4000, prompt: 600, subagent: 1500, tool: 10000, orchestration: 500 };
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
 const emptyBucket = (): StatsBucket => ({ invocations: 0, ok: 0, action_producing: 0, reads: 0, failures: 0 });
 const digest = (body: string, verify?: Record<string, string>) => {
@@ -250,7 +250,7 @@ export class LayeredComponents {
     if (summary.includes("\n")) throw Error("summary must be one line");
     const clean = cleanVerify(kind, verify);
     const next = (current?.version ?? 0) + 1;
-    const component: Component = { layer: current?.layer, scope: current?.scope ?? (kind === "tool" || kind === "skill" ? "game" : "level"), status: op === "revise" || op === "merge" ? "active" : current?.status ?? "active", last_promoted_level: current?.last_promoted_level, ...metadata, ...(op === "promote" ? { scope: "game" as const, status: "provisional" as const } : op === "demote" ? { scope: "level" as const, status: "dormant" as const } : {}), id: this.key(kind, name), kind, name, version: next, body,
+    const component: Component = { layer: metadata?.layer ?? current?.layer ?? (kind === "orchestration" ? "L5" : undefined), scope: current?.scope ?? (kind === "tool" || kind === "skill" || kind === "orchestration" ? "game" : "level"), status: op === "revise" || op === "merge" ? "active" : current?.status ?? "active", last_promoted_level: current?.last_promoted_level, ...metadata, ...(op === "promote" ? { scope: "game" as const, status: "provisional" as const } : op === "demote" ? { scope: "level" as const, status: "dormant" as const } : {}), id: this.key(kind, name), kind, name, version: next, body,
       ...(retired ? { retired: true } : {}),
       summary: summary.slice(0, 120), ...(clean ? { verify: clean } : {}), hash: digest(body, clean) };
     {

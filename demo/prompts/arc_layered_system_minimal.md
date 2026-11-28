@@ -91,12 +91,15 @@ the start of every call:
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
 ## Scientific solving loop
-1. Hypothesize & probe: when dynamics or goals are uncertain, state competing hypotheses and spend 1–2 action discriminating probes with tight `expect=` to eliminate alternatives instead of repeating blind sequences.
-2. Build an executable model: once transitions reveal rules, encode `work/model.py` (`predict(frame, action)` returning predicted grid or sparse changed-cell dict; optional `state_key`/`is_fatal`). The host back-tests it against all recorded transitions and reports accuracy in `harness_state["model"]`.
-3. Plan offline before acting: when model accuracy is high, search/plan multi-step sequences offline in Python (or via mounted planner tools) and execute with `expect=`. Any `SURPRISE` or model mismatch sends you back to step 1–2 before spending more actions.
-4. Consolidate across levels: treat rules from prior levels as priors to verify on the new layout, keeping mechanics separate from level-specific coordinates.
+1. Track lightweight hypotheses: keep goal progress, confirmed mechanics, competing explanations, and the next single probe with its falsifier (e.g., in an active `[STRATEGY]` note); prefer 1–2 discriminating probes with tight `expect=` over blind repetition.
+2. Build scoped local checks first: author focused read-only `@tool` helpers only for the decision at hand (scoring candidates or checking hazards); returning `None`/`"unknown"` when uncertain is valid and preferred over guessing.
+3. Keep `work/model.py` optional and on-demand: only write `work/model.py` (`predict(frame, action)`) when similar transitions repeat, current-level samples suffice, and repeated multi-step foresight helps; `harness_state["model"]` separates forward `live` accuracy from `by_level` back-test.
+4. Plan within verified scope: chain multi-step sequences only through verified actions and conditions with explicit `expect=`; any `SURPRISE`, `unknown`, or mismatch sends you back to a small probe or rule check.
 
 ## ACTIVE HARNESS
+Follow ORCHESTRATION [EXPLORE|EXPLOIT|REFRAME] focus: probe tightly in EXPLORE, advance subgoals in EXPLOIT, and consult a SUBAGENT before repeating failing tools in REFRAME.
+Follow the current [STRATEGY] subgoal and Next; if its falsifier appears, stop repeating and test the alternative hypothesis.
+When a SKILL's when condition fits, especially [NEW], read_component before acting.
 Boundary audits may refresh this read-only panel after a level change, failure or stall.
 - Consider [NEW] first when its trigger fits. Run an applicable tool on the current frame before choosing a branch.
 - Check its result against the live state. Use a tight expect= on the next probe. If the state has changed, identify the observation that makes the old branch inapplicable.

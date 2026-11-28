@@ -119,3 +119,20 @@ test("normalizeVerifyExpr formats {when, assert} and wraps unscoped action-guard
   assert.equal(store.current("memory", "rule")?.status, "active");
   assert.equal(store.read("memory", "rule", 1).body, "rule");
  });
+
+test("orchestration kind defaults to L5 game scope, enforces <=500 chars, and versions/restores cleanly", () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-orch-"));
+  const store = new LayeredComponents(root);
+  const v1 = store.reflect("add", "orchestration", "rhythm", "mode: EXPLORE\nhandoff: read skill -> probe\nbatch_hint: 1-2 steps\nreframe_after_deaths: 2");
+  assert.equal(v1.version, 1);
+  assert.equal(v1.scope, "game");
+  assert.equal(v1.layer, "L5");
+  assert.throws(() => store.reflect("revise", "orchestration", "rhythm", "x".repeat(501)), /500/);
+  const v2 = store.reflect("revise", "orchestration", "rhythm", "mode: EXPLOIT\nhandoff: tool -> batch");
+  assert.equal(v2.version, 2);
+  const v3 = store.reflect("restore", "orchestration", "rhythm", undefined, "", 1);
+  assert.equal(v3.version, 3);
+  assert.match(v3.body, /mode: EXPLORE/);
+  store.reflect("retire", "orchestration", "rhythm");
+  assert.deepEqual(store.list("orchestration"), []);
+});

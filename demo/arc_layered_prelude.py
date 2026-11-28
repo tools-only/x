@@ -925,6 +925,9 @@ def _observe(before, forecast, source):
         row = model.setdefault("by_level", {}).setdefault(str(fact["level"]), {"tested": 0, "correct": 0})
         row["tested"] += 1
         row["correct"] += fact["predict_off"] == 0
+        live_row = model.setdefault("live", {}).setdefault(str(fact["level"]), {"tested": 0, "correct": 0})
+        live_row["tested"] += 1
+        live_row["correct"] += fact["predict_off"] == 0
         if fact["predict_off"] > 0:
             model["last_fail"] = {"step": fact["step"], "action": fact["action"], "off": fact["predict_off"], "level": fact["level"]}
     for name, claim in sorted((_S.get("claims") or {}).items()):
@@ -1196,13 +1199,25 @@ def _build_trial_globals(k):
                 diff=diff, ascii=ascii, gameplay_changed=gameplay_changed, segment=segment)
 
 
+def _is_literal_default(val):
+    if val is None or isinstance(val, (bool, int, float, str, bytes)):
+        return True
+    if isinstance(val, tuple):
+        return all(_is_literal_default(item) for item in val)
+    return False
+
+
 def _run_readonly_trial(fn, prefix_globals):
     if isinstance(fn, _CallableToolModule):
         fn = fn.__dict__.get(fn._entry_name) or fn.__dict__.get("run")
     fn = getattr(fn, "__wrapped__", fn)
     if not isinstance(fn, types.FunctionType):
         raise TypeError("pass a function, for example trial_at(k, my_tool_fn)")
-    if fn.__closure__ or fn.__defaults__ or fn.__kwdefaults__:
+    if fn.__closure__:
+        raise ValueError("trial function must not capture live values")
+    if fn.__defaults__ and not all(_is_literal_default(v) for v in fn.__defaults__):
+        raise ValueError("trial function must not capture live values")
+    if fn.__kwdefaults__ and not all(_is_literal_default(v) for v in fn.__kwdefaults__.values()):
         raise ValueError("trial function must not capture live values")
     safe_builtins = {name: value for name, value in vars(builtins).items() if not name.startswith("_") and name not in _TRIAL_BLOCKED_BUILTINS}
     names = dict(__builtins__=safe_builtins, **prefix_globals)
@@ -1253,7 +1268,10 @@ def _run_readonly_trial(fn, prefix_globals):
             names[gname] = gval
         elif (isinstance(gval, type) or callable(gval)) and (module := (getattr(gval, "__module__", "") or "").split(".")[0]) and module not in _TRIAL_BLOCKED_MODULES:
             names[gname] = gval
-    return type(fn)(fn.__code__, names)()
+    bound = types.FunctionType(fn.__code__, names, fn.__name__, fn.__defaults__, None)
+    if fn.__kwdefaults__:
+        bound.__kwdefaults__ = dict(fn.__kwdefaults__)
+    return bound()
 
 
 def _extract_decorated_tools(tree, code):
@@ -1264,6 +1282,7 @@ def _extract_decorated_tools(tree, code):
             if seg:
                 imports.append(seg)
     header = ("\n".join(imports) + "\n\n") if imports else ""
+    src_lines = code.splitlines()
     out = []
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
@@ -1278,6 +1297,13 @@ def _extract_decorated_tools(tree, code):
         seg = ast.get_source_segment(code, node)
         if not seg:
             raise ValueError("could not extract source for @tool function '%s'" % node.name)
+        first_line = min([node.lineno] + [d.lineno for d in node.decorator_list])
+        leading_comments = []
+        idx = first_line - 2
+        while idx >= 0 and src_lines[idx].strip().startswith("#"):
+            leading_comments.insert(0, src_lines[idx])
+            idx -= 1
+        comment_block = ("\n".join(leading_comments) + "\n") if leading_comments else ""
         other_decs = []
         for d in node.decorator_list:
             if isinstance(d, ast.Name) and d.id == "tool":
@@ -1285,7 +1311,7 @@ def _extract_decorated_tools(tree, code):
             dseg = ast.get_source_segment(code, d)
             if dseg:
                 other_decs.append("@" + dseg)
-        prefix = header + ("\n".join(other_decs) + "\n" if other_decs else "")
+        prefix = header + comment_block + ("\n".join(other_decs) + "\n" if other_decs else "")
         out.append((node.name, prefix + seg + "\n"))
     return out
 
@@ -1318,6 +1344,7 @@ def _model_summary():
         "tested": model.get("tested"),
         "correct": model.get("correct"),
         "by_level": model.get("by_level", {}),
+        "live": model.get("live", {}),
         "last_fail": model.get("last_fail"),
         "runtime_error": model.get("runtime_error"),
         "error": model.get("error"),

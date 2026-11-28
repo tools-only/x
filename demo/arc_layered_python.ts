@@ -83,6 +83,7 @@ export class LayeredPython {
     tested: number;
     correct: number;
     by_level?: Record<string, { tested: number; correct: number }>;
+    live?: Record<string, { tested: number; correct: number }>;
     last_fail?: { step: number; action: string; off: number; level: number } | null;
     runtime_error?: string | null;
     error?: string;
