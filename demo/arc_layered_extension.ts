@@ -42,6 +42,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   maxLengthRecoveries?: number;
   idleContinuations: number; segmentSeconds: number; segmentTokens: number; maxActionsPerCall: number; outputTokens: number; root: string;
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
+  foldBand?: number;
   maxObserveCallsPerTurn?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMiniReview" | "setMaxActionsPerCall" | "runCompletionCheck">
@@ -91,17 +92,18 @@ export function structuralSnapshot(state: Pick<LayeredState, "frame" | "valid_ac
 
 export function renderDecisionWindow(blocks: DecisionTraceBlock[], maxChars: number): string {
   if (!blocks.length || maxChars <= 0) return "";
+  const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max)}\u2026[+${text.length - max} chars]` : text;
   const formatted = blocks.map(b => {
     const parts: string[] = [`[d${b.decision} L${b.level} s${b.stepStart}..${b.stepEnd}]`];
-    if (b.reasoningTail) parts.push(`Reasoning: ${b.reasoningTail}`);
+    if (b.reasoningTail) parts.push(`Reasoning: ${clip(b.reasoningTail, 800)}`);
     for (const p of b.pythonCalls) {
-      parts.push(`Python (${p.acted ? "acted" : "observe"}):\n${p.code}`);
-      if (p.error) parts.push(`PyError: ${p.error}`);
-      else if (p.result) parts.push(`PyOut: ${p.result}`);
+      parts.push(`Python (${p.acted ? "acted" : "observe"}):\n${clip(p.code, 1200)}`);
+      if (p.error) parts.push(`PyError: ${clip(p.error, 400)}`);
+      else if (p.result) parts.push(`PyOut: ${clip(p.result, 800)}`);
     }
-    if (b.actions.length) parts.push(`Actions: ${b.actions.join(" | ")}`);
+    if (b.actions.length) parts.push(`Actions: ${clip(b.actions.join(" | "), 600)}`);
     for (const c of b.consults) {
-      parts.push(`Consult(${c.name}) Q: ${c.question}\nA: ${c.answer}`);
+      parts.push(`Consult(${c.name}) Q: ${clip(c.question, 400)}\nA: ${clip(c.answer, 800)}`);
     }
     return parts.join("\n");
   });
@@ -520,7 +522,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let lastStuckAuditStep = -1, stuckAuditsThisLevel = 0, lastDeathAuditStep = -1, lastAuditBoundary = "";
   let strategyReadinessAuditedLevel = -1;
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
-  let rawEstimate = 0, rollThreshold = 0, evictAnchorIndex = 0;
+  let rawEstimate = 0, rollThreshold = 0, evictAnchorIndex = 0, foldEstimateAnchor = 0;
   let actedThisTurn = false, observeCallsThisTurn = 0, observeLimitHitThisTurn = false, consecutiveObserveTurns = 0;
   let toolBuildFreeUsedThisTurn = false;
   let consecutiveLengthStops = 0, currentRequestOutputTokens = options.outputTokens;
@@ -2288,9 +2290,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
       tokens_removed: result.removed, estimate_before: result.before, cap: effectiveCap, target: effectiveTarget });
-    const effectiveFoldAfter = options.harnessProfile && components && components.list("memory").length === 0 && options.foldAfter > 0
+    let effectiveFoldAfter = options.harnessProfile && components && components.list("memory").length === 0 && options.foldAfter > 0
       ? Math.max(options.foldAfter, 10)
       : options.foldAfter;
+    if (options.foldBand && options.foldBand > 0 && effectiveFoldAfter > 0) {
+      const estimate = result.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+      if (estimate < foldEstimateAnchor) foldEstimateAnchor = estimate;
+      if (estimate - foldEstimateAnchor < options.foldBand) {
+        effectiveFoldAfter = 0;
+      } else {
+        foldEstimateAnchor = estimate;
+      }
+    }
     const folding = archive ? { messages: result.messages, folded: 0 } : fold(result.messages, effectiveFoldAfter);
     const preObs = archive || effectiveFoldAfter <= 0
       ? { messages: folding.messages, folded: 0 }
@@ -2614,7 +2625,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     boardInventory: harnessProfile && env.ARC_LAYERED_BOARD_INVENTORY !== "0",
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
-    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
+    stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 8), foldBand: Number(env.ARC_LAYERED_FOLD_BAND ?? 2048),
     compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? (qwen27b ? Math.max(outputTokens + 8192, 16384) : 0)), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
     maxObserveCallsPerTurn: Number(env.ARC_LAYERED_MAX_OBSERVE_CALLS ?? (harnessProfile ? 4 : 2)),

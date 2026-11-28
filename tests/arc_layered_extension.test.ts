@@ -1044,6 +1044,35 @@ test("renderDecisionWindow drops oldest blocks and preserves latest decision", (
   assert.doesNotMatch(rendered, /\[d1 L1/);
 });
 
+test("renderDecisionWindow clips oversized PyOut and keeps the truncation marker", () => {
+  const big = "A".repeat(800) + "B".repeat(4200);
+  const rendered = renderDecisionWindow([{
+    decision: 1, level: 1, stepStart: 1, stepEnd: 1, reasoningTail: "",
+    pythonCalls: [{ code: "print(x)", result: big, acted: true }], actions: [], consults: [],
+  }], 2000);
+  assert.match(rendered, /PyOut: A{800}\u2026\[\+4200 chars\]/);
+  assert.doesNotMatch(rendered, /B/);
+});
+
+test("foldBand hysteresis suppresses per-turn folding until context grows by the band", async () => {
+  const root = mkdtempSync(join(tmpdir(), "foldband-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "memory", "m", "Confirmed: x", "", undefined, undefined, { layer: "L3", scope: "level" });
+  const { handlers, rows } = setup({ root, harnessProfile: true, foldAfter: 2, foldBand: 15, contextCap: 1e9, contextTarget: 1e9 });
+  await handlers.before_agent_start({});
+  const blocks = (n: number) => Array.from({ length: n }, (_, i) => [
+    { role: "user", content: [{ type: "text", text: `u${i}` }] },
+    { role: "assistant", content: [{ type: "toolCall", id: `c${i}`, name: "python", arguments: {} }] },
+    { role: "toolResult", toolCallId: `c${i}`, content: [{ type: "text", text: `noise ${i}\n[env] executed 1` }] },
+  ]).flat();
+  handlers.context({ messages: blocks(4) }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").length, 1);
+  handlers.context({ messages: blocks(4) }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").length, 1);
+  handlers.context({ messages: blocks(6) }, { model: { contextWindow: 128000 } });
+  assert.equal(rows("fold").length, 2);
+});
+
 test("evolution rejects a claim of change when no component changed", async () => {
   const { handlers, game, python, rows, call } = setup({ harnessProfile: true, evolution: true, noImage: true });
   await handlers.before_agent_start({});
