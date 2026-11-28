@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LayeredComponents } from "../demo/arc_layered_components.ts";
@@ -445,6 +445,18 @@ test("near the window the history is compacted into one summary message plus the
   assert.equal(compactHistory([{ role: "user", content: [] }], "s"), null);
 });
 
+test("context measurement pairs the local estimate with provider input including cached tokens", async () => {
+  const { handlers, root } = setup();
+  const opened = await handlers.before_agent_start({});
+  handlers.context({ messages: [opened.message] }, { model: { contextWindow: 175000 } });
+  handlers.before_provider_request({ payload: {} }, { model: { api: "openai-completions" } });
+  handlers.message_end(say("done", { usage: { input: 120, cacheRead: 80, cacheWrite: 0, output: 5, totalTokens: 205 } }));
+  const rows = readFileSync(join(root, "harness", "context-calibration.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(rows[0].reported_input_with_cache, 200);
+  assert.ok(rows[0].message_estimate > 0);
+  assert.ok(rows[0].request_id);
+});
+
 test("compaction carries the claims ledger, open hypotheses and review pointer", async () => {
   const { handlers, python } = setup({ contextCap: 1e9, contextTarget: 1e9 });
   python.evolutionDigest = () => "Durable knowledge in work/: up_moves: validated (3 support / 0 counter / 3 checked) [game scale] | unresolved hypotheses to probe next: down_noop | past reviews: work/review_log.md";
@@ -845,6 +857,103 @@ test("renderDecisionWindow drops oldest blocks and preserves latest decision", (
   assert.doesNotMatch(rendered, /\[d1 L1/);
 });
 
+test("evolution rejects a claim of change when no component changed", async () => {
+  const { handlers, game, python, rows, call } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 2,
+  }] });
+  await call();
+  const ctx: any = { model: { id: "same-model", maxTokens: 4096, contextWindow: 102400 }, modelRegistry: {
+    streamSimple: () => ({ result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 1, output: 1, totalTokens: 2 },
+      content: [{ type: "toolCall", id: "finish", name: "finish_evolution", arguments: { decision: "evolved", note: "created tool" } }] }) }),
+  } };
+  await handlers.before_agent_start({}, ctx);
+  const entry = rows("evolution_round")[0];
+  assert.equal(entry.decision, "incomplete");
+  assert.deepEqual(entry.mutations, []);
+  assert.equal(entry.claimed_decision, "evolved");
+});
+
+test("invalid verify syntax is rejected before a memory version is saved", async () => {
+  const { handlers, game, python, rows, call, root } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({});
+  handlers.turn_start(); game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 2,
+  }] });
+  await call();
+  const ctx: any = { model: { id: "same-model", maxTokens: 4096, contextWindow: 102400 }, modelRegistry: {
+    streamSimple: () => ({ result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 1, output: 1, totalTokens: 2 },
+      content: [{ type: "toolCall", id: "bad", name: "reflect_component", arguments: { op: "add", kind: "memory", name: "bad_rule", body: "test", verify: { rule: "t.action ==" } } }] }) }),
+  } };
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(new LayeredComponents(join(root, "harness", "components")).current("memory", "bad_rule"), undefined);
+  assert.equal(rows("component_change").length, 0);
+});
+
+test("historical verify errors do not write a memory version", async () => {
+  const { handlers, game, python, rows, call, root } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  python.validateMemoryChecks = async () => ({ "bad_rule/rule": { error: "AttributeError: missing" } });
+  await handlers.before_agent_start({});
+  handlers.turn_start(); game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 2,
+  }] });
+  await call();
+  const ctx: any = { model: { id: "same-model", maxTokens: 4096, contextWindow: 102400 }, modelRegistry: {
+    streamSimple: () => ({ result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 1, output: 1, totalTokens: 2 },
+      content: [{ type: "toolCall", id: "bad", name: "reflect_component", arguments: { op: "add", kind: "memory", name: "bad_rule", body: "test", verify: { rule: "t.missing > 0" } } }] }) }),
+  } };
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(new LayeredComponents(join(root, "harness", "components")).current("memory", "bad_rule"), undefined);
+  assert.equal(rows("component_change").length, 0);
+});
+
+test("failed tool publication restores the previous work file", async () => {
+  const { handlers, game, python, call, root } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  const lib = join(root, "work", "lib"); mkdirSync(lib, { recursive: true });
+  const path = join(lib, "probe.py"); writeFileSync(path, "def probe():\n    return 1\n");
+  await handlers.before_agent_start({}); handlers.turn_start(); game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 2,
+  }] });
+  const ctx: any = { model: { id: "same-model", maxTokens: 4096, contextWindow: 102400 }, modelRegistry: {
+    streamSimple: () => ({ result: async () => ({ role: "assistant", stopReason: "toolUse", usage: { input: 1, output: 1, totalTokens: 2 },
+      content: [{ type: "toolCall", id: "inspect", name: "python_inspect", arguments: { code: "test" } }] }) }),
+  } };
+  await call();
+  python.run = async () => {
+    writeFileSync(path, "def probe():\n    return (\n");
+    return { text: "prepared", decoratedTools: ["probe"], usedLibs: [], metrics: {}, images: [], acted: null };
+  };
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(readFileSync(path, "utf8"), "def probe():\n    return 1\n");
+});
+
+test("restart recovers an interrupted tool publication and preserves a committed one", () => {
+  const root = mkdtempSync(join(tmpdir(), "layered-publish-recovery-"));
+  const lib = join(root, "work", "lib"), harness = join(root, "harness");
+  mkdirSync(lib, { recursive: true }); mkdirSync(harness, { recursive: true });
+  const store = new LayeredComponents(join(harness, "components"));
+  store.reflect("define", "tool", "saved", "def saved():\n    return 2\n", "saved()");
+  writeFileSync(join(lib, "saved.py"), "def saved():\n    return 2\n");
+  writeFileSync(join(lib, "pending.py"), "def pending():\n    return 9\n");
+  writeFileSync(join(harness, "tool-publication-pending.json"), JSON.stringify({
+    files: { "saved.py": "def saved():\n    return 1\n" }, heads: {},
+  }));
+  setup({ root, harnessProfile: true });
+  assert.equal(readFileSync(join(lib, "saved.py"), "utf8"), "def saved():\n    return 2\n");
+  assert.equal(existsSync(join(lib, "pending.py")), false);
+  assert.equal(existsSync(join(harness, "tool-publication-pending.json")), false);
+});
+
 test("boundary evolution blocks same-turn finish_evolution after error and marks max_rounds_exhausted as incomplete", async () => {
   const { handlers, game, python, rows, call, root } = setup({ harnessProfile: true, evolution: true, noImage: true });
   await handlers.before_agent_start({});
@@ -1237,4 +1346,107 @@ test("prompt revision circuit-breaker blocks >2 revisions of the same prompt on 
     await handlers.before_agent_start({}, ctx);
   }
   assert.match(blockedReply, /already revised 2x on this level; stop rewriting prose/);
+});
+
+test("calling a published bound tool records bound_invocation once without duplicate lib_invocation", async () => {
+  const isoRoot = mkdtempSync(join(tmpdir(), "layered-bound-dedup-"));
+  const { handlers: h2, game: g2, python: p2, rows: r2, tools: t2 } = setup({
+    root: isoRoot, harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16,
+  });
+  let round = 0;
+  const evoCtx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: () => {
+        round += 1;
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 },
+          content: round === 1
+            ? [{ type: "toolCall", id: "t1", name: "python_inspect", arguments: { code: "@tool\ndef check_grid():\n    return {'ok': True}" } }]
+            : [{ type: "toolCall", id: "t2", name: "finish_evolution", arguments: { decision: "evolved", note: "published" } }],
+        }) };
+      },
+    },
+  };
+  mkdirSync(join(isoRoot, "work", "lib"), { recursive: true });
+  writeFileSync(join(isoRoot, "work", "lib", "check_grid.py"), "def check_grid():\n    return {'ok': True}\n", "utf8");
+  p2.run = async (code: string) => {
+    p2.runs += 1;
+    const calledCheck = code.includes("check_grid");
+    return { text: "{'ok': True}", truncated: false, acted: null, usedLibs: calledCheck ? ["check_grid"] : [], decoratedTools: ["check_grid"], images: [], metrics: {} };
+  };
+  await h2.before_agent_start({});
+  g2.state = "GAME_OVER";
+  g2.step = 5;
+  p2.next = batch({ executed: 1, actions: ["UP"], game_over: true, steps: [{
+    step: 5, action: "UP", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false, changed_cells: 1,
+  }] });
+  await t2.python.execute("id1", { code: "submit_actions('UP')" }, undefined, undefined, {});
+  p2.next = null;
+  await h2.before_agent_start({}, evoCtx);
+  assert.ok(t2.check_grid, "check_grid bound tool should be registered");
+
+  await t2.check_grid.execute("b1", {}, undefined);
+  assert.equal(r2("bound_invocation").length, 1);
+  assert.equal(r2("lib_invocation").length, 0);
+
+  await t2.python.execute("p1", { code: "check_grid()" }, undefined, undefined, {});
+  assert.equal(r2("bound_invocation").length, 1);
+  assert.equal(r2("lib_invocation").length, 1);
+});
+
+test("foldAfter: 0 with recoverableFold disabled preserves pre-action python observations for KV cache", () => {
+  const { handlers, rows, root } = setup({ harnessProfile: true, foldAfter: 0, noImage: true });
+  const observeText = "OBSERVATION_DETAIL_" + "a".repeat(300);
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "turn 1" }] },
+    { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "python", arguments: { code: "print(1)" } }] },
+    { role: "toolResult", toolCallId: "c1", toolName: "python", content: [{ type: "text", text: observeText }] },
+    { role: "assistant", content: [{ type: "toolCall", id: "c2", name: "python", arguments: { code: "submit_actions('UP')" } }] },
+    { role: "toolResult", toolCallId: "c2", toolName: "python", content: [{ type: "text", text: "[env] executed 1 (UP)" }] },
+  ];
+  const out = handlers.context({ messages }, { model: { contextWindow: 128000 } });
+  const joined = out.messages.map((m: any) => textOf(m.content)).join("\n");
+  assert.match(joined, /OBSERVATION_DETAIL_aaa/);
+  assert.equal(existsSync(join(root, "harness", "layered.jsonl")) ? rows("fold").length : 0, 0);
+});
+
+test("calibrated context overflow protection triggers earlier eviction/compaction and clamps max_tokens", async () => {
+  const { handlers, rows } = setup({
+    harnessProfile: true, foldAfter: 0, noImage: true,
+    outputTokens: 4096, contextCap: 24000, contextTarget: 12000, compactMargin: 8000,
+  });
+  const modelCtx = { model: { api: "openai-completions", contextWindow: 30000, maxTokens: 8192 } };
+  const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] });
+  const stateMsg = (text: string) => ({ role: "custom", customType: STATE_TYPE, content: [{ type: "text", text }] });
+
+  // Sample 1 (<4000 est): establishes calibratedOverhead (~2000)
+  handlers.context({ messages: [user("x".repeat(4000)), stateMsg("cur")] }, modelCtx);
+  handlers.before_provider_request({ payload: {} }, modelCtx);
+  await handlers.message_end({
+    type: "message_end",
+    message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ok" }],
+      usage: { input: 2000, cacheRead: 1000, cacheWrite: 0, output: 10, totalTokens: 3010 } },
+  });
+
+  // Sample 2 (>=4000 est): ~5000 est vs 11000 reported -> calibratedRatio ~ 1.8
+  handlers.context({ messages: [user("y".repeat(16000)), user("z".repeat(4000)), stateMsg("cur")] }, modelCtx);
+  handlers.before_provider_request({ payload: {} }, modelCtx);
+  await handlers.message_end({
+    type: "message_end",
+    message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "ok" }],
+      usage: { input: 9000, cacheRead: 2000, cacheWrite: 0, output: 10, totalTokens: 11010 } },
+  });
+
+  // Now ~12,500 uncalibrated estimate fits raw contextCap (24,000),
+  // but calibrated estimate (~24,500) exceeds effectiveCap and hardTarget (22,000), triggering evict/compact
+  const heavy = [user("a".repeat(20000)), user("b".repeat(20000)), user("c".repeat(10000)), stateMsg("cur")];
+  handlers.context({ messages: heavy }, modelCtx);
+  assert.ok(rows("evict").length + rows("compact").length >= 1, "expected calibrated evict or compact");
+
+  // Single indivisible latest state block cannot be evicted/compacted away, so before_provider_request clamps max_tokens
+  handlers.context({ messages: [stateMsg("m".repeat(58000))] }, modelCtx);
+  const adapted = handlers.before_provider_request({ payload: {} }, modelCtx);
+  assert.ok(adapted.max_tokens < 4096 && adapted.max_tokens >= 512, `expected clamped max_tokens < 4096, got ${adapted.max_tokens}`);
 });

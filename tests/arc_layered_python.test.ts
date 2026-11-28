@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LayeredPython, type LayeredConfig } from "../demo/arc_layered_python.ts";
@@ -49,6 +49,70 @@ test("Phase 1 trial sees the recorded prefix and parent cannot publish", async (
   } finally {
     python.close();
   }
+});
+
+test("trial_at accepts a mounted callable tool without reading future transitions", async () => {
+  const { python } = await session();
+  try {
+    await python.run('submit_actions(["DOWN"])');
+    const created = await python.run('@tool\ndef prefix_probe():\n    return len(transitions)', undefined, { forbidActions: true });
+    assert.equal(created.error, undefined);
+    const trial = await python.run('print(trial_at(0, prefix_probe))', undefined, { forbidActions: true });
+    assert.equal(trial.error, undefined);
+    assert.match(trial.text, /0/);
+  } finally { python.close(); }
+});
+
+test("failed tool creation leaves no mounted or saved tool", async () => {
+  const workDir = join(mkdtempSync(join(tmpdir(), "layered-failed-tool-")), "work");
+  const { python } = await session({ workDir });
+  try {
+    const result = await python.run('@tool\ndef broken_probe():\n    return 1\n1 / 0', undefined, { forbidActions: true });
+    assert.match(result.error ?? "", /ZeroDivisionError/);
+    assert.deepEqual(result.decoratedTools, []);
+    assert.equal(existsSync(join(workDir, "lib", "broken_probe.py")), false);
+    const after = await python.run('print("broken_probe" in globals())', undefined, { forbidActions: true });
+    assert.match(after.text, /False/);
+  } finally { python.close(); }
+});
+
+test("mouse recommendation is attributed to the following matching action", async () => {
+  const { python } = await session();
+  try {
+    const created = await python.run('@tool\ndef choose_mouse():\n    return {"recommended_actions": [{"action": "MOUSE", "x": 1, "y": 2}]}', undefined, { forbidActions: true });
+    assert.equal(created.error, undefined);
+    await python.run('choose_mouse()', undefined, { parentReadonlyTools: true });
+    const result = await python.run('submit_actions({"action":"MOUSE","x":1,"y":2}, expect=(2,2))', undefined, { parentReadonlyTools: true });
+    assert.equal(result.steps?.[0]?.branch_handoff?.comparable, true);
+    assert.equal(result.steps?.[0]?.branch_handoff?.matched, true);
+    assert.equal(result.steps?.[0]?.branch_handoff?.aligned, true);
+  } finally { python.close(); }
+});
+
+test("tool plan records the executed prefix and a later mismatch", async () => {
+  const { python } = await session();
+  try {
+    const created = await python.run('@tool\ndef plan_steps():\n    return {"recommended_actions": ["UP", "UP", "DOWN"]}', undefined, { forbidActions: true });
+    assert.equal(created.error, undefined);
+    await python.run('plan_steps()', undefined, { parentReadonlyTools: true });
+    const result = await python.run('submit_actions(["UP", "DOWN"], expect=(2,2))', undefined, { parentReadonlyTools: true });
+    assert.equal(result.steps?.[0]?.branch_handoff?.matched, true);
+    assert.equal(result.steps?.[0]?.branch_handoff?.plan_index, 0);
+    assert.equal(result.steps?.[1]?.branch_handoff?.matched, false);
+    assert.equal(result.steps?.[1]?.branch_handoff?.plan_index, 1);
+  } finally { python.close(); }
+});
+
+test("candidate verify check reports historical errors without replacing live memory checks", async () => {
+  const { python } = await session();
+  try {
+    await python.run('submit_actions(["DOWN"])');
+    await python.syncMemoryChecks([{ id: "live/rule", expr: "True" }]);
+    const result = await python.validateMemoryChecks([{ id: "candidate/rule", expr: "t.missing_field > 0" }]);
+    assert.match(result["candidate/rule"].error ?? "", /AttributeError/);
+    assert.ok(python.memoryCheckStats["live/rule"]);
+    assert.equal(python.memoryCheckStats["candidate/rule"], undefined);
+  } finally { python.close(); }
 });
 
 test("Phase 1 audit publishes a read-only branch probe and the next real action updates its evidence", async () => {
@@ -913,6 +977,37 @@ test("syncMemoryChecks marks 100%-failing historical rules as unscoped and suppr
     assert.match(live.text, /\[verify\/probe\/scoped_fail failed/);
     assert.equal(python.memoryCheckStats["probe/unscoped"].counter, 3);
     assert.equal(python.memoryCheckStats["probe/scoped_fail"].counter, 2);
+  } finally {
+    python.close();
+  }
+});
+
+test("trial_at allows safe pure stdlib imports inside @tool and module top-level while rejecting disallowed modules", async () => {
+  const { python } = await session();
+  try {
+    await python.run("submit_actions(['UP', 'DOWN'])");
+    const safeRes = await python.run([
+      "from collections import defaultdict",
+      "@tool",
+      "def count_actions():",
+      "    from collections import Counter",
+      "    d = defaultdict(int)",
+      "    c = Counter(t.action for t in transitions)",
+      "    for k, v in c.items(): d[k] = v",
+      "    return dict(d)",
+      "print(trial_at(1, count_actions))",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.equal(safeRes.error, undefined);
+    assert.match(safeRes.text, /'UP': 1/);
+
+    const blockedRes = await python.run([
+      "@tool",
+      "def bad_import():",
+      "    import os",
+      "    return os.getcwd()",
+      "trial_at(1, bad_import)",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.match(blockedRes.error ?? "", /ImportError/);
   } finally {
     python.close();
   }

@@ -559,8 +559,10 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "tool_branch_aligned": sum(row["aligned"] for row in branch_handoffs),
         },
         "branch_handoffs": {
-            "autonomous_fetch_followed_by_action": len(branch_handoffs),
+            "autonomous_fetch_followed_by_action": sum(int(row.get("plan_index") or 0) == 0 for row in branch_handoffs),
             "branch_consistent_action": sum(row["aligned"] for row in branch_handoffs),
+            "plan_actions_observed": len(branch_handoffs),
+            "plan_actions_matched": sum(bool(row.get("matched", row.get("aligned"))) for row in branch_handoffs),
             "upward_writeback": sum(row["aligned"] and row["upward_writeback"] for row in branch_handoffs),
             "repeat_mismatch_candidates": sum(row["repeat_mismatch"] for row in branch_handoffs),
             "opportunities": None,  # Requires review of applicable states, including missed calls.

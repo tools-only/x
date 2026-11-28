@@ -260,10 +260,12 @@ export class LayeredComponents {
     const path = this.path(kind, name, next);
     mkdirSync(join(this.root, kind, name), { recursive: true });
     writeFileSync(path, JSON.stringify(component), "utf8");
-    this.heads.set(this.key(kind, name), next);
-    const head = join(this.root, "HEAD.json"), temp = `${head}.tmp`, headsJson = JSON.stringify(Object.fromEntries(this.heads));
+    const nextHeads = new Map(this.heads);
+    nextHeads.set(this.key(kind, name), next);
+    const head = join(this.root, "HEAD.json"), temp = `${head}.tmp`, headsJson = JSON.stringify(Object.fromEntries(nextHeads));
     writeFileSync(temp, headsJson, "utf8");
-    try { renameSync(temp, head); } catch { writeFileSync(head, headsJson, "utf8"); }
+    renameSync(temp, head);
+    this.heads = nextHeads;
     for (const source of sources) this.reflect("retire", kind, source.name);
     return component;
   }

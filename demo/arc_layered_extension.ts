@@ -1,5 +1,5 @@
 /** ARC `layered` profile: one python tool, state messages, context eviction/folding/compaction, carried note blocks, bounded continuation. */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ import type { LayeredEnvAdapter } from './layered_env_adapter.ts';
 import { RequestTrace, usageRecord } from "./arc_request_trace.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
 import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
-import { LayeredComponents, type Component, type Kind, type ReflectOp, type VerifyRuleInput } from "./arc_layered_components.ts";
+import { LayeredComponents, normalizeVerifyExpr, type Component, type Kind, type ReflectOp, type VerifyRuleInput } from "./arc_layered_components.ts";
 import { boardInventory, recordFrameColorChanges } from "./arc_layered_inventory.ts";
 
 import { LayeredArchive, foldRecoverably } from "./arc_layered_archive.ts";
@@ -44,7 +44,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   maxObserveCallsPerTurn?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMiniReview">
-  & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot" | "syncMemoryChecks" | "memoryCheckStats">>;
+  & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot" | "syncMemoryChecks" | "validateMemoryChecks" | "memoryCheckStats">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 type AttemptMetrics = { py_calls: number; py_errors: number; truncated: number; observe_limits: number; errors: string[] };
 const EDITABLE_SPACE = "Editable capability space: memory (with optional verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult).";
@@ -456,6 +456,26 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     : adapter.systemPrompt(flags, options.maxActionsPerCall, Boolean(options.harnessProfile));
   let memory: Record<string, string> = {};
   const components = options.harnessProfile ? new LayeredComponents(join(store, "components")) : undefined;
+  const publicationJournal = join(store, "tool-publication-pending.json");
+  function recoverToolPublication() {
+    if (!components || !existsSync(publicationJournal)) return;
+    const pending = JSON.parse(readFileSync(publicationJournal, "utf8")) as { files: Record<string, string>; heads: Record<string, number> };
+    const dir = join(options.root, "work", "lib");
+    mkdirSync(dir, { recursive: true });
+    const names = new Set([...Object.keys(pending.files), ...readdirSync(dir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name))]);
+    for (const name of names) {
+      if (!/^[a-z][a-z0-9_]*\.py$/.test(name)) continue;
+      const path = join(dir, name), id = name.slice(0, -3), head = components.current("tool", id);
+      const source = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+      const committed = head && head.version !== pending.heads[id] && head.body === source;
+      if (committed) continue;
+      const previous = pending.files[name];
+      if (previous !== undefined) writeFileSync(path, previous, "utf8");
+      else if (existsSync(path)) unlinkSync(path);
+    }
+    unlinkSync(publicationJournal);
+  }
+  recoverToolPublication();
   let notebook: Record<string, string> = {};
   let trail: string[] = [];
   let lastReviewCallback = "";
@@ -533,17 +553,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     `${item.kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}` +
     (item.kind === "memory" ? formatVerifySummary(item.name, item.verify, python.memoryCheckStats) : "");
   const registeredTools = new Set<string>();
+  let activeBoundTool: string | null = null;
   const shownTurns = new Map<string, Set<number>>();
   const lastPublishError = new Map<string, string>();
   let pythonBin: string | undefined;
-  function checkPythonSyntax(source: string): string | null {
+  function checkPythonSyntax(source: string, mode: "exec" | "eval" = "exec"): string | null {
     for (const bin of pythonBin ? [pythonBin] : ["python3", "python"]) {
-      const res = spawnSync(bin, ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: source, encoding: "utf8" });
+      const res = spawnSync(bin, ["-c", `import ast,sys; ast.parse(sys.stdin.read(), mode='${mode}')`], { input: source, encoding: "utf8" });
       if (res.error && (res.error as NodeJS.ErrnoException).code === "ENOENT") continue;
       pythonBin = bin;
       return res.status === 0 ? null : (res.stderr?.trim().slice(0, 300) || `exit ${res.status}`);
     }
-    return null;
+    return mode === "eval" ? "Python interpreter unavailable for verify validation" : null;
   }
   function publishTools(allowed?: ReadonlySet<string>): { published: Array<{ name: string; version: number }>; failed: Array<{ name: string; error: string }> } {
     const published: Array<{ name: string; version: number }> = [];
@@ -557,20 +578,20 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (allowed && !allowed.has(name)) continue;
       const source = readFileSync(join(dir, file), "utf8");
       const match = new RegExp(`^def\\s+(${name}|run)\\s*\\(\\s*([^)\\n]*)\\)\\s*(?:->[^:\\n]+)?\\s*:`, "m").exec(source);
-      if (!match) continue;
+      if (!match) { failed.push({ name, error: "tool entry function not found or invalid signature" }); continue; }
       const [, fn, rawArgs] = match;
       const trimmedArgs = rawArgs.trim();
       const zeroArg = trimmedArgs === "";
       const singleArg = /^[a-zA-Z_]\w*(?:\s*:[^=]+)?(?:\s*=.*)?$/.test(trimmedArgs);
-      if (!zeroArg && !singleArg) continue;
+      if (!zeroArg && !singleArg) { failed.push({ name, error: "tool entry function must take zero or one argument" }); continue; }
       const syntaxErr = checkPythonSyntax(source);
       if (syntaxErr) {
         if (lastPublishError.get(name) !== `${source.length}:${syntaxErr}`) {
           lastPublishError.set(name, `${source.length}:${syntaxErr}`);
           components.recordPublishFailure(name, st.level, st.step, syntaxErr);
           log("tool_publish_failed", { name, error: syntaxErr });
-          failed.push({ name, error: syntaxErr });
         }
+        failed.push({ name, error: syntaxErr });
         continue;
       }
       lastPublishError.delete(name);
@@ -606,7 +627,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           const callExpr = isZeroArg
             ? `${name}.${fnName}()`
             : `${name}.${fnName}(__import__('json').loads(__import__('base64').b64decode('${encoded}').decode()))`;
-          const result = await pythonTool.execute(_id, { code: `print(repr(${callExpr}))` }, signal);
+          activeBoundTool = name;
+          let result: any;
+          try {
+            result = await pythonTool.execute(_id, { code: `print(repr(${callExpr}))` }, signal);
+          } finally {
+            activeBoundTool = null;
+          }
           const acted = Boolean((result as any).details?.acted);
           const ok = !(result as any).isError && !(result as any).details?.error &&
             (!(result as any).terminate || acted);
@@ -627,6 +654,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
   const requests = new RequestTrace(row => write("request-events.jsonl", row), () => python.state().actions_used);
   let request: string | undefined;
+  let latestContextEstimate: number | undefined;
+  let requestContextEstimate: number | undefined;
+  let calibratedRatio = 1.0;
+  let calibratedOverhead = 0;
+  let calibratedSamples = 0;
 
   const softLimit = () => Date.now() - segmentStart >= options.segmentSeconds * 1000 ? "soft_time"
     : segmentTokens >= options.segmentTokens ? "soft_tokens" : undefined;
@@ -1151,7 +1183,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         recentSteps.push(fact);
         if (recentSteps.length > WINDOW_SIZE) recentSteps.shift();
         const m = fact.source && /^(?:direct_lib|assisted_lib)\/([a-z][a-z0-9_]*)$/.exec(fact.source);
-        if (m) {
+        if (m && m[1] !== activeBoundTool) {
           libCallsInRun += 1;
           creditedActionLibs.add(m[1]);
           components?.recordInvocation("tool", m[1], fact.level, fact.step, { ok: !outcome.error, action_producing: true });
@@ -1165,15 +1197,17 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         if (fact.branch_handoff) log("branch_handoff", { ...fact.branch_handoff, level: fact.level, step: fact.step, upward_writeback: true });
       }
       for (const libName of outcome.usedLibs ?? []) {
-        if (creditedActionLibs.has(libName)) continue;
+        if (creditedActionLibs.has(libName) || libName === activeBoundTool) continue;
         libCallsInRun += 1;
         const ok = !outcome.error;
         const witness = ok ? undefined : `L${state.level} s${state.step} ${libName}: ${outcome.error!.trim().split("\n").at(-1)?.slice(0, 120)}`;
         components?.recordInvocation("tool", libName, state.level, state.step, { ok, action_producing: false, witness });
         log("lib_invocation", { name: libName, ok, action_producing: false, level: state.level, step: state.step });
       }
-      recentCalls.push({ errors: outcome.error ? 1 : 0, truncated: outcome.truncated ? 1 : 0, tools: libCallsInRun });
-      if (recentCalls.length > WINDOW_SIZE) recentCalls.shift();
+      if (activeBoundTool === null) {
+        recentCalls.push({ errors: outcome.error ? 1 : 0, truncated: outcome.truncated ? 1 : 0, tools: libCallsInRun });
+        if (recentCalls.length > WINDOW_SIZE) recentCalls.shift();
+      }
       if (batch && (batch.level_changed || batch.game_over) && levelSteps.length) {
         const invUnchanged = boardInventoryEnabled && state.frame.length ? boardInventory(state.frame, levelChangedColors).unchanged : [];
         const reviewExtra = options.harnessProfile && components ? {
@@ -1382,6 +1416,27 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       }
     }
     try {
+      if (params.kind === "memory" && params.verify && Object.keys(params.verify).length === 2 &&
+          typeof params.verify.when === "string" && typeof params.verify.assert === "string") {
+        params.verify = { rule: { when: params.verify.when, assert: params.verify.assert } };
+      }
+      if (params.kind === "memory" && params.verify) {
+        const checks: Array<{ id: string; expr: string }> = [];
+        for (const [name, rule] of Object.entries(params.verify)) {
+          const expr = normalizeVerifyExpr(rule);
+          const error = checkPythonSyntax(expr, "eval");
+          if (error) return { ok: false, text: `verify/${name}: ${error}` };
+          checks.push({ id: `${params.name}/${name}`, expr });
+        }
+        if (python.validateMemoryChecks) {
+          const stats = await python.validateMemoryChecks(checks);
+          for (const check of checks) {
+            const error = stats[check.id]?.error;
+            if (error && /^(SyntaxError|NameError|AttributeError):/.test(error))
+              return { ok: false, text: `verify/${check.id}: ${error} during historical validation` };
+          }
+        }
+      }
       const item = components.reflect(params.op, params.kind as Kind, params.name, params.body, params.summary, params.version, params.verify, { sources: params.sources, ...(params.scope ? { scope: params.scope } : {}), ...(params.layer ? { layer: params.layer } : {}), ...(params.op === "promote" ? { last_promoted_level: lastAuditBoundary === "level_complete" ? finishedLevelNumber : safeState().level } : {}) });
       if (source === "evolution" && item.kind === "prompt" && (params.op === "revise" || params.op === "redefine")) {
         promptRevisionsThisLevel.set(item.name, (promptRevisionsThisLevel.get(item.name) ?? 0) + 1);
@@ -1462,6 +1517,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const mutations: string[] = [];
     let verifiedToolSample = "";
     let evoDecision: "evolved" | "no_change" | "incomplete" = "incomplete";
+    let claimedDecision: string | undefined;
     let exitReason: "finish_evolution" | "max_rounds_exhausted" | "text_stop" | "error" = "max_rounds_exhausted";
     let note = "";
     let roundsRun = 0;
@@ -1533,9 +1589,29 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         try { writeFileSync(join(store, "heartbeat"), String(Date.now())); } catch {}
         const roundStart = Date.now();
         const useThinking = lengthRetries === 0 && parentThinking && parentThinking !== "off";
+        const evoPromptEst = Math.ceil(EVOLUTION_SYSTEM_PROMPT.length / 3);
+        const calcEvoEst = () =>
+          Math.ceil(messages.reduce((s, m) => s + estimateTokens(m), 0) * Math.max(calibratedSamples > 0 ? calibratedRatio : 1.0, 1.35)) +
+          calibratedOverhead +
+          evoPromptEst;
+        let evoEst = calcEvoEst();
+        if (messages.length > 2 && evoEst + 2048 > contextWindow) {
+          for (let mi = 1; mi < messages.length - 1; mi += 1) {
+            const msg = messages[mi];
+            if (msg?.role === "toolResult" && Array.isArray(msg.content)) {
+              msg.content = msg.content.map((p: any) =>
+                p.type === "text" && typeof p.text === "string" && p.text.length > 1200
+                  ? { ...p, text: `${p.text.slice(0, 1200)}\n[trimmed for context budget]` }
+                  : p
+              );
+            }
+          }
+          evoEst = calcEvoEst();
+        }
+        const roundMaxTokens = evoMaxTokens ? Math.min(evoMaxTokens, Math.max(512, contextWindow - evoEst - 1024)) : undefined;
         const streamOpts: Record<string, unknown> = {
           signal: controller.signal,
-          ...(evoMaxTokens ? { maxTokens: evoMaxTokens } : {}),
+          ...(roundMaxTokens ? { maxTokens: roundMaxTokens } : {}),
           ...(useThinking ? { reasoning: parentThinking } : {}),
         };
         const reply: any = await Promise.race([ctx.modelRegistry.streamSimple(ctx.model, {
@@ -1577,6 +1653,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             const res = executeReadComponent(args as any, "evolution");
             text = res.text; isError = !res.ok;
           } else if (call.name === "python_inspect") {
+            recoverToolPublication();
+            const libDir = join(options.root, "work", "lib");
+            const beforeLib = new Map((existsSync(libDir) ? readdirSync(libDir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name)) : [])
+              .map(name => [name, readFileSync(join(libDir, name), "utf8")]));
+            writeFileSync(`${publicationJournal}.tmp`, JSON.stringify({ files: Object.fromEntries(beforeLib),
+              heads: Object.fromEntries(components.list("tool").map(item => [item.name, item.version])) }), "utf8");
+            renameSync(`${publicationJournal}.tmp`, publicationJournal);
             const outcome = await python.run(String(args.code ?? ""), controller.signal, {
               forbidActions: true, parentReadonlyTools: mutations.length > 0, singleToolWrite: true,
             });
@@ -1595,9 +1678,21 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             for (const p of pub.published) text += `\n[tool mounted: ${p.name} v${p.version} — callable directly as ${p.name}() or bound tool]`;
             for (const f of pub.failed) text += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
             isError = Boolean(outcome.error) || pub.failed.length > 0;
+            if (isError && existsSync(libDir)) {
+              for (const name of readdirSync(libDir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name))) {
+                const previous = beforeLib.get(name);
+                if (previous === undefined) unlinkSync(join(libDir, name));
+                else if (readFileSync(join(libDir, name), "utf8") !== previous) writeFileSync(join(libDir, name), previous, "utf8");
+              }
+            }
+            unlinkSync(publicationJournal);
           } else if (call.name === "finish_evolution") {
+            claimedDecision = String(args.decision ?? "");
             if (turnHadError && round < maxRounds) {
               text = "Blocked finish_evolution: an earlier tool call in this round failed. Fix the error or call finish_evolution(decision='no_change', ...) on the next round.";
+              isError = true;
+            } else if (args.decision === "evolved" && mutations.length === 0) {
+              text = "No component was changed. Apply a change or finish with decision='no_change'.";
               isError = true;
             } else {
               evoDecision = args.decision === "evolved" || mutations.length > 0 ? "evolved" : "no_change";
@@ -1637,7 +1732,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         boundaryReviewsThisLevel.push({ step: state.step, boundary, decision: evoDecision, exit_reason: exitReason, mutations: uniqueMutations, note });
       }
       log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: true, decision: evoDecision, exit_reason: exitReason,
-        mutations: uniqueMutations, note, rounds: roundsRun, dossier_chars: dossier.length, ms: Date.now() - started });
+        mutations: uniqueMutations, claimed_decision: claimedDecision, note, rounds: roundsRun, dossier_chars: dossier.length, ms: Date.now() - started });
       if (evoDecision === "incomplete" && !uniqueMutations.length) return undefined;
       const mutSummary = uniqueMutations.length ? ` [${uniqueMutations.join(", ")}]` : "";
       const samplePart = verifiedToolSample ? ` (verified output: ${verifiedToolSample})` : "";
@@ -1726,8 +1821,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         : cognitiveAudits < 3 && (consecutiveSurprises >= 2 || surpriseSteps.filter(step => state.step - step < 8).length >= 3) && state.step - lastCognitiveStep >= 6 ? "repeated_surprise"
         : cognitiveAudits < 3 && (state.unchecked_batches ?? 0) >= 4 && state.step - lastCognitiveStep >= 6 ? "method_drift"
         : null;
-      log("audit_gate", { level: state.level, step: state.step, cognitive: cognitiveAudits, total: correctiveAudits, last_cognitive_step: Number.isFinite(lastCognitiveStep) ? lastCognitiveStep : null, candidate: cognitiveBoundary });
       const canRun = state.state !== "WIN" && state.budget_left !== 0 && state.level_budget_left !== 0;
+      log("audit_gate", { level: state.level, step: state.step, cognitive: cognitiveAudits, total: correctiveAudits,
+        last_cognitive_step: Number.isFinite(lastCognitiveStep) ? lastCognitiveStep : null, candidate: cognitiveBoundary,
+        can_run: canRun, corrective_limit_reached: correctiveAudits >= 8, cognitive_limit_reached: cognitiveAudits >= 3,
+        stale_steps: state.stale_steps, unchecked_batches: state.unchecked_batches, state: state.state,
+        budget_left: state.budget_left ?? null, level_budget_left: state.level_budget_left ?? null });
       if (canRun) {
         if (batch?.level_changed) {
           evolutionReceipt = await runBoundaryEvolution("level_complete", finishedLevelSteps, state,
@@ -1771,13 +1870,16 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
 
   pi.on("context", (event, ctx) => {
     const window = (ctx.model?.contextWindow ?? 128000);
+    const scale = calibratedSamples > 0 ? calibratedRatio : 1.0;
+    const overhead = calibratedSamples > 0 ? calibratedOverhead : 0;
     const cap = Math.min(options.contextCap || window - 32000, window - options.outputTokens - 8192);
     const target = Math.min(options.contextTarget || Math.floor(cap / 2), cap);
     const recoveryReserve = recoveryText ? estimateTokens({ role: "user", content: [{ type: "text", text: recoveryText }] }) : 0;
-    const effectiveCap = Math.max(2048, cap - recoveryReserve);
+    const effectiveCap = Math.max(2048, Math.floor((cap - overhead) / scale) - recoveryReserve);
+    const effectiveTarget = Math.min(Math.floor(target / scale), effectiveCap);
     const archived = archive ? foldRecoverably(event.messages, options.foldAfter || 10, archive) : undefined;
     if (archived?.folded) log("archive_fold", { count: archived.folded });
-    const result = evict(archived?.messages ?? event.messages, effectiveCap, Math.min(target, effectiveCap), extraBlocks, evictAnchorIndex);
+    const result = evict(archived?.messages ?? event.messages, effectiveCap, effectiveTarget, extraBlocks, evictAnchorIndex);
     evictAnchorIndex = result.cut;
     extraBlocks = Math.max(0, extraBlocks - result.blocks);
     if (result.cut > 0) {
@@ -1795,17 +1897,20 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     rawEstimate = result.before;
     rollThreshold = (options.rollAfter ?? 0) > 0 ? (options.rollAfter ?? 0) * cap : 0;
     if (result.blocks) log("evict", { blocks: result.blocks, messages: event.messages.length - result.messages.length,
-      tokens_removed: result.removed, estimate_before: result.before, cap: effectiveCap, target });
+      tokens_removed: result.removed, estimate_before: result.before, cap: effectiveCap, target: effectiveTarget });
     const effectiveFoldAfter = options.harnessProfile && components && components.list("memory").length === 0 && options.foldAfter > 0
       ? Math.max(options.foldAfter, 10)
       : options.foldAfter;
     const folding = archive ? { messages: result.messages, folded: 0 } : fold(result.messages, effectiveFoldAfter);
-    const preObs = archive ? { messages: folding.messages, folded: 0 } : foldPreActionObservations(folding.messages);
+    const preObs = archive || effectiveFoldAfter <= 0
+      ? { messages: folding.messages, folded: 0 }
+      : foldPreActionObservations(folding.messages);
     if (folding.folded || preObs.folded) log("fold", { parts: folding.folded, pre_action_observe: preObs.folded, keep_blocks: effectiveFoldAfter });
     let messages = recoveryText ? [{ role: "user", content: [{ type: "text", text: recoveryText }] }, ...preObs.messages] : preObs.messages;
     const estimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    const calibratedEstimate = Math.ceil(estimate * scale) + overhead;
     const hardTarget = (ctx.model?.contextWindow ?? 128000) - options.compactMargin;
-    if (options.compactMargin > 0 && estimate > hardTarget) {
+    if (options.compactMargin > 0 && calibratedEstimate > hardTarget) {
       const state = python.state();
       const summary = ["Earlier history was compacted away. What you know so far:",
         options.harnessProfile ? "" : TAGS.filter(tag => memory[tag]).map(tag => `${tag}: ${memory[tag]}`).join("\n"),
@@ -1817,7 +1922,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         trail.length ? `Recent action results:\n${trail.join("\n")}` : ""].filter(Boolean).join("\n\n");
       const compacted = compactHistory(messages, summary);
       if (compacted) {
-        log("compact", { messages_before: messages.length, messages_after: compacted.length, estimate_before: estimate, target: hardTarget });
+        log("compact", { messages_before: messages.length, messages_after: compacted.length, estimate_before: estimate, calibrated_estimate: calibratedEstimate, target: hardTarget });
         messages = compacted;
       }
     }
@@ -1887,8 +1992,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       for (const item of active) if (visible.includes(`${item.kind.toUpperCase()} ${item.name} v${item.version}: ${item.body}`))
         log("live_injected", { component_kind: item.kind, layer: item.layer ?? null, scope: item.scope, status: item.status, name: item.name, version: item.version, decision: decision + 1 });
     }
+    latestContextEstimate = messages.reduce((sum, message) => sum + estimateTokens(message), 0);
     write("context.jsonl", { t: new Date().toISOString(), segment, decision: decision + 1,
-      total_estimate: messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+      total_estimate: latestContextEstimate,
       messages: messages.map(message => ({ role: message.role, type: message.customType,
         tokens: estimateTokens(message), image: Array.isArray(message.content) && message.content.some((part: any) => part.type === "image") })) });
     return { messages };
@@ -1896,6 +2002,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   pi.on("before_provider_request", (event, ctx) => {
     if (request) requests.finish(request);
     request = requests.start("parent", decision += 1);
+    const currentEst = latestContextEstimate;
+    requestContextEstimate = currentEst;
+    latestContextEstimate = undefined;
     const payload = event.payload as Record<string, any>;
     if (!options.outputTokens) return;
     const key = ctx.model?.api?.includes("responses") ? "max_output_tokens" : "max_completion_tokens" in payload ? "max_completion_tokens" : "max_tokens";
@@ -1908,6 +2017,12 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       limit = Math.min(bumped, ctx.model?.maxTokens ?? bumped);
       log("length_recovery", { attempt: consecutiveLengthStops, output_tokens: limit });
     }
+    if (ctx.model?.contextWindow && currentEst !== undefined) {
+      const estInput = Math.ceil(currentEst * (calibratedSamples > 0 ? calibratedRatio : 1.0)) + (calibratedSamples > 0 ? calibratedOverhead : 0);
+      if (estInput + limit > ctx.model.contextWindow - 1024) {
+        limit = Math.min(limit, Math.max(512, ctx.model.contextWindow - estInput - 1024));
+      }
+    }
     currentRequestOutputTokens = limit;
     payload[key] = limit;
     return payload;
@@ -1917,6 +2032,23 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   pi.on("message_end", event => {
     const message: any = event.message;
     if (message.role !== "assistant") return;
+    const usage = usageRecord(message);
+    if (request && requestContextEstimate !== undefined && usage.input !== null && usage.cache_read !== null && usage.cache_write !== null) {
+      const reported = usage.input + usage.cache_read + usage.cache_write;
+      if (requestContextEstimate > 0 && reported > 0) {
+        calibratedSamples += 1;
+        if (requestContextEstimate < 4000) {
+          calibratedOverhead = Math.max(calibratedOverhead, Math.min(12000, Math.max(0, reported - requestContextEstimate)));
+        } else {
+          const rawRatio = Math.max(1.0, Math.min(2.2, (reported - calibratedOverhead) / requestContextEstimate));
+          calibratedRatio = Math.max(rawRatio, calibratedRatio * 0.7 + rawRatio * 0.3);
+        }
+      }
+      write("context-calibration.jsonl", { t: new Date().toISOString(), request_id: request, decision,
+        message_estimate: requestContextEstimate, reported_input_with_cache: reported,
+        ratio: requestContextEstimate > 0 ? reported / requestContextEstimate : null,
+        scope: "estimate excludes system and tool schemas; reported input includes them and image accounting" });
+    }
     if (request) requests.finish(request, message);
     request = undefined;
     lastStop = message.stopReason;
@@ -1994,8 +2126,9 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     competition: env.ARC_LAYERED_COMPETITION === "1", skipNoops: env.ARC_LAYERED_SKIP_NOOPS === "1",
     expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",
     miniReview: { maxPerLevel: Number(env.ARC_LAYERED_MINI_REVIEWS_PER_LEVEL ?? 2) } });
+  const outputTokens = Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? (env.ARC_LAYERED_PROFILE === "qwen27b" ? 4096 : 12000));
   installLayered(pi, python, { scale: Number(env.ARC_LAYERED_SCALE ?? 10), gridLines: !local, reminder: env.ARC_LAYERED_REMINDER !== "0", root, maxActionsPerCall,
-    outputTokens: Number(env.ARC_LAYERED_OUTPUT_TOKENS ?? (env.ARC_LAYERED_PROFILE === "qwen27b" ? 4096 : 12000)),
+    outputTokens,
     contextCap: Number(env.ARC_LAYERED_CONTEXT_CAP ?? (harnessProfile ? 80000 : qwen27b ? 40960 : 131072)),
     contextTarget: Number(env.ARC_LAYERED_CONTEXT_TARGET ?? (harnessProfile ? 48000 : qwen27b ? 20480 : 57344)),
     diffImage: env.ARC_LAYERED_DIFF_IMAGE === "1" || (!qwen27b && env.ARC_LAYERED_DIFF_IMAGE !== "0"),
@@ -2007,7 +2140,7 @@ export default function arcLayeredExtension(pi: ExtensionAPI) {
     idleContinuations: Number(env.ARC_LAYERED_IDLE_CONTINUATIONS ?? 3),
     segmentSeconds: Number(env.ARC_LAYERED_SEGMENT_SECONDS ?? 1_000_000), segmentTokens: Number(env.ARC_LAYERED_SEGMENT_TOKENS ?? 100_000_000),
     stuckAfter, foldAfter: Number(env.ARC_LAYERED_FOLD_AFTER ?? 0),
-    compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? 0), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
+    compactMargin: Number(env.ARC_LAYERED_COMPACT_MARGIN ?? (qwen27b ? Math.max(outputTokens + 8192, 16384) : 0)), notebook: env.ARC_LAYERED_NOTEBOOK === "1" && !local,
     gradient: env.ARC_LAYERED_GRADIENT === "1", rollAfter: Number(env.ARC_LAYERED_ROLL_AFTER ?? 0),
     maxObserveCallsPerTurn: Number(env.ARC_LAYERED_MAX_OBSERVE_CALLS ?? (harnessProfile ? 4 : 2)),
     flags: { expect: env.ARC_LAYERED_EXPECT !== "0", graph: env.ARC_LAYERED_GRAPH === "1",

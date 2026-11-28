@@ -85,6 +85,18 @@ def _live_globals():
     return {k: ns[k] for k in _LIVE_KEYS if k in ns}
 
 
+def _branch_label(action):
+    if isinstance(action, dict):
+        name = str(action.get("action", "")).upper()
+        if name == "MOUSE" and type(action.get("x")) is int and type(action.get("y")) is int:
+            return "MOUSE(x=%s,y=%s)" % (action["x"], action["y"])
+        return name if name != "MOUSE" else None
+    if isinstance(action, str):
+        match = re.fullmatch(r"MOUSE\(x\s*=\s*(\d+)\s*,\s*y\s*=\s*(\d+)\)", action, re.I)
+        return "MOUSE(x=%s,y=%s)" % (int(match.group(1)), int(match.group(2))) if match else action
+    return None
+
+
 def _wrap_lib_module(lib_name, module):
     path = "work/lib/%s.py" % lib_name
     for attr, obj in list(module.__dict__.items()):
@@ -102,10 +114,15 @@ def _wrap_lib_module(lib_name, module):
                 _S["forbid_actions"] = True
                 try:
                     value = fn(*args, **kwargs)
-                    action = value.get("branch_action") if isinstance(value, dict) else None
-                    if isinstance(action, str) and action in _S["valid"]:
+                    candidates = value.get("recommended_actions") if isinstance(value, dict) else None
+                    if not isinstance(candidates, list) or not candidates:
+                        candidates = [value.get("branch_action")] if isinstance(value, dict) else []
+                    labels = [_branch_label(item) for item in candidates]
+                    action = labels[0] if labels else None
+                    if isinstance(action, str) and (action in _S["valid"] or
+                            ("MOUSE" in _S["valid"] and re.fullmatch(r"MOUSE\(x=\d+,y=\d+\)", action))):
                         frame = _H[-1]
-                        _S["branch_probe"] = (name, action, frame["raw"]["level"], frame["hash"], tuple(_S["valid"]))
+                        _S["branch_probe"] = (name, labels, 0, frame["raw"]["level"], frame["hash"], tuple(_S["valid"]))
                     return value
                 finally:
                     _S["forbid_actions"] = previous
@@ -645,14 +662,19 @@ def submit_actions(actions, stop_on=None, expect=None, reasoning=None, confirm_f
         fact = _observe(before, forecast, source)
         probe = _S.pop("branch_probe", None)
         if probe is not None:
-            name, suggested, level, board_hash, valid = probe
+            name, plan, plan_index, level, board_hash, valid = probe
+            suggested = plan[plan_index]
             comparable = (level == before["raw"]["level"] and board_hash == before["hash"]
                           and valid == prior_valid)
             fact["branch_handoff"] = {
                 "tool": name, "suggested": suggested, "actual": label, "comparable": comparable,
+                "plan_index": plan_index, "plan_length": len(plan),
+                "matched": comparable and suggested == label,
                 "aligned": comparable and suggested == label and expect is not None and not _is_vacuous_expect(expect),
                 "repeat_mismatch": comparable and suggested != label and bool(fact.get("same")),
             }
+            if comparable and suggested == label and plan_index + 1 < len(plan) and not level_changed:
+                _S["branch_probe"] = (name, plan, plan_index + 1, _H[-1]["raw"]["level"], _H[-1]["hash"], tuple(_S["valid"]))
         lines[-1] += _echo(fact)
         vacuous_expect = expect is not None and _is_vacuous_expect(expect)
         if expect is not None:
@@ -1078,12 +1100,27 @@ def tool(fn):
     return fn
 
 
+_TRIAL_SAFE_MODULES = frozenset({
+    "collections", "math", "re", "heapq", "itertools", "functools",
+    "statistics", "json", "copy", "operator", "bisect", "string",
+    "typing", "dataclasses", "enum", "fractions", "decimal",
+})
+
+
+def _trial_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or name.split(".")[0] not in _TRIAL_SAFE_MODULES:
+        raise ImportError("module %r is not allowed in trial_at" % (name,))
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
 def trial_at(k, fn):
     """Run a self-contained observation function at the prefix before transition k."""
     if not _S.get("forbid_actions"):
         raise PermissionError("trial_at is available during boundary evolution")
     if type(k) is not int or not 0 <= k < len(_H):
         raise IndexError("trial index outside recorded history")
+    if isinstance(fn, _CallableToolModule):
+        fn = fn.__dict__.get(fn._entry_name) or fn.__dict__.get("run")
     fn = getattr(fn, "__wrapped__", fn)
     if not isinstance(fn, types.FunctionType):
         raise TypeError("pass a function, for example trial_at(k, my_tool_fn)")
@@ -1092,14 +1129,27 @@ def trial_at(k, fn):
     history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H[:k + 1]]
     transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T[:k]]
     last = transitions[-1] if transitions else None
-    names = dict(__builtins__={name: getattr(builtins, name) for name in
-                              ("abs", "all", "any", "bool", "dict", "enumerate", "float", "int", "len",
-                               "list", "max", "min", "print", "range", "reversed", "set", "sorted", "str",
-                               "sum", "tuple", "zip")},
+    safe_builtins = {name: getattr(builtins, name) for name in
+                     ("abs", "all", "any", "bool", "chr", "dict", "divmod", "enumerate",
+                      "filter", "float", "frozenset", "getattr", "hasattr", "hash", "int",
+                      "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min",
+                      "next", "ord", "pow", "print", "range", "repr", "reversed", "round",
+                      "set", "slice", "sorted", "str", "sum", "tuple", "type", "zip",
+                      "Exception", "ValueError", "KeyError", "IndexError", "TypeError",
+                      "ZeroDivisionError", "StopIteration", "AttributeError", "RuntimeError")}
+    safe_builtins["__import__"] = _trial_import
+    names = dict(__builtins__=safe_builtins,
                  history=history, transitions=transitions, current_frame=history[-1].frame,
                  previous_frame=last.before_frame if last else None, last_transition=last,
                  last_action=last.action if last else None, last_action_result=last.result if last else {},
                  diff=diff, ascii=ascii, gameplay_changed=gameplay_changed, segment=segment)
+    for gname, gval in (getattr(fn, "__globals__", None) or {}).items():
+        if gname in names or gname == "__builtins__" or gname in _LIVE_KEYS:
+            continue
+        if isinstance(gval, types.ModuleType) and getattr(gval, "__name__", "").split(".")[0] in _TRIAL_SAFE_MODULES:
+            names[gname] = gval
+        elif (isinstance(gval, type) or callable(gval)) and (getattr(gval, "__module__", "") or "").split(".")[0] in _TRIAL_SAFE_MODULES:
+            names[gname] = gval
     def trial_frame_diff(a=None, b=None):
         a = a if a is not None else names["previous_frame"]
         return frame_diff(a, names["current_frame"] if b is None else b) if a is not None else {
@@ -1199,6 +1249,15 @@ def _cell(req):
             _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
     _sync_work(req, bool(req["new_history"]))
     _bind()
+    if req.get("validate_memory_checks") is not None:
+        previous_checks = _S.get("memory_checks", {})
+        try:
+            _S["memory_checks"] = {}
+            _sync_memory(req["validate_memory_checks"], force_rebacktest=True)
+            checked = {cid: dict(item["stats"]) for cid, item in _S["memory_checks"].items()}
+        finally:
+            _S["memory_checks"] = previous_checks
+        return {"text": "", "error": None, "images": [], "steps": [], "notes": [], "memory_checks": checked, "decorated_tools": []}
     if "memory_checks" in req:
         _sync_memory(req.get("memory_checks") or [], force_rebacktest=bool(req["reset_history"]))
     if req.get("sync_only"):
@@ -1215,27 +1274,40 @@ def _cell(req):
     _S["used_libs"] = set()
     decorated = []
     mounted_decorated = []
+    prior_names = {}
+    prior_modules = {}
+    staged = []
     try:
         tree = ast.parse(req["code"], "<python>")
         decorated = _extract_decorated_tools(tree, req["code"])
+        prior_names = {name: (name in ns, ns.get(name)) for name, _ in decorated}
+        prior_modules = {name: (name in sys.modules, sys.modules.get(name)) for name, _ in decorated}
         last = tree.body.pop() if tree.body and isinstance(tree.body[-1], ast.Expr) else None
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             exec(compile(tree, "<python>", "exec"), ns)
             for name, source in decorated:
-                _file("write", "work/lib/%s.py" % name, source)
                 mod = _wrap_lib_module(name, _load("work/lib/%s.py" % name, source))
-                _S.setdefault("lib", {})[name] = {
-                    "source": source, "module": mod, "error": None,
-                    "doc": _doc(mod.__doc__ or getattr(mod.__dict__.get(name), "__doc__", None)),
-                }
                 ns[name] = sys.modules[name] = mod
-                mounted_decorated.append(name)
-                _note("@tool mounted: %s" % name)
+                staged.append((name, source, mod))
             if last is not None:
                 value = eval(compile(ast.Expression(last.value), "<python>", "eval"), ns)
             if ns.get("result") is not None:
                 value = ns["result"]
+            for name, source, mod in staged:
+                _file("write", "work/lib/%s.py" % name, source)
+                _S.setdefault("lib", {})[name] = {
+                    "source": source, "module": mod, "error": None,
+                    "doc": _doc(mod.__doc__ or getattr(mod.__dict__.get(name), "__doc__", None)),
+                }
+                mounted_decorated.append(name)
+                _note("@tool prepared: %s" % name)
     except BaseException as problem:
+        for name, (existed, old) in prior_names.items():
+            if existed: ns[name] = old
+            else: ns.pop(name, None)
+        for name, (existed, old) in prior_modules.items():
+            if existed: sys.modules[name] = old
+            else: sys.modules.pop(name, None)
         frames = [f for f in traceback.extract_tb(problem.__traceback__) if f.filename == "<python>"]
         error = "".join(traceback.format_list(frames)) + "%s: %s" % (type(problem).__name__, problem)
     text = out.getvalue()

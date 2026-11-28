@@ -19,7 +19,7 @@ export type StepFact = { step: number; action: string; tries: number; same: bool
   new: boolean; level: number; changed: boolean; death: boolean; level_up: boolean;
   source: string | null; fatal: boolean; claims_failed: string[]; claims_held: string[];
   verify_failed?: string[]; changed_cells?: number; change_box?: [number, number, number, number] | null;
-  branch_handoff?: { tool: string; suggested: string; actual: string; comparable: boolean; aligned: boolean; repeat_mismatch: boolean };
+  branch_handoff?: { tool: string; suggested: string; actual: string; comparable: boolean; matched?: boolean; plan_index?: number; plan_length?: number; aligned: boolean; repeat_mismatch: boolean };
   changed_symbols?: number[];
   predict_off: number | null; same_death: boolean | number | null; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
@@ -234,6 +234,19 @@ export class LayeredPython {
     this.sent = this.history.length;
     this.memoryCheckStats = result.result.memory_checks ?? {};
     return this.memoryCheckStats;
+  }
+
+  async validateMemoryChecks(checks: Array<{ id: string; expr: string }>): Promise<MemoryCheckStats> {
+    if (!this.raw) throw new Error("Python kernel has no current state");
+    if (!this.kernel.alive) this.sent = 0;
+    const request = { sync_only: true, code: "", validate_memory_checks: checks, new_history: this.history.slice(this.sent),
+      reset_history: this.sent === 0, numeric_grid: this.config.numericGrid, valid_actions: this.state().valid_actions,
+      valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult, harness_state: this.harnessState(),
+      startup_source: this.startupSource(), model_source: this.scanModelSource(),
+      claims: this.scanClaims(), lib: this.scanLib(), transition_results: this.transitionResults };
+    const result = await this.kernel.run(request, async req => this.file(req));
+    this.sent = this.history.length;
+    return result.result.memory_checks ?? {};
   }
 
   private triage(steps: StepFact[]) {
