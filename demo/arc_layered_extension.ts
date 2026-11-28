@@ -44,7 +44,7 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   maxObserveCallsPerTurn?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
 type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMiniReview">
-  & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot" | "syncMemoryChecks" | "validateMemoryChecks" | "memoryCheckStats">>;
+  & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot" | "syncMemoryChecks" | "validateMemoryChecks" | "memoryCheckStats" | "runtimeTypeCard">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 type AttemptMetrics = { py_calls: number; py_errors: number; truncated: number; observe_limits: number; errors: string[] };
 const EDITABLE_SPACE = "Editable capability space: memory (with optional verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult).";
@@ -779,7 +779,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const usage = components?.list().map(item => {
         const key = `${auditLevel}/${item.kind}/${item.name}`;
         const stats = components.stats(item.kind, item.name)?.by_level[String(auditLevel)];
-        return `${item.kind}/${item.name}: shown_turns=${shownTurns.get(key)?.size ?? 0}, used_ok=${(stats?.ok ?? 0) + (stats?.reads ?? 0)}, action_aligned=${alignedUses.get(`${auditLevel}/${item.name}`) ?? 0}`;
+        const mm = repeatMismatches.get(`${auditLevel}/${item.name}`) ?? 0;
+        return `${item.kind}/${item.name}: shown_turns=${shownTurns.get(key)?.size ?? 0}, used_ok=${(stats?.ok ?? 0) + (stats?.reads ?? 0)}, action_aligned=${alignedUses.get(`${auditLevel}/${item.name}`) ?? 0}${mm ? `, repeat_mismatch=${mm}` : ""}`;
       });
       if (usage?.length) legibilityLines.push(`- Component use: ${usage.join("; ")}`);
       if (structuralDelta) legibilityLines.push(`- Cross-Level Structural Delta: ${structuralDelta}`);
@@ -1194,6 +1195,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             witness: python.memoryCheckStats?.[cid]?.witness ?? null });
         }
         if (fact.branch_handoff?.aligned) alignedUses.set(`${fact.level}/${fact.branch_handoff.tool}`, (alignedUses.get(`${fact.level}/${fact.branch_handoff.tool}`) ?? 0) + 1);
+        if (fact.branch_handoff?.repeat_mismatch) repeatMismatches.set(`${fact.level}/${fact.branch_handoff.tool}`, (repeatMismatches.get(`${fact.level}/${fact.branch_handoff.tool}`) ?? 0) + 1);
         if (fact.branch_handoff) log("branch_handoff", { ...fact.branch_handoff, level: fact.level, step: fact.step, upward_writeback: true });
       }
       for (const libName of outcome.usedLibs ?? []) {
@@ -1373,6 +1375,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   const surpriseSteps: number[] = [];
   let consecutiveSurprises = 0, lastPredictionStep = -1;
   const alignedUses = new Map<string, number>();
+  const repeatMismatches = new Map<string, number>();
   let structuralDelta = "";
   let healthCheckPending = existsSync(join(options.root, "transfer.json"));
   let previousLevelFrame: LayeredState | undefined;
@@ -1521,6 +1524,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     let exitReason: "finish_evolution" | "max_rounds_exhausted" | "text_stop" | "error" = "max_rounds_exhausted";
     let note = "";
     let roundsRun = 0;
+    let repairUsed = 0, effectiveMaxRounds = maxRounds;
     const parentThinking = typeof (pi as any).getThinkingLevel === "function" ? (pi as any).getThinkingLevel() : undefined;
     const requestedEvoTokens = process.env.ARC_LAYERED_EVOLUTION_OUTPUT_TOKENS
       ? Number(process.env.ARC_LAYERED_EVOLUTION_OUTPUT_TOKENS)
@@ -1563,7 +1567,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const activeText = [slotLine, ...(activeItems.length ? activeItems : ["none"])].join("\n\n").slice(0, activeBudget);
       const headerPart = `Boundary: ${boundary.toUpperCase()} | level ${state.level}/${state.win_levels}, step ${state.step}, state=${state.state}` +
         `${[state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "", state.budget_left !== undefined ? `run budget ${state.budget_left}` : ""].filter(Boolean).join(", ") ? `, ${[state.level_budget_left !== undefined && state.level_budget !== undefined ? `level budget ${state.level_budget_left}/${state.level_budget}` : "", state.budget_left !== undefined ? `run budget ${state.budget_left}` : ""].filter(Boolean).join(", ")}` : ""} | valid: ${(state.valid_actions ?? []).join(" ")}`;
-      const windowBudget = Math.max(2000, maxDossierChars - headerPart.length - auditText.length - activeText.length - 200);
+      const typeCardBlock = python.runtimeTypeCard ? `RUNTIME TYPE CARD (auto-introspected):\n${python.runtimeTypeCard}` : "";
+      const windowBudget = Math.max(2000, maxDossierChars - headerPart.length - auditText.length - activeText.length - typeCardBlock.length - 200);
       const traceSlice = decisionTrace.slice(lastEvoTraceIndex);
       const decisionWindowText = renderDecisionWindow(traceSlice, windowBudget);
       const levelCompleteRule = boundary === "level_complete"
@@ -1572,6 +1577,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const dossier = [
         headerPart,
         levelCompleteRule,
+        typeCardBlock,
         auditText,
         decisionWindowText ? `DECISIONS SINCE LAST REVIEW:\n${decisionWindowText}` : "",
         `Current Active Components (full bodies):\n${activeText}`,
@@ -1584,7 +1590,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const messages: any[] = [{ role: "user", content: userContent, timestamp: Date.now() }];
       let lengthRetries = 0;
       let done = false;
-      for (let round = 1; round <= maxRounds && !done; round += 1) {
+      for (let round = 1; round <= effectiveMaxRounds && !done; round += 1) {
         roundsRun = round;
         try { writeFileSync(join(store, "heartbeat"), String(Date.now())); } catch {}
         const roundStart = Date.now();
@@ -1688,7 +1694,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             unlinkSync(publicationJournal);
           } else if (call.name === "finish_evolution") {
             claimedDecision = String(args.decision ?? "");
-            if (turnHadError && round < maxRounds) {
+            if (turnHadError && (round < effectiveMaxRounds || (repairUsed < 1 && timeoutMs - (Date.now() - started) > 45000))) {
               text = "Blocked finish_evolution: an earlier tool call in this round failed. Fix the error or call finish_evolution(decision='no_change', ...) on the next round.";
               isError = true;
             } else if (args.decision === "evolved" && mutations.length === 0) {
@@ -1707,9 +1713,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           }
           if (isError) turnHadError = true;
           if (ci === calls.length - 1 && !done) {
-            const roundNote = round >= maxRounds - 1
-              ? `\n[evolution round ${round}/${maxRounds} — FINAL round next: apply at most 1 update and call finish_evolution]`
-              : `\n[evolution round ${round}/${maxRounds}]`;
+            const granted = turnHadError && repairUsed < 1 && round === effectiveMaxRounds && timeoutMs - (Date.now() - started) > 45000;
+            if (granted) { repairUsed += 1; effectiveMaxRounds += 1; }
+            const roundNote = granted
+              ? `\n[evolution round ${round}/${effectiveMaxRounds} — REPAIR round granted for tool error; fix & call finish_evolution]`
+              : round === effectiveMaxRounds - 1
+              ? `\n[evolution round ${round}/${effectiveMaxRounds} — FINAL round next: apply at most 1 update and call finish_evolution]`
+              : `\n[evolution round ${round}/${effectiveMaxRounds}]`;
             text += roundNote;
           }
           traceResults.push({ name: call.name, ok: !isError, preview: text.slice(0, 240) });
@@ -1717,7 +1727,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             content: [{ type: "text", text }], isError, timestamp: Date.now() });
         }
         write("evolution-trace.jsonl", {
-          t: new Date().toISOString(), boundary, level: auditLevel, step: state.step, round,
+          t: new Date().toISOString(), boundary, level: auditLevel, step: state.step, round, repair_rounds: repairUsed,
           ...(round === 1 ? { dossier_chars: dossier.length, trace_blocks: traceSlice.length } : {}),
           calls: calls.map((c: any) => ({ name: c.name, args_preview: JSON.stringify(c.arguments ?? {}).slice(0, 240) })),
           results: traceResults,
@@ -1732,7 +1742,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         boundaryReviewsThisLevel.push({ step: state.step, boundary, decision: evoDecision, exit_reason: exitReason, mutations: uniqueMutations, note });
       }
       log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: true, decision: evoDecision, exit_reason: exitReason,
-        mutations: uniqueMutations, claimed_decision: claimedDecision, note, rounds: roundsRun, dossier_chars: dossier.length, ms: Date.now() - started });
+        mutations: uniqueMutations, claimed_decision: claimedDecision, note, rounds: roundsRun, repair_rounds: repairUsed, dossier_chars: dossier.length, ms: Date.now() - started });
       if (evoDecision === "incomplete" && !uniqueMutations.length) return undefined;
       const mutSummary = uniqueMutations.length ? ` [${uniqueMutations.join(", ")}]` : "";
       const samplePart = verifiedToolSample ? ` (verified output: ${verifiedToolSample})` : "";
@@ -1741,7 +1751,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       lastEvoTraceIndex = decisionTrace.length;
       log("evolution_round", { boundary, level: auditLevel, step: state.step, ok: false,
         exit_reason: controller.signal.aborted ? "timeout" : "error", error: String(error).slice(0, 200),
-        mutations: [...new Set(mutations)], rounds: roundsRun, ms: Date.now() - started });
+        mutations: [...new Set(mutations)], rounds: roundsRun, repair_rounds: repairUsed, ms: Date.now() - started });
       return mutations.length ? `EVOLUTION (${boundary}): partial [${[...new Set(mutations)].join(", ")}]` : undefined;
     } finally {
       clearTimeout(timer);

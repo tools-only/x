@@ -3,6 +3,7 @@ import test from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { LayeredPython, type LayeredConfig } from "../demo/arc_layered_python.ts";
 
 class FakeBridge {
@@ -35,6 +36,61 @@ async function session(extra: Partial<LayeredConfig> = {}) {
   await python.init();
   return { bridge, python };
 }
+
+test("capability trial_at supports pure imports and rejects direct side effects", async () => {
+  const { python } = await session();
+  try {
+    const result = await python.run("from difflib import SequenceMatcher\ndef probe():\n    import textwrap\n    return textwrap.shorten('hello world', width=8), SequenceMatcher(None, 'a', 'a').ratio(), list(map(round, [1.2]))\nprint(trial_at(0, probe))", undefined, { forbidActions: true });
+    assert.equal(result.error, undefined);
+    assert.match(result.text, /1\.0/);
+    const denied = await python.run("def probe():\n    import os\ntrial_at(0, probe)", undefined, { forbidActions: true });
+    assert.match(denied.error ?? "", /ImportError/);
+    for (const module of ["sys", "subprocess", "socket", "pathlib", "io", "importlib"]) {
+      const blocked = await python.run(`def probe():\n    import ${module}\ntrial_at(0, probe)`, undefined, { forbidActions: true });
+      assert.match(blocked.error ?? "", /ImportError/, module);
+    }
+    for (const call of ["open('x', 'w')", "eval('1')", "exec('pass')"]) {
+      const blocked = await python.run(`def probe():\n    ${call}\ntrial_at(0, probe)`, undefined, { forbidActions: true });
+      assert.match(blocked.error ?? "", /NameError/, call);
+    }
+    await python.run('submit_actions(["DOWN"])');
+    const prefix = await python.run("def probe():\n    return len(transitions), len(history)\nprint(trial_at(0, probe))", undefined, { forbidActions: true });
+    assert.match(prefix.text, /\(0, 1\)/);
+  } finally { python.close(); }
+});
+
+test("runtimeTypeCard and introspective errors reach callers", async () => {
+  const { python } = await session();
+  try {
+    const result = await python.run("current_frame.grid.tobytes()");
+    assert.ok(result.typeCard && result.typeCard.length <= 600);
+    assert.match(result.typeCard, /list\[list\[int\]\]/);
+    assert.match(result.error ?? "", /hint: list has no 'tobytes'/);
+    const typo = await python.run("transistions");
+    assert.match(typo.error ?? "", /similar=.*transitions/);
+    await python.run('submit_actions(["DOWN"])');
+    const checked = await python.validateMemoryChecks([{ id: "bad", expr: "t.action.get('x')" }]);
+    assert.match(checked.bad.error ?? "", /hint: str has no 'get'/);
+  } finally { python.close(); }
+});
+
+test("runtimeTypeCard introspects non-ARC objects", () => {
+  const script = `from pathlib import Path
+source = Path('demo/arc_layered_prelude.py').read_text(encoding='utf8').split('\\n_req = input')[0]
+ns = {}
+exec(compile(source, 'prelude', 'exec'), ns)
+class FakeObs:
+    text = 'room'
+    inventory = ['key']
+    score = 1.5
+card = ns['_build_type_card']({'observation': FakeObs()})
+print(card)
+assert len(card) <= 600
+assert 'FakeObs' in card and 'inventory: list[str]' in card and 'score: float' in card
+`;
+  const result = spawnSync("python", ["-c", script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("Phase 1 trial sees the recorded prefix and parent cannot publish", async () => {
   const { python } = await session();

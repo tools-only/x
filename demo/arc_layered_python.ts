@@ -23,7 +23,7 @@ export type StepFact = { step: number; action: string; tries: number; same: bool
   changed_symbols?: number[];
   predict_off: number | null; same_death: boolean | number | null; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
-export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string;
+export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string; typeCard?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[]; decoratedTools?: string[];
   usedLibs?: string[] };
 export type MemoryCheckStats = Record<string, { support: number; counter: number; checked: number;
@@ -56,6 +56,7 @@ export class BridgeClient {
 }
 
 export class LayeredPython {
+  runtimeTypeCard = "";
   private kernel: PythonKernel;
   private history: Array<Record<string, unknown>> = [];
   private transitionResults: Array<Record<string, unknown>> = [];
@@ -232,6 +233,7 @@ export class LayeredPython {
       claims: this.scanClaims(), lib: this.scanLib(), transition_results: this.transitionResults };
     const result = await this.kernel.run(request, async req => this.file(req));
     this.sent = this.history.length;
+    if (result.result.type_card) this.runtimeTypeCard = result.result.type_card;
     this.memoryCheckStats = result.result.memory_checks ?? {};
     return this.memoryCheckStats;
   }
@@ -372,6 +374,7 @@ export class LayeredPython {
     let failedEditNote = "";
     try {
       run = await this.kernel.run(request, onRequest, signal);
+      if (run.result.type_card) this.runtimeTypeCard = run.result.type_card;
       error = run.result.error ?? undefined;
       text = run.result.text + (error ? (run.result.text ? "\n" : "") + error : "");
       images = Array.isArray(run.result.images) ? run.result.images : [];
@@ -460,7 +463,7 @@ export class LayeredPython {
     }
     if (notes.length) acted.notes = notes;
     if (steps.length) acted.steps = steps;
-    return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}),
+    return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}), typeCard: this.runtimeTypeCard,
       ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed }, notes, steps,
       decoratedTools: Array.isArray(run?.result?.decorated_tools) ? run.result.decorated_tools : [],
       usedLibs: Array.isArray(run?.result?.used_libs) ? run.result.used_libs : [] };

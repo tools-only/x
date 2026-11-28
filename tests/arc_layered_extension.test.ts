@@ -990,7 +990,7 @@ test("boundary evolution blocks same-turn finish_evolution after error and marks
       },
     };
     const parentMsg = textOf((await handlers.before_agent_start({}, ctx)).message.content);
-    assert.equal(roundCalls, 2);
+    assert.equal(roundCalls, 3);
     assert.match(sawDossier, /DECISIONS SINCE LAST REVIEW:/);
     assert.match(sawDossier, /Branch reuse \(last \d+\):/);
     assert.match(sawDossier, /Tooling gap:/);
@@ -1005,6 +1005,85 @@ test("boundary evolution blocks same-turn finish_evolution after error and marks
     if (origMax === undefined) delete process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS;
     else process.env.ARC_LAYERED_EVOLUTION_MAX_ROUNDS = origMax;
   }
+});
+
+test("repair round and runtimeTypeCard are delivered to boundary evolution", async () => {
+  const { handlers, game, python, rows, call } = setup({ harnessProfile: true, evolution: true, noImage: true });
+  python.runtimeTypeCard = "observation: FakeObs(score: float)";
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+  }] });
+  await call();
+  let calls = 0, dossier = "";
+  const ctx: any = { model: { id: "same", contextWindow: 102400 }, modelRegistry: { streamSimple: (_m: any, input: any) => {
+    calls++; dossier = input.messages[0].content[0].text;
+    const content = calls <= 3 ? [{ type: "toolCall", id: `bad${calls}`, name: "read_component", arguments: { kind: "memory", name: "missing" } }]
+      : [{ type: "toolCall", id: "add", name: "reflect_component", arguments: { op: "add", kind: "memory", name: "fixed_rule", body: "inspect before acting" } },
+         { type: "toolCall", id: "done", name: "finish_evolution", arguments: { decision: "evolved", note: "fixed" } }];
+    return { result: async () => ({ role: "assistant", stopReason: "toolUse", content, usage: {} }) };
+  } } };
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(calls, 4);
+  assert.match(dossier, /RUNTIME TYPE CARD \(auto-introspected\):\nobservation: FakeObs/);
+  assert.equal(rows("evolution_round")[0].repair_rounds, 1);
+  assert.equal(rows("evolution_round")[0].decision, "evolved");
+});
+
+test("repair round is withheld for short deadlines and error-free rounds", async () => {
+  const previous = process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS;
+  try {
+    for (const shortDeadline of [true, false]) {
+      if (shortDeadline) process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS = "20000";
+      else delete process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS;
+      const { handlers, game, python, rows, call } = setup({ harnessProfile: true, evolution: true, noImage: true });
+      await handlers.before_agent_start({}); handlers.turn_start();
+      game.state = "GAME_OVER"; game.step = 2;
+      python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+        step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+        source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+      }] });
+      await call();
+      let calls = 0;
+      const ctx: any = { model: { id: "same", contextWindow: 102400 }, modelRegistry: { streamSimple: () => {
+        calls++;
+        return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: {}, content: [{ type: "toolCall", id: `c${calls}`,
+          name: shortDeadline ? "read_component" : "python_inspect", arguments: shortDeadline ? { kind: "memory", name: "missing" } : { code: "1" } }] }) };
+      } } };
+      await handlers.before_agent_start({}, ctx);
+      assert.equal(calls, 3);
+      assert.equal(rows("evolution_round")[0].repair_rounds, 0);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS;
+    else process.env.ARC_LAYERED_EVOLUTION_TIMEOUT_MS = previous;
+  }
+});
+
+test("repeat_mismatch is included in the next evolution component use", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mismatch-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "tool", "route", "route helper");
+  const { handlers, game, python, call } = setup({ root, harnessProfile: true, evolution: true, noImage: true });
+  await handlers.before_agent_start({}); handlers.turn_start();
+  game.state = "GAME_OVER"; game.step = 2;
+  python.next = batch({ executed: 1, actions: ["DOWN"], game_over: true, steps: [{
+    step: 2, action: "DOWN", tries: 0, same: false, last_try: 0, new: false, level: 1, changed: true, death: true, level_up: false,
+    source: null, fatal: false, claims_failed: [], claims_held: [], predict_off: null, same_death: false,
+    branch_handoff: { tool: "route", suggested: "UP", actual: "DOWN", comparable: true, aligned: false, repeat_mismatch: true },
+  }] });
+  python.run = async () => ({ text: "ok", truncated: false, acted: python.next, steps: python.next.steps, images: [], metrics: {} });
+  await call();
+  let dossier = "";
+  const ctx: any = { model: { id: "same" }, modelRegistry: { streamSimple: (_m: any, input: any) => {
+    dossier = input.messages[0].content[0].text;
+    return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: {}, content: [{ type: "toolCall", id: "done", name: "finish_evolution", arguments: { decision: "no_change", note: "ok" } }] }) };
+  } } };
+  await handlers.before_agent_start({}, ctx);
+  assert.match(dossier, /tool\/route:.*repeat_mismatch=1/);
 });
 
 test("unscoped 100%-failing verify rule emits fallback note and keeps Memory active instead of [CONTRADICTED]", async () => {

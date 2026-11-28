@@ -1,4 +1,4 @@
-import ast, builtins, contextlib, importlib.util, io, json, os, re, sys, traceback, types
+import ast, builtins, contextlib, difflib, importlib.util, io, json, os, re, sys, traceback, types
 
 CHARS = "WwgGcBMPRbSYOrNp"
 MAX_IMAGES = 2
@@ -1038,6 +1038,53 @@ def _judge_claim(claim_name, claim, t):
     return None
 
 
+def _introspective_hint(exc, scope_names=(), max_chars=220):
+    if isinstance(exc, AttributeError) and getattr(exc, "name", None):
+        obj, name = getattr(exc, "obj", None), exc.name
+        attrs = [a for a in dir(obj) if not a.startswith("_")][:12]
+        return ("hint: %s has no %r; public attrs: [%s]" % (type(obj).__name__, name, ", ".join(attrs)))[:max_chars]
+    if isinstance(exc, NameError) and getattr(exc, "name", None):
+        names = [str(n) for n in scope_names if not str(n).startswith("_")]
+        return ("hint: similar=%s; available=%s" % (difflib.get_close_matches(exc.name, names, n=3, cutoff=0.5), names[:12]))[:max_chars]
+    return ""
+
+
+def _introspect_type(obj, depth=3, max_items=6):
+    kind = type(obj).__name__
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return kind
+    if isinstance(obj, (list, tuple, set)):
+        if not obj or depth <= 0:
+            return kind + "[?]"
+        first = obj[-1] if isinstance(obj, (list, tuple)) else next(iter(obj))
+        inner = _introspect_type(first, depth - 1, max_items)
+        shape = "%sx%s" % (len(obj), len(first)) if isinstance(first, (list, tuple)) else "len=%s" % len(obj)
+        return "%s[%s] (%s)" % (kind, inner.split(" (")[0], shape)
+    if isinstance(obj, dict):
+        if depth <= 0: return "dict"
+        return "dict{" + ", ".join("%s: %s" % (str(k)[:40], _introspect_type(v, depth - 1, max_items)) for k, v in list(obj.items())[:max_items]) + "}"
+    if depth <= 0: return kind
+    fields = []
+    for name in dir(obj):
+        if name.startswith("_"): continue
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+        if not callable(value): fields.append("%s: %s" % (name, _introspect_type(value, depth - 1, max_items)))
+        if len(fields) >= max_items: break
+    return kind + ("(" + ", ".join(fields) + ")" if fields else "")
+
+
+_INTROSPECT_KEYS = ("current_frame", "transitions", "history", "valid_actions", "last_action_result")
+
+
+def _build_type_card(bindings, max_chars=600):
+    keys = [key for key in _INTROSPECT_KEYS if key in bindings]
+    if not keys: keys = [key for key in bindings if not key.startswith("_")]
+    return "\n".join("%s: %s" % (key, _introspect_type(bindings[key])) for key in keys)[:max_chars]
+
+
 def _judge_memory(cid, entry, t):
     if entry.get("code") is None or entry.get("stats", {}).get("unscoped"):
         return None
@@ -1047,7 +1094,8 @@ def _judge_memory(cid, entry, t):
     try:
         verdict = eval(entry["code"], env)
     except BaseException as exc:
-        entry["stats"]["error"] = "%s: %s" % (type(exc).__name__, exc)
+        hint = _introspective_hint(exc, env)
+        entry["stats"]["error"] = "%s: %s%s" % (type(exc).__name__, exc, "\n" + hint if hint else "")
         return None
     if verdict is True or verdict is False:
         stats = entry["stats"]
@@ -1100,16 +1148,14 @@ def tool(fn):
     return fn
 
 
-_TRIAL_SAFE_MODULES = frozenset({
-    "collections", "math", "re", "heapq", "itertools", "functools",
-    "statistics", "json", "copy", "operator", "bisect", "string",
-    "typing", "dataclasses", "enum", "fractions", "decimal",
-})
+# This is a guard against accidental side effects, not a CPython security sandbox.
+_TRIAL_BLOCKED_BUILTINS = frozenset({"open", "exec", "eval", "compile", "input", "breakpoint", "__import__", "globals", "locals", "vars", "dir", "exit", "quit", "help"})
+_TRIAL_BLOCKED_MODULES = frozenset({"os", "sys", "subprocess", "shutil", "pathlib", "io", "socket", "http", "urllib", "ftplib", "smtplib", "ssl", "ctypes", "multiprocessing", "threading", "concurrent", "signal", "tempfile", "glob", "importlib", "builtins", "gc", "inspect", "traceback", "pickle", "marshal", "shelve", "sqlite3", "webbrowser", "venv", "ensurepip", "pip", "pty", "fcntl", "resource", "mmap", "posix", "nt", "_io", "_osx_support", "_winapi", "winreg", "msvcrt", "termios", "syslog", "curses", "linecache", "code", "codeop", "work", "lib", "__main__"})
 
 
 def _trial_import(name, globals=None, locals=None, fromlist=(), level=0):
-    if level != 0 or name.split(".")[0] not in _TRIAL_SAFE_MODULES:
-        raise ImportError("module %r is not allowed in trial_at" % (name,))
+    if level != 0 or not name or name.split(".")[0] in _TRIAL_BLOCKED_MODULES or any(item in _TRIAL_BLOCKED_MODULES for item in (fromlist or ())):
+        raise ImportError("module %r is blocked in read-only trial_at" % (name,))
     return builtins.__import__(name, globals, locals, fromlist, level)
 
 
@@ -1119,6 +1165,20 @@ def trial_at(k, fn):
         raise PermissionError("trial_at is available during boundary evolution")
     if type(k) is not int or not 0 <= k < len(_H):
         raise IndexError("trial index outside recorded history")
+    return _run_readonly_trial(fn, _build_trial_globals(k))
+
+
+def _build_trial_globals(k):
+    history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H[:k + 1]]
+    transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T[:k]]
+    last = transitions[-1] if transitions else None
+    return dict(history=history, transitions=transitions, current_frame=history[-1].frame,
+                previous_frame=last.before_frame if last else None, last_transition=last,
+                last_action=last.action if last else None, last_action_result=last.result if last else {},
+                diff=diff, ascii=ascii, gameplay_changed=gameplay_changed, segment=segment)
+
+
+def _run_readonly_trial(fn, prefix_globals):
     if isinstance(fn, _CallableToolModule):
         fn = fn.__dict__.get(fn._entry_name) or fn.__dict__.get("run")
     fn = getattr(fn, "__wrapped__", fn)
@@ -1126,35 +1186,22 @@ def trial_at(k, fn):
         raise TypeError("pass a function, for example trial_at(k, my_tool_fn)")
     if fn.__closure__ or fn.__defaults__ or fn.__kwdefaults__:
         raise ValueError("trial function must not capture live values")
-    history = [HistoryEntry(e["action"], _frame(e), e["changed"], e["hash"]) for e in _H[:k + 1]]
-    transitions = [Transition(t["action"], _frame(t["before"]), _frame(t["after"]), dict(t["result"])) for t in _T[:k]]
-    last = transitions[-1] if transitions else None
-    safe_builtins = {name: getattr(builtins, name) for name in
-                     ("abs", "all", "any", "bool", "chr", "dict", "divmod", "enumerate",
-                      "filter", "float", "frozenset", "getattr", "hasattr", "hash", "int",
-                      "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min",
-                      "next", "ord", "pow", "print", "range", "repr", "reversed", "round",
-                      "set", "slice", "sorted", "str", "sum", "tuple", "type", "zip",
-                      "Exception", "ValueError", "KeyError", "IndexError", "TypeError",
-                      "ZeroDivisionError", "StopIteration", "AttributeError", "RuntimeError")}
+    safe_builtins = {name: value for name, value in vars(builtins).items() if not name.startswith("_") and name not in _TRIAL_BLOCKED_BUILTINS}
     safe_builtins["__import__"] = _trial_import
-    names = dict(__builtins__=safe_builtins,
-                 history=history, transitions=transitions, current_frame=history[-1].frame,
-                 previous_frame=last.before_frame if last else None, last_transition=last,
-                 last_action=last.action if last else None, last_action_result=last.result if last else {},
-                 diff=diff, ascii=ascii, gameplay_changed=gameplay_changed, segment=segment)
+    names = dict(__builtins__=safe_builtins, **prefix_globals)
     for gname, gval in (getattr(fn, "__globals__", None) or {}).items():
         if gname in names or gname == "__builtins__" or gname in _LIVE_KEYS:
             continue
-        if isinstance(gval, types.ModuleType) and getattr(gval, "__name__", "").split(".")[0] in _TRIAL_SAFE_MODULES:
+        if isinstance(gval, types.ModuleType) and getattr(gval, "__name__", "").split(".")[0] not in _TRIAL_BLOCKED_MODULES and not isinstance(gval, _CallableToolModule):
             names[gname] = gval
-        elif (isinstance(gval, type) or callable(gval)) and (getattr(gval, "__module__", "") or "").split(".")[0] in _TRIAL_SAFE_MODULES:
+        elif (isinstance(gval, type) or callable(gval)) and (module := (getattr(gval, "__module__", "") or "").split(".")[0]) and module not in _TRIAL_BLOCKED_MODULES:
             names[gname] = gval
     def trial_frame_diff(a=None, b=None):
         a = a if a is not None else names["previous_frame"]
         return frame_diff(a, names["current_frame"] if b is None else b) if a is not None else {
             "changed_cells": 0, "note": "no previous frame"}
-    names["frame_diff"] = trial_frame_diff
+    if "current_frame" in names and "previous_frame" in names:
+        names["frame_diff"] = trial_frame_diff
     return type(fn)(fn.__code__, names)()
 
 
@@ -1257,14 +1304,14 @@ def _cell(req):
             checked = {cid: dict(item["stats"]) for cid, item in _S["memory_checks"].items()}
         finally:
             _S["memory_checks"] = previous_checks
-        return {"text": "", "error": None, "images": [], "steps": [], "notes": [], "memory_checks": checked, "decorated_tools": []}
+        return {"text": "", "error": None, "images": [], "steps": [], "notes": [], "memory_checks": checked, "decorated_tools": [], "type_card": _build_type_card(ns)}
     if "memory_checks" in req:
         _sync_memory(req.get("memory_checks") or [], force_rebacktest=bool(req["reset_history"]))
     if req.get("sync_only"):
         return {"text": "", "error": None, "images": [], "last_result": dict(_S["last_result"]),
                 "steps": [], "notes": _S.pop("notes", []),
                 "memory_checks": {cid: dict(item["stats"]) for cid, item in (_S.get("memory_checks") or {}).items()},
-                "decorated_tools": []}
+                "decorated_tools": [], "type_card": _build_type_card(ns)}
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
@@ -1310,6 +1357,8 @@ def _cell(req):
             else: sys.modules.pop(name, None)
         frames = [f for f in traceback.extract_tb(problem.__traceback__) if f.filename == "<python>"]
         error = "".join(traceback.format_list(frames)) + "%s: %s" % (type(problem).__name__, problem)
+        hint = _introspective_hint(problem, ns)
+        if hint: error += "\n" + hint
     text = out.getvalue()
     if value is not None:
         shown = value if isinstance(value, str) else repr(value)
@@ -1317,7 +1366,7 @@ def _cell(req):
     model, libs = _S["model"], _S["lib"]
     claim_errors = {name: c["error"] for name, c in (_S.get("claims") or {}).items() if c.get("error")}
     text = text + ("\n" + "\n".join(_S.get("notes") or []) if _S.get("notes") else "")
-    return {"text": text[:200000], "error": error, "images": _S["images"][:MAX_IMAGES],
+    return {"text": text[:200000], "error": error, "type_card": _build_type_card(ns), "images": _S["images"][:MAX_IMAGES],
             "last_result": dict(_S["last_result"]), "steps": _S.pop("steps", []), "notes": _S.pop("notes", []),
             "memory_checks": {cid: dict(item["stats"]) for cid, item in (_S.get("memory_checks") or {}).items()},
             "decorated_tools": mounted_decorated,
