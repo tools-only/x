@@ -37,6 +37,21 @@ async function session(extra: Partial<LayeredConfig> = {}) {
   return { bridge, python };
 }
 
+test("environment failure is surfaced after a partial action batch", async () => {
+  const { python, bridge } = await session();
+  let calls = 0;
+  const act = bridge.act.bind(bridge);
+  bridge.act = async payload => {
+    if (++calls === 2) throw new Error("EnvironmentReturnedNoFrame");
+    return act(payload);
+  };
+  try {
+    const result = await python.run('submit_actions(["UP", "DOWN"])');
+    assert.equal(result.acted?.executed, 1);
+    assert.match(result.environmentError ?? "", /EnvironmentReturnedNoFrame/);
+  } finally { python.close(); }
+});
+
 test("capability trial_at supports pure imports and rejects direct side effects", async () => {
   const { python } = await session();
   try {

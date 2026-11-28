@@ -1189,6 +1189,11 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       } else if (!freeToolBuild) {
         observeCallsThisTurn += 1;
       }
+      if (outcome.environmentError) {
+        endReason = "environment_error";
+        terminate = true;
+        log("environment_error", { error: outcome.environmentError, level: state.level, step: state.step });
+      }
       let libCallsInRun = 0;
       const creditedActionLibs = new Set<string>();
       for (const fact of outcome.steps ?? []) {
@@ -1285,7 +1290,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       for (const f of pub.failed)
         resultText += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
       const observeLimit = options.maxObserveCallsPerTurn ?? (options.harnessProfile ? 4 : 2);
-      if (!batch && !freeToolBuild && observeLimit > 0) {
+      if (!batch && !freeToolBuild && !outcome.environmentError && observeLimit > 0) {
         if (observeCallsThisTurn < observeLimit) {
           resultText += `\n[observe ${observeCallsThisTurn}/${observeLimit}: no action taken; bundle remaining checks into ONE script and act next]`;
         } else {
@@ -1301,7 +1306,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const parts: Content = [{ type: "text", text: resultText }];
       for (const image of options.noImage ? [] : outcome.images) parts.push({ type: "image", mimeType: "image/png",
         data: framePng(image.grid, image.scale ?? options.scale, options.gridLines).toString("base64") });
-      return { content: parts, details: { acted: batch, error: outcome.error ?? null, ...(observeLimitHitThisTurn ? { observe_limit: true } : {}) },
+      return { content: parts, details: { acted: batch, error: outcome.error ?? null, ...(outcome.environmentError ? { environment_error: outcome.environmentError } : {}), ...(observeLimitHitThisTurn ? { observe_limit: true } : {}) },
         ...(terminate ? { terminate: true } : {}) };
     } };
   pi.registerTool(pythonTool);

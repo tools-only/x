@@ -23,7 +23,7 @@ export type StepFact = { step: number; action: string; tries: number; same: bool
   changed_symbols?: number[];
   predict_off: number | null; same_death: boolean | number | null; region_tries?: number; ineffective_regions?: number };
 export type ShownImage = { grid: number[][]; scale?: number | null };
-export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string; typeCard?: string;
+export type PythonOutcome = { text: string; truncated: boolean; acted: ActionBatch | null; images: ShownImage[]; error?: string; typeCard?: string; environmentError?: string;
   kernelRestarted?: boolean; metrics: Record<string, number>; notes?: string[]; steps?: StepFact[]; decoratedTools?: string[];
   usedLibs?: string[] };
 export type MemoryCheckStats = Record<string, { support: number; counter: number; checked: number;
@@ -48,7 +48,7 @@ export class BridgeClient {
     const response = await fetch(this.baseUrl + path, body === undefined ? undefined : { method: "POST",
       headers: { "Content-Type": "application/json", "X-ARC-Action-Token": this.token }, body: JSON.stringify(body) });
     const data: any = await response.json();
-    if (!response.ok) throw new Error(String(data.error ?? response.status));
+    if (!response.ok) throw Object.assign(new Error(String(data.error ?? response.status)), { status: response.status });
     return data;
   }
   state() { return this.call("/state"); }
@@ -270,8 +270,7 @@ export class LayeredPython {
     if (repeated) { this.miniReviewsThisLevel += 1; this.miniReview = `same state + action: ${repeated.action} at step ${repeated.step}`; }
   }
 
-  private async act(request: KernelRequest, batch: ActionBatch & { halt?: string }) {
-    writeFileSync(this.heartbeat, String(Date.now()));
+  private async act(request: KernelRequest, batch: ActionBatch & { halt?: string; environmentError?: string }) {
     const call = request.call as { action: string; x?: number; y?: number; reasoning?: string };
     const name = call.action, raw = RAW[name] ?? name;
     if (request.expect != null) this.batchHadExpect = true;
@@ -286,7 +285,14 @@ export class LayeredPython {
     if (raw === "ACTION6") Object.assign(payload, { x: call.x, y: call.y });
     if (call.reasoning) payload.reasoning = call.reasoning;
     let after: any;
-    try { after = await this.bridge.act(payload as any); } catch (error) { return refuse(`refused: ${(error as Error).message}`); }
+    try { after = await this.bridge.act(payload as any); } catch (error) {
+      const status = (error as Error & { status?: number }).status;
+      if (status !== undefined && status < 500) return refuse(`refused: ${(error as Error).message}`);
+      batch.environmentError = String((error as Error).message ?? error);
+      batch.halt = "environment_error";
+      return refuse(`refused: ${batch.environmentError}`);
+    }
+    writeFileSync(this.heartbeat, String(Date.now()));
     const before = this.raw;
     this.raw = after;
     this.lastAction = raw;
@@ -348,7 +354,7 @@ export class LayeredPython {
   async run(code: string, signal?: AbortSignal, opts?: { forbidActions?: boolean; parentReadonlyTools?: boolean; singleToolWrite?: boolean }): Promise<PythonOutcome> {
     const forbidActions = Boolean(opts?.forbidActions);
     if (!this.kernel.alive) this.sent = 0;
-    const batch: ActionBatch & { halt?: string } = { executed: 0, actions: [], lines: [], level_changed: false, game_over: false, win: false };
+    const batch: ActionBatch & { halt?: string; environmentError?: string } = { executed: 0, actions: [], lines: [], level_changed: false, game_over: false, win: false };
     let attempted = false;
     if (!forbidActions) this.calls += 1;
     this.batchHadExpect = false;
@@ -471,7 +477,7 @@ export class LayeredPython {
     }
     if (notes.length) acted.notes = notes;
     if (steps.length) acted.steps = steps;
-    return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}), typeCard: this.runtimeTypeCard,
+    return { text, truncated, acted: batch.executed ? acted : null, images, ...(error ? { error } : {}), ...(batch.environmentError ? { environmentError: batch.environmentError } : {}), typeCard: this.runtimeTypeCard,
       ...(kernelRestarted ? { kernelRestarted } : {}), metrics: { ...metrics, actions: batch.executed }, notes, steps,
       decoratedTools: Array.isArray(run?.result?.decorated_tools) ? run.result.decorated_tools : [],
       usedLibs: Array.isArray(run?.result?.used_libs) ? run.result.used_libs : [] };

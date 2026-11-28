@@ -33,6 +33,18 @@ const say = (text: string, extra = {}) => ({ type: "message_end", message: { rol
 const settle = { type: "agent_before_settle", outcome: "completed", entries: [], continue: false };
 const textOf = (content: any[]) => content.filter(part => part.type === "text").map(part => part.text).join("\n");
 
+test("environment failure terminates the segment without another nudge", async () => {
+  const { handlers, python, call, rows } = setup({ harnessProfile: true });
+  await handlers.before_agent_start({});
+  handlers.turn_start();
+  python.run = async () => ({ text: "environment failed", truncated: false, acted: null, images: [], metrics: {}, environmentError: "EnvironmentReturnedNoFrame" });
+  const result = await call();
+  assert.equal(result.terminate, true);
+  assert.equal(handlers.agent_before_settle({ ...settle }), undefined);
+  handlers.agent_settled({});
+  assert.equal(rows("segment_end")[0].reason, "environment_error");
+});
+
 test("Phase 1 parent gets only a bounded active panel and contradicted advice stays folded after eviction", async () => {
   const root = mkdtempSync(join(tmpdir(), "phase-one-context-"));
   const store = new LayeredComponents(join(root, "harness", "components"));

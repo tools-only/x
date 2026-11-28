@@ -244,7 +244,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     deadline = float("inf") if benchmark_only else started + wall_seconds
     if benchmark_only:
         max_actions = max_reported_tokens = idle_timeout = None
-        segment_seconds = segment_tokens = idle_continuations = float("inf")
+        segment_seconds = segment_tokens = float("inf")
     summary: dict[str, Any] = {"format": "arc-layered-run-v1", "game": game, "config": config, "profile": profile, "provider": pi_provider,
                                "model": pi_model, "thinking": thinking or "provider-default", "fork": fork, "stop_reason": None,
                                "segments": 0, "segment_reasons": [], "provider_errors": 0}
@@ -285,7 +285,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                        "ARC_LAYERED_COUNT_CACHE": str(int(count_cache)), "ARC_LAYERED_OUTPUT_TOKENS": str(max_output_tokens),
                        "ARC_LAYERED_SEGMENT_SECONDS": "Infinity" if benchmark_only else str(segment_seconds),
                        "ARC_LAYERED_SEGMENT_TOKENS": "Infinity" if benchmark_only else str(segment_tokens),
-                       "ARC_LAYERED_IDLE_CONTINUATIONS": "Infinity" if benchmark_only else str(idle_continuations),
+                       "ARC_LAYERED_IDLE_CONTINUATIONS": str(idle_continuations),
                        **(extension_env or {})})
         command = [node, cli, "--mode", "rpc", "--provider", pi_provider, "--model", pi_model, "--session", str(root / "session.jsonl"),
                    "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
@@ -299,7 +299,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "max_actions": max_actions, "max_reported_tokens": max_reported_tokens, "token_cap_measure": "total_with_cache" if count_cache else "uncached_input+output",
             "wall_seconds": None if benchmark_only else wall_seconds, "segment_seconds": None if benchmark_only else segment_seconds,
             "segment_tokens": None if benchmark_only else segment_tokens, "benchmark_only": benchmark_only, "transfer_from": str(transfer_from.resolve()) if transfer_from else None,
-            "idle_continuations": None if benchmark_only else idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
+            "idle_continuations": idle_continuations, "max_output_tokens": max_output_tokens, "extension_env": extension_env or {},
             "consult_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_CONSULT") != "0",
             "evolution_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_EVOLUTION") != "0",
             "board_inventory_enabled": profile == "qwen27b-harness" and pi_env.get("ARC_LAYERED_BOARD_INVENTORY") != "0",
@@ -378,6 +378,19 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             end = ([row for row in all_layered if row.get("kind") == "segment_end"] or [{}])[-1]
             reason = end.get("reason")
             summary["segment_reasons"].append(reason)
+            if reason == "environment_error":
+                summary["stop_reason"] = "environment_error"
+                summary["environment_error"] = next((row.get("error") for row in reversed(segment_rows) if row.get("kind") == "environment_error"), None)
+                break
+            from .arc_layered_support import _get_json
+            try:
+                health = _get_json(bridge_url + "/health")
+            except Exception:
+                health = {}
+            if health.get("status") in ("uncertain", "closed"):
+                summary["stop_reason"] = "environment_error"
+                summary["environment_error"] = health
+                break
             state = _bridge_state(bridge_url) or state
             if summary["segments"] in snapshot_after_segments:
                 from .arc_layered_experiments import snapshot_prefix
@@ -426,7 +439,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             else:
                 consecutive_length = 0
                 idle_segments += 1
-            if not benchmark_only and idle_segments >= MAX_IDLE_SEGMENTS:
+            if idle_segments >= MAX_IDLE_SEGMENTS:
                 summary["stop_reason"] = "idle"
                 break
             prompt = ("Your previous reply hit max output tokens before acting. Call python concisely now."
