@@ -1351,6 +1351,41 @@ def _model_summary():
     }
 
 
+def _normalize_completion(value):
+    if isinstance(value, dict):
+        result = {"done": bool(value.get("done", False))}
+        if "progress" in value and isinstance(value["progress"], (int, float)) and not isinstance(value["progress"], bool):
+            result["progress"] = value["progress"]
+        if value.get("detail") is not None:
+            result["detail"] = str(value["detail"])[:400]
+        return result
+    if isinstance(value, bool):
+        return {"done": value}
+    if value is None:
+        return {"done": False}
+    return {"done": False, "detail": ("unexpected completion_check return: %r" % (value,))[:400]}
+
+
+def _run_completion_check(name):
+    entry = (_S.get("lib") or {}).get(str(name))
+    if entry is None:
+        return {"done": False, "error": "completion_check tool %r not found" % (name,)}
+    if entry.get("error"):
+        return {"done": False, "error": entry["error"]}
+    mod = entry.get("module")
+    if not callable(mod):
+        return {"done": False, "error": "completion_check tool %r is not callable" % (name,)}
+    previous = _S.get("forbid_actions")
+    _S["forbid_actions"] = True
+    try:
+        value = mod()
+    except BaseException as exc:
+        return {"done": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+    finally:
+        _S["forbid_actions"] = previous
+    return _normalize_completion(value)
+
+
 def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
@@ -1389,6 +1424,10 @@ def _cell(req):
             _S["startup_error"] = "[startup] work/startup.py failed: %s: %s" % (type(exc).__name__, exc)
     _sync_work(req, bool(req["new_history"]))
     _bind()
+    if req.get("completion_check"):
+        return {"text": "", "error": None, "images": [], "steps": [], "notes": [],
+                "decorated_tools": [], "type_card": _build_type_card(ns),
+                "completion_check": _run_completion_check(req["completion_check"])}
     if req.get("validate_memory_checks") is not None:
         previous_checks = _S.get("memory_checks", {})
         try:

@@ -247,7 +247,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
         segment_seconds = segment_tokens = float("inf")
     summary: dict[str, Any] = {"format": "arc-layered-run-v1", "game": game, "config": config, "profile": profile, "provider": pi_provider,
                                "model": pi_model, "thinking": thinking or "provider-default", "fork": fork, "stop_reason": None,
-                               "segments": 0, "segment_reasons": [], "provider_errors": 0}
+                               "segments": 0, "segment_reasons": [], "provider_errors": 0,
+                               "loop_passes": 0, "loop_brakes": 0}
     bridge, bridge_stderr, launch_id, action_token = _start_bridge(
         root, arc_root=arc_root, game=game, max_actions=max_actions, env=env, bridge_python=bridge_python,
         bridge_module_paths=bridge_module_paths, **({"replay_from": root / "fork-replay.jsonl"} if fork else {}))
@@ -442,8 +443,18 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             if idle_segments >= MAX_IDLE_SEGMENTS:
                 summary["stop_reason"] = "idle"
                 break
+            latest_pass = next((r for r in reversed(segment_rows) if r.get("kind") == "pass_result"), None)
+            continue_text = "Continue playing."
+            if latest_pass is not None:
+                executed = latest_pass.get("executed", 0)
+                new_states = latest_pass.get("new_states", 0)
+                failures = latest_pass.get("failures", 0)
+                completed = latest_pass.get("completed", False)
+                status = "completed" if completed else "continuing"
+                continue_text = (f"LOOP PASS {latest_pass.get('pass', 0)}/{latest_pass.get('max_iterations', 3)} "
+                                 f"| executed={executed}, new_states={new_states}, failures={failures} | {status}.")
             prompt = ("Your previous reply hit max output tokens before acting. Call python concisely now."
-                      if activity == "length" else "Continue playing.")
+                      if activity == "length" else continue_text)
             if not benchmark_only and activity != "length" and idle_segments == MAX_IDLE_SEGMENTS - 1:
                 prompt += "\nThis is the last idle segment before the run stops. Take an environment action if one is warranted."
             if parse_errors:
@@ -509,6 +520,8 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
 
     evo_rounds = [r for r in rows if r.get("kind") == "evolution_round"]
     branch_handoffs = [r for r in rows if r.get("kind") == "branch_handoff"]
+    loop_passes = sum(1 for r in rows if r.get("kind") == "pass_result")
+    loop_brakes = sum(1 for r in rows if r.get("kind") == "loop_check" and r.get("decision") == "brake")
     summary.update({
         "actions": budget.get("total_used"), "levels_completed": state.get("levels_completed"), "win_levels": state.get("win_levels"),
         "final_state": state.get("state"), "wall_seconds": round(time.monotonic() - started, 1),
@@ -519,6 +532,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
                    "errors": sum(1 for row in calls if row["error"]), "kernel_restarts": sum(1 for row in calls if row["kernel_restarted"]),
                    "stop_reasons": dict(Counter(row["stop_reason"] for row in calls if row["stop_reason"])),
                    "mean_ms": round(sum(row["ms"] for row in calls) / len(calls)) if calls else None},
+        "loop": {"passes": loop_passes, "brakes": loop_brakes},
         "components": {
             "changes": sum(1 for r in rows if r.get("kind") == "component_change"),
             "reads": sum(1 for r in rows if r.get("kind") == "read_component"),

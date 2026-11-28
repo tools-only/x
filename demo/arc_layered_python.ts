@@ -57,6 +57,7 @@ export class BridgeClient {
 
 export class LayeredPython {
   runtimeTypeCard = "";
+  private maxActionsPerCall: number;
   private kernel: PythonKernel;
   private history: Array<Record<string, unknown>> = [];
   private transitionResults: Array<Record<string, unknown>> = [];
@@ -112,6 +113,7 @@ export class LayeredPython {
     this.kernel = new PythonKernel({ format: TASK_PYTHON_FORMAT, limits, effective_limits: taskPythonLimits(limits),
       runtime: taskPythonRuntimeIdentity(), source: readFileSync(new URL("./arc_layered_prelude.py", import.meta.url), "utf8") });
     this.workDir = resolve(config.workDir);
+    this.maxActionsPerCall = config.maxActionsPerCall;
     mkdirSync(this.workDir, { recursive: true });
     this.heartbeat = resolve(this.workDir, "..", "harness", "heartbeat");
     mkdirSync(dirname(this.heartbeat), { recursive: true });
@@ -133,6 +135,11 @@ export class LayeredPython {
     this.levelStartBudgetLeft = this.state().budget_left;
     this.kernel.prewarm();
     return this.state();
+  }
+
+  /** Clamp the per-call action batch limit for the current pass (never exceeds the global hard cap). */
+  setMaxActionsPerCall(limit: number) {
+    this.maxActionsPerCall = Math.max(1, Math.min(this.config.maxActionsPerCall, Math.floor(limit)));
   }
 
   state(): LayeredState {
@@ -261,6 +268,20 @@ export class LayeredPython {
     return result.result.memory_checks ?? {};
   }
 
+  async runCompletionCheck(name: string): Promise<{ done: boolean; progress?: number; detail?: string; error?: string }> {
+    if (!this.raw) return { done: false, error: "Python kernel has no current state" };
+    if (!this.kernel.alive) this.sent = 0;
+    const request = { sync_only: true, code: "", completion_check: name, new_history: this.history.slice(this.sent),
+      reset_history: this.sent === 0, numeric_grid: this.config.numericGrid, valid_actions: this.state().valid_actions,
+      valid_actions_raw: this.valid(this.raw), last_action_result: this.lastResult, harness_state: this.harnessState(),
+      startup_source: this.startupSource(), model_source: this.scanModelSource(),
+      claims: this.scanClaims(), lib: this.scanLib(), transition_results: this.transitionResults };
+    const result = await this.kernel.run(request, async req => this.file(req));
+    this.sent = this.history.length;
+    if (result.result.type_card) this.runtimeTypeCard = result.result.type_card;
+    return result.result.completion_check ?? { done: false, error: "completion_check unavailable" };
+  }
+
   private triage(steps: StepFact[]) {
     const rules = this.config.miniReview ?? {};
     const maxPerLevel = rules.maxPerLevel ?? 2, repeatTries = rules.repeatTries ?? 3;
@@ -277,7 +298,7 @@ export class LayeredPython {
     if (request.expect != null) this.batchHadExpect = true;
     const refuse = (stopped: string) => { batch.stop_reason ??= stopped; return { stopped }; };
     if (batch.halt) return refuse(`previous_${batch.halt}`);
-    if (batch.executed >= this.config.maxActionsPerCall) return refuse(`the limit of ${this.config.maxActionsPerCall} actions per call was reached`);
+    if (batch.executed >= this.maxActionsPerCall) return refuse(`the limit of ${this.maxActionsPerCall} actions per call was reached`);
     if (raw === "ACTION7" && !this.config.undo) return refuse("UNDO is not available");
     if (this.raw.state === "GAME_OVER" && raw !== "RESET") return refuse("the game is over: only RESET is allowed");
     if (raw === "RESET" && this.lastAction === "RESET" && !this.config.competition && !request.confirm_full_reset)

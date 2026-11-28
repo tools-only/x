@@ -15,7 +15,9 @@ function setup(overrides: Record<string, unknown> = {}) {
     appendEntry: (type: string, data: any) => entries.push({ type, data }) };
   const game: any = { level: 1, levels_completed: 0, win_levels: 3, state: "NOT_FINISHED", step: 0, actions_used: 0, budget_left: 40,
     valid_actions: ["UP", "RESET"], frame: grid, stale_steps: 0 };
-  const python: any = { next: null, runs: 0, init: async () => game, state: () => game, takeMiniReview: () => { const review = game.mini_review; game.mini_review = null; return review; }, close() {},
+  const python: any = { next: null, runs: 0, init: async () => game, state: () => game, setMaxActionsPerCall(n: number) { this.lastMaxActions = n; }, takeMiniReview: () => { const review = game.mini_review; game.mini_review = null; return review; }, close() {},
+    nextCompletion: { done: false } as any,
+    async runCompletionCheck() { return this.nextCompletion ?? { done: false }; },
     async run() { this.runs += 1; return { text: "ok", truncated: false, acted: this.next, images: [], metrics: {},
       ...(this.reviews ? { reviews: this.reviews } : {}) }; } };
   const root = (overrides.root as string) ?? mkdtempSync(join(tmpdir(), "layered-"));
@@ -55,6 +57,99 @@ test("strategy is prioritized, skill summary is visible and contradiction folds 
   assert.equal(reopened.current("memory", "plan")?.status, "dormant");
 });
 
+test("explicit LoopSpec injects LOOP PASS and logs loop_check/pass_result", async () => {
+  const root = mkdtempSync(join(tmpdir(), "loop-inject-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "orchestration", "policy", JSON.stringify({
+    goal: "prove the win condition", completion_check: "goal_reached", method: "controlled_probe",
+    max_iterations: 3, max_actions_per_pass: 12, no_progress_after: 4,
+  }), "", undefined, undefined, { layer: "L5", scope: "game" });
+  const { handlers, rows } = setup({ root, harnessProfile: true, noImage: true });
+  const opened = await handlers.before_agent_start({});
+  const text = textOf(opened.message.content);
+  assert.match(text, /LOOP PASS 1\/3/);
+  assert.match(text, /Goal: prove the win condition/);
+  assert.ok(rows("loop_check").length >= 1);
+  const passResult = rows("pass_result").at(-1);
+  assert.equal(passResult?.completed, false);
+  assert.equal(passResult?.max_iterations, 3);
+});
+
+test("LoopSpec max_batch and max_actions_per_pass clamp the per-call action cap", async () => {
+  const rootA = mkdtempSync(join(tmpdir(), "loop-cap-a-"));
+  const storeA = new LayeredComponents(join(rootA, "harness", "components"));
+  storeA.reflect("add", "orchestration", "policy", JSON.stringify({
+    goal: "prove the win condition", max_batch: 4, max_actions_per_pass: 6,
+  }), "", undefined, undefined, { layer: "L5", scope: "game" });
+  const { handlers: ha, python: pa } = setup({ root: rootA, harnessProfile: true, noImage: true });
+  await ha.before_agent_start({});
+  assert.equal(pa.lastMaxActions, 4);
+
+  const rootB = mkdtempSync(join(tmpdir(), "loop-cap-b-"));
+  const storeB = new LayeredComponents(join(rootB, "harness", "components"));
+  storeB.reflect("add", "orchestration", "policy", JSON.stringify({
+    goal: "prove the win condition", max_actions_per_pass: 6,
+  }), "", undefined, undefined, { layer: "L5", scope: "game" });
+  const { handlers: hb, python: pb } = setup({ root: rootB, harnessProfile: true, noImage: true });
+  await hb.before_agent_start({});
+  assert.equal(pb.lastMaxActions, 6);
+});
+
+test("completion_check reads a read-only python check and drives the loop gate", async () => {
+  const root = mkdtempSync(join(tmpdir(), "loop-completion-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "orchestration", "policy", JSON.stringify({
+    goal: "prove the win condition", completion_check: "goal_reached", max_iterations: 3, no_progress_after: 4,
+  }), "", undefined, undefined, { layer: "L5", scope: "game" });
+  const { handlers, python, rows } = setup({ root, harnessProfile: true, noImage: true });
+  python.nextCompletion = { done: true, progress: 1 };
+  const opened = await handlers.before_agent_start({});
+  assert.match(textOf(opened.message.content), /LOOP PASS 1\/3/);
+  assert.match(textOf(opened.message.content), /Completion: goal_reached/);
+  const passResult = rows("pass_result").at(-1);
+  assert.equal(passResult?.completed, true);
+  assert.equal(passResult?.completion_done, true);
+  assert.equal(passResult?.completion_progress, 1);
+  const check = rows("completion_check").at(-1);
+  assert.equal(check?.check, "goal_reached");
+  assert.equal(check?.done, true);
+  assert.equal(check?.progress, 1);
+});
+
+test("completion_check errors degrade to done=false without tripping completion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "loop-completion-err-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "orchestration", "policy", JSON.stringify({
+    goal: "prove the win condition", completion_check: "goal_reached", max_iterations: 3, no_progress_after: 4,
+  }), "", undefined, undefined, { layer: "L5", scope: "game" });
+  const { handlers, python, rows } = setup({ root, harnessProfile: true, noImage: true });
+  python.nextCompletion = { done: false, error: "completion_check unavailable" };
+  const opened = await handlers.before_agent_start({});
+  assert.match(textOf(opened.message.content), /LOOP PASS 1\/3/);
+  const passResult = rows("pass_result").at(-1);
+  assert.equal(passResult?.completed, false);
+  assert.equal(passResult?.completion_done, false);
+  const check = rows("completion_check").at(-1);
+  assert.equal(check?.done, false);
+  assert.equal(check?.error, "completion_check unavailable");
+});
+
+test("LoopSpec.method auto-injects an active L4 Skill body and counts a read", async () => {
+  const root = mkdtempSync(join(tmpdir(), "loop-method-"));
+  const store = new LayeredComponents(join(root, "harness", "components"));
+  store.reflect("add", "orchestration", "policy", JSON.stringify({
+    goal: "prove the win condition", method: "controlled_probe", max_iterations: 3,
+  }), "", undefined, undefined, { layer: "L5", scope: "game" });
+  store.reflect("add", "skill", "controlled_probe", "when: on a new level\nProbe one step and verify the transition before batching clicks.", "probe", undefined, undefined, { layer: "L4", scope: "game" });
+  const { handlers, rows } = setup({ root, harnessProfile: true, noImage: true });
+  const opened = await handlers.before_agent_start({});
+  const text = textOf(opened.message.content);
+  assert.match(text, /METHOD \[controlled_probe v1\]: when: on a new level/);
+  const injected = rows("method_injected").at(-1);
+  assert.equal(injected?.method, "controlled_probe");
+  assert.ok(injected?.chars > 0);
+});
+
 test("new skill marker lasts two provider decisions", async () => {
   const root = mkdtempSync(join(tmpdir(), "skill-new-"));
   const store = new LayeredComponents(join(root, "harness", "components"));
@@ -84,11 +179,11 @@ test("evolution rejects duplicate strategy and revises existing card", async () 
   const ctx: any = { model: { id: "same" }, modelRegistry: { streamSimple: (_model: any, input: any) => {
     round++;
     assert.match(input.systemPrompt, /strategy card|STRATEGY/);
-    assert.match(input.systemPrompt, /<=700 chars/);
-    assert.match(input.systemPrompt, /candidate win condition and an observable progress measure/);
-    assert.match(input.systemPrompt, /single-action probe that can distinguish them/);
-    assert.match(input.systemPrompt, /retain confirmed constraints.*scoped L3 memory/);
-    assert.match(input.tools.find((tool: any) => tool.name === "reflect_component").description, /L4 strategy memory <=700 chars/);
+    assert.match(input.systemPrompt, /<=900 chars/);
+    assert.match(input.systemPrompt, /candidate completion condition and observable progress measure/);
+    assert.match(input.systemPrompt, /single-variable probe first/);
+    assert.match(input.systemPrompt, /move invariant constraints into scoped L3/);
+    assert.match(input.tools.find((tool: any) => tool.name === "reflect_component").description, /L4 strategy memory <=900 chars/);
     if (round === 2) rejection = textOf(input.messages.filter((m: any) => m.role === "toolResult").at(-1).content);
     const args = round === 1 ? { op: "add", kind: "memory", name: "other", layer: "L4", scope: "level", body: "Goal: other" } : { op: "revise", kind: "memory", name: "plan", body: "Goal: revised" };
     return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage: {}, content: [{ type: "toolCall", id: `r${round}`, name: "reflect_component", arguments: args }] }) };

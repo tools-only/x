@@ -91,16 +91,17 @@ the start of every call:
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
 ## Scientific solving loop
-1. Track lightweight hypotheses: keep goal progress, confirmed mechanics, competing explanations, and the next single probe with its falsifier (e.g., in an active `[STRATEGY]` note); prefer 1–2 discriminating probes with tight `expect=` over blind repetition.
-2. Build scoped local checks first: author focused read-only `@tool` helpers only for the decision at hand (scoring candidates or checking hazards); returning `None`/`"unknown"` when uncertain is valid and preferred over guessing.
-3. Keep `work/model.py` optional and on-demand: only write `work/model.py` (`predict(frame, action)`) when similar transitions repeat, current-level samples suffice, and repeated multi-step foresight helps; `harness_state["model"]` separates forward `live` accuracy from `by_level` back-test.
-4. Plan within verified scope: chain multi-step sequences only through verified actions and conditions with explicit `expect=`; any `SURPRISE`, `unknown`, or mismatch sends you back to a small probe or rule check.
+1. Map unknowns before committing: separate controllable mechanics, resource/failure constraints, completion/progress criteria, and candidate subgoals (tracked in your `[STRATEGY]` frame); treat unknown objectives as first-class experimental targets, not afterthoughts.
+2. Run controlled discriminating experiments: design 1–2 action single-variable probes with tight `expect=` that separate competing explanations cleanly instead of blind or multi-variable batches.
+3. Offload scoped checks and keep `work/model.py` optional: use mounted `@tool` checks (returning `None`/`"unknown"` when uncertain is valid) or a `LOOP` `completion_check` for objective progress and safety; only write `work/model.py` (`predict(frame, action)`) when repeated transitions and foresight on the current level justify it.
+4. Execute subgoals within feasible budget: once mechanics and completion criteria are verified, plan backward from the goal inside verified scope with explicit `expect=`; any `SURPRISE`, `unknown`, `completion` miss, or loop brake returns you to controlled hypothesis testing.
 
 ## ACTIVE HARNESS
 Follow ORCHESTRATION [EXPLORE|EXPLOIT|REFRAME] focus: probe tightly in EXPLORE, advance subgoals in EXPLOIT, and consult a SUBAGENT before repeating failing tools in REFRAME.
+Follow any active LOOP PASS goal, pass budget, and success criteria; respect carried PassResult facts from prior passes and execute any auto-surfaced METHOD workflow before improvising.
 Follow the current [STRATEGY] subgoal and Next; if its falsifier appears, stop repeating and test the alternative hypothesis.
 When a SKILL's when condition fits, especially [NEW], read_component before acting.
-Boundary audits may refresh this read-only panel after a level change, failure or stall.
+Boundary audits may refresh this read-only panel after a level change, failure, stall, or loop brake.
 - Consider [NEW] first when its trigger fits. Run an applicable tool on the current frame before choosing a branch.
 - Check its result against the live state. Use a tight expect= on the next probe. If the state has changed, identify the observation that makes the old branch inapplicable.
 - Treat Memory as evidence with a scope. A [CONTRADICTED] marker is a reason to recheck the hypothesis.

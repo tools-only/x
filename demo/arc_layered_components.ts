@@ -15,7 +15,7 @@ export type ComponentStats = {
   consecutive_failures: number; last_failure_witness?: string;
   consecutive_publish_failures: number; last_publish_error?: string;
 };
-const LIMIT: Record<Kind, number> = { memory: 2400, skill: 4000, prompt: 600, subagent: 1500, tool: 10000, orchestration: 500 };
+const LIMIT: Record<Kind, number> = { memory: 2400, skill: 4000, prompt: 600, subagent: 1500, tool: 10000, orchestration: 800 };
 const NAME = /^[a-z][a-z0-9_]{0,40}$/;
 const emptyBucket = (): StatsBucket => ({ invocations: 0, ok: 0, action_producing: 0, reads: 0, failures: 0 });
 const digest = (body: string, verify?: Record<string, string>) => {

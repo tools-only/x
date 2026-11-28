@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { BridgeClient, COLOR_LEGEND, LayeredPython, type ActionBatch, type LayeredState, type MemoryCheckStats, type StepFact } from "./arc_layered_python.ts";
 import { arcEnvAdapter } from './arc_env_adapter.ts';
 import type { LayeredEnvAdapter } from './layered_env_adapter.ts';
+import { effectiveLoopSpec, evaluateLoopChecks, formatPassResult, LOOP_LIMITS, parseLoopSpec, type LoopSpec, type PassResult } from './layered_loop.ts';
 import { RequestTrace, usageRecord } from "./arc_request_trace.ts";
 import { installProviderTelemetry } from "./pi_provider_telemetry.ts";
 import { installReportedTokenBudget } from "./pi_reported_token_budget.ts";
@@ -43,49 +44,16 @@ export type LayeredOptions = { scale: number; gridLines: boolean; reminder: bool
   stuckAfter: number; foldAfter: number; compactMargin: number; notebook: boolean; gradient?: boolean; rollAfter?: number;
   maxObserveCallsPerTurn?: number;
   flags?: { expect?: boolean; graph?: boolean; work?: boolean; model?: boolean; tags?: boolean; claims?: boolean } };
-type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMiniReview">
+type Python = Pick<LayeredPython, "init" | "run" | "state" | "close" | "takeMiniReview" | "setMaxActionsPerCall" | "runCompletionCheck">
   & Partial<Pick<LayeredPython, "gradient" | "capabilitySnapshot" | "syncMemoryChecks" | "validateMemoryChecks" | "memoryCheckStats" | "runtimeTypeCard">>;
 type Content = Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 type AttemptMetrics = { py_calls: number; py_errors: number; truncated: number; observe_limits: number; errors: string[] };
 const EDITABLE_SPACE = "Editable capability space: memory (L4 strategy card or L3 causal with verify), prompt, skills (reusable workflows/methods), tools (@tool or work/lib/), subagents (consult), orchestration (mode/handoff/rhythm).";
 export type OrchestrationMode = "EXPLORE" | "EXPLOIT" | "REFRAME";
-type ParsedOrchestration = {
-  mode?: OrchestrationMode;
-  handoff?: string;
-  batch_hint?: string;
-  reframe_after_deaths?: number;
-  note?: string;
-};
+type ParsedOrchestration = LoopSpec;
+/** Backward-compatible orchestration body parser; now delegates to the domain-agnostic LoopSpec parser. */
 export function parseOrchestrationBody(body: string): ParsedOrchestration {
-  const trimmed = body.trim();
-  if (!trimmed) return {};
-  if (trimmed.startsWith("{")) {
-    try {
-      const obj = JSON.parse(trimmed) as Record<string, unknown>;
-      const rawMode = String(obj.mode ?? "").toUpperCase();
-      return {
-        ...(rawMode === "EXPLORE" || rawMode === "EXPLOIT" || rawMode === "REFRAME" ? { mode: rawMode as OrchestrationMode } : {}),
-        ...(typeof obj.handoff === "string" ? { handoff: obj.handoff.trim().slice(0, 140) } : {}),
-        ...(typeof obj.batch_hint === "string" ? { batch_hint: obj.batch_hint.trim().slice(0, 80) } : {}),
-        ...(Number.isFinite(Number(obj.reframe_after_deaths)) && Number(obj.reframe_after_deaths) >= 1
-          ? { reframe_after_deaths: Math.floor(Number(obj.reframe_after_deaths)) } : {}),
-      };
-    } catch {}
-  }
-  const modeMatch = /^\s*mode\s*[:=]\s*(EXPLORE|EXPLOIT|REFRAME)\b/mi.exec(trimmed);
-  const handoffMatch = /^\s*handoff\s*[:=]\s*(.+)$/mi.exec(trimmed);
-  const batchMatch = /^\s*batch_hint\s*[:=]\s*(.+)$/mi.exec(trimmed);
-  const deathsMatch = /^\s*reframe_after_deaths\s*[:=]\s*(\d+)\b/mi.exec(trimmed);
-  const parsed: ParsedOrchestration = {
-    ...(modeMatch ? { mode: modeMatch[1].toUpperCase() as OrchestrationMode } : {}),
-    ...(handoffMatch ? { handoff: handoffMatch[1].trim().slice(0, 140) } : {}),
-    ...(batchMatch ? { batch_hint: batchMatch[1].trim().slice(0, 80) } : {}),
-    ...(deathsMatch && Number(deathsMatch[1]) >= 1 ? { reframe_after_deaths: Number(deathsMatch[1]) } : {}),
-  };
-  if (!parsed.mode && !parsed.handoff && !parsed.batch_hint && !parsed.reframe_after_deaths) {
-    parsed.note = trimmed.replace(/\s+/g, " ").slice(0, 140);
-  }
-  return parsed;
+  return parseLoopSpec(body);
 }
 type DecisionTraceBlock = {
   decision: number;
@@ -157,26 +125,33 @@ const EVOLUTION_SYSTEM_PROMPT = [
   "You are running an isolated, clean-context meta-evolution audit between task turns. You cannot take environment actions (submit_actions is disabled).",
   "Your job is NOT merely to patch a single stuck step — it is to diagnose flaws in the solver's problem-solving method, strategy, and thinking process, and materialize the missing capability in the harness so future decisions are systematically more scientific.",
   "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active components, Epistemic status, Process profile, Component use, Last evolution feedback, prior reviews), and the current frame.",
-  "Meta-evolution loop (anchor to ONE concrete decision point k or cross-level delta):",
-  "1. Critique the solver's method, strategy, and thinking at step k — identify the deepest root flaw along the scientific ladder:",
-  "   - Observation & modeling method (L1/L3): acting before reading key local changes/structure, repeating ad-hoc inspection scripts, or failing to maintain lightweight hypotheses, confirmed rules, and falsifiers (or lacking a scoped local check when decisions stall).",
-  "   - Hypothesis & probing method (L3/L4): sending unchecked/vacuous-expect or oversized unverified batches instead of small discriminating probes that separate competing explanations, or ignoring SURPRISE / verify contradictions / mismatches instead of revising beliefs.",
-  "   - Search & offline planning strategy (L2/L4): stepping blindly or replaying dead ends instead of consulting a scoped L3/L4 decision helper (allowing 'unknown'/None when uncertain) or keeping multi-step plans strictly inside verified scope.",
-  "   - Planning & execution orchestration (L4/L5): staying trapped in one framing or failing to use mounted strategy/tools/skills.",
-  "2. Carry the evolved method in the lightest effective harness component (0 or 1 targeted change; NEVER write vague pep-talks like 'be careful' or 'try harder'):",
-  "   - Falsifiable strategy card & causal memory (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L4'|'L3', scope='level'|'game', name, body, verify?)): keep ONE level-scoped L4 `[STRATEGY]` card (<=700 chars) with Goal, Strategy, Hypotheses, and Next + falsifier. Goal states a candidate win condition and an observable progress measure. If the objective is unknown, propose one or two competing goal hypotheses and a single-action probe that can distinguish them, even after diagnosing a failure. On revision, retain confirmed constraints in a short Confirmed entry or scoped L3 memory. Prefer a verify rule for testable L3 facts with `verify={'rule': {'when': '...', 'assert': '...'}}`.",
+  "Meta-evolution loop (match scale to the bottleneck):",
+  "- Local scale (single verify contradiction, broken @tool, or isolated tactical error): anchor to concrete step k to patch the L3 rule or scoped @tool without disturbing a working global strategy.",
+  "- Strategic / Loop scale (level_complete, loop_brake, loop_goal_completed, stall, or after reframer): step back from single step k, audit the full Problem-Solving Frame across all four unknown dimensions (controllability & dynamics, constraints & resource ledger, win/completion criteria & progress metric, global subgoal path & budget feasibility) plus cross-level deltas, and evolve the outer LoopSpec, strategy frame, or reusable method.",
+  "1. Critique the solver's method, strategy, and thinking at the appropriate scale — identify the deepest bottleneck along the scientific ladder:",
+  "   - Observation & decomposition (L1/L3): acting without separating controllable mechanics, resource constraints, and observable progress signals, or lacking lightweight confirmed vs competing hypotheses.",
+  "   - Controlled experimentation & verification (L3/L4): running uninformative, multi-variable, or vacuous-expect batches instead of single-variable discriminating probes with explicit branch outcomes, or ignoring SURPRISE / verify contradictions.",
+  "   - Global strategy & subgoal planning (L4): pursuing failure avoidance alone without candidate completion/progress criteria, feasible subgoal ordering, or bounded plans inside verified conditions.",
+  "   - Outer loop & method orchestration (L4/L5): wandering without a testable pass Goal/completion_check, leaving relevant Skills/tools unused outside the loop, or repeating a stalled framing without triggering REFRAME.",
+  "2. Carry the evolved method in the lightest effective harness update (make ONE focused change — or ONE tightly coupled pair such as solidifying a confirmed L3 rule alongside revising the strategy card, or publishing a scoped check tool together with binding it in `orchestration` — NEVER write vague pep-talks):",
+  "   - Global Problem-Solving Frame (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L4'|'L3', scope='level'|'game', name, body, verify?)): keep ONE level-scoped L4 `[STRATEGY]` card (<=900 chars) structured with:",
+  "     * Unknowns: what is confirmed vs unknown across mechanics, resource/failure constraints, win/progress criteria, and subgoal path;",
+  "     * Goal & Progress: candidate completion condition and observable progress measure (if unknown, state 2 competing goal hypotheses and a single-variable probe first, even after diagnosing a failure);",
+  "     * Subgoals & Feasibility: backward subgoal milestones and resource-budget check before deep execution;",
+  "     * Experiment: Next discriminating probe + falsifier and branch rule.",
+  "     On revision, NEVER silently drop confirmed hard facts — move invariant constraints into scoped L3 `memory` (preferably with `verify={'rule': {'when': '...', 'assert': '...'}}`) or retain a terse Confirmed line.",
   "   - Scoped Local Check / Planner `@tool` (L3/L4 via python_inspect): include `# layer: L1..L5`, `# scope: game|level`, `# when:`, `# out/branch:`. Functions may `import model` or previously mounted `@tool`s (including inside `trial_at(k, fn)`). Local hazard/score/decision `@tool`s should only predict what the current decision needs and may return `None` / `'unknown'` when uncertain; bounded planners should output `{\"plan\": [...], ...}` or `{\"recommended_actions\": [...], ...}` only over verified transitions. Define `@tool def fn(): ...` and run `trial_at(k, fn)` in the SAME `python_inspect` call.",
   "   - Optional Executable World Model (`work/model.py` via python_inspect — ON-DEMAND ONLY): write `open('work/model.py', 'w')` defining `predict(frame, action) -> grid | sparse_dict` (and optional `state_key(frame)`, `is_fatal(frame, action)`). The host back-tests history and separately tracks current-level forward `live` accuracy. Do NOT treat `world_model=none` as a defect by itself; write or repair `work/model.py` ONLY when similar predictions repeat across turns, current-level samples suffice, and a `[STRATEGY]` card or scoped `@tool` is insufficient.",
-  "   - Reusable problem-solving method / workflow (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): concrete multi-step procedure for probing, local modeling, branch search, or verification (read on demand via read_component).",
+  "   - Reusable high-level scientific method (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): coordinate-free problem-solving methodology (how to decompose unknowns, calibrate objectives/resources, run controlled experiments, and sequence subgoals across tasks). Bind an active Skill to `LoopSpec.method` so the host surfaces its steps automatically at pass entry instead of relying on ad-hoc memory.",
   "   - Execution discipline / thinking rule (`prompt` via reflect_component(op=add/revise/retire/promote/demote, kind='prompt', layer='L5', scope='game'|'level', name, body), <= 600 chars): enforceable operating rule fixing recurring Process profile failures (e.g., prediction coverage, probe size before batching, checking mounted helpers).",
   "   - Clean-context reframing (`subagent` via reflect_component(op=add/revise/retire, kind='subagent', layer='L5', scope='game'|'level', name, summary, body)): specialist role invoked via consult when stuck in a local framing.",
-  "   - Phase & handoff orchestration (`orchestration` via reflect_component(op=add/revise/retire, kind='orchestration', layer='L5', scope='game', name, body), <= 500 chars): single active policy steering solving mode (EXPLORE/EXPLOIT/REFRAME), component handoff order, batch_hint, and reframe_after_deaths.",
-  "3. Verify & curate: check Epistemic status, Strategy & orchestration, Process profile, and Last evolution feedback to see whether prior evolved methods actually changed behavior (world-model back-test, guided_recent, unchecked_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with a working strategy/model or unfalsified discriminating probe.",
+  "   - Outer Loop & Orchestration Spec (`orchestration` via reflect_component(op=add/revise/retire/restore, kind='orchestration', layer='L5', scope='game', name, body), <= 800 chars): single active Loop specification steering goal + success criteria, iteration/pass bounds, brake thresholds, method handoff, and solving mode (`goal`, `completion_check`, `method`, `max_iterations`, `max_actions_per_pass`, `no_progress_after`, `max_batch`, `mode`, `handoff`, `reframe_after_failures`).",
+  "3. Verify & curate: check Epistemic status, Strategy & orchestration, Process profile, and Last evolution feedback to judge whether prior changes actually improved problem solving (Loop pass outcomes, brake triggers, completion/progress checks, uncertainty reduction across the 4 unknown dimensions, guided_recent, unchecked_batches, repeats, and method adoption); revise, merge, retire, or restore ineffective components. Choose decision='no_change' only when active capabilities already cover step k with a working strategy/model or unfalsified discriminating probe.",
   "Kernel API (read-only + @tool / model.py publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
   "Scope & trigger rules (strict):",
   "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill/Orchestration), cross-level `@tool`s/`work/model.py`, and level_complete-promoted causal Memory.",
-  "- Executable-first offloading (CRITICAL): when the solver repeats failed routes/edges, replays post-RESET deaths, or lacks state/goal/frontier visibility, ALWAYS prefer revising the `[STRATEGY]` card, authoring a scoped read-only L3/L4 `@tool` (allowed to return `'unknown'`/`None`), or writing a concrete `Memory + verify` rule over rewriting generic prose; author `work/model.py` only when repeated forward trajectory prediction on the current level clearly warrants it.",
-  "- Prompt & Skill anti-divergence circuit-breaker: maintain at most 1 core L5 Prompt (<= 600 chars) and 1-2 L4 Skills total, with ZERO level-specific coordinates. A Prompt may be revised AT MOST 2 times per level — if repeats or deaths persist after revising a Prompt, STOP rewriting Prompt prose and build `work/model.py`, an executable `@tool`, a falsifiable `Memory + verify`, or choose `no_change`. Avoid creating Skills when existing Skills have `reads=0` (prefer directly callable `@tool`, `work/model.py`, or inline `Memory`).",
+  "- Executable-first offloading (CRITICAL): match the mechanism to the missing layer — when objective, progress signal, or global route is missing or reframing is needed, FIRST restructure `[STRATEGY]` (Problem-Solving Frame) and `orchestration` (Loop goal, `completion_check`, or `method`); offload repeated scoring, local safety checks (allowed to return `'unknown'`/`None`), `completion_check` probes, and invariant verification to read-only L3/L4 `@tool` or `Memory + verify`; author `work/model.py` only when repeated forward trajectory prediction on the current level clearly warrants it.",
+  "- Prompt & Skill anti-divergence circuit-breaker: maintain at most 1 core L5 Prompt (<= 600 chars) and 1-2 L4 Skills total, with ZERO level-specific coordinates. A Prompt may be revised AT MOST 2 times per level — if repeats or deaths persist after revising a Prompt, STOP rewriting Prompt prose and build `work/model.py`, an executable `@tool`, a falsifiable `Memory + verify`, or choose `no_change`. Avoid adding redundant Skills when an existing Skill has `reads=0`; instead, tighten its `when:` trigger, bind it via `orchestration` (`method: <skill>`), or revise/merge it so the method enters the loop. Prefer directly callable `@tool` or `Memory + verify` only for narrow computation or single-step invariant checks, not as a substitute for missing high-level method.",
   "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before consolidating cross-level strategy and calling finish_evolution.",
   "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool or work/model.py) together with finish_evolution once verified. Finish as soon as the highest-priority gap is addressed. Batch the finish call with the update when its evidence is already established. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
@@ -533,7 +508,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let attemptMetrics: AttemptMetrics = freshAttemptMetrics();
   type EvolutionRecord = { kind: Kind | "consult" | "model"; name: string; version?: number; level: number; step: number;
     actionsSince: number; newStatesSince: number; deathsSince: number;
-    baseline?: { unchecked: number; repeats: number; actions: number } };
+    baseline?: { unchecked: number; repeats: number; actions: number; loopPass?: number; loopBrakes?: number; loopCompleted?: number } };
   let lastEvolution: EvolutionRecord | null = null;
   let finishedLevelEvolution: EvolutionRecord | null = null;
   const WINDOW_SIZE = 12;
@@ -577,7 +552,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const orchUpdatedStep = orchStats && orchStats.updated_level === state.level ? orchStats.updated_step : -1;
     const deathsOnLevel = levelSteps.filter(f => f.level === state.level && f.death).length;
     const deathsSinceOrch = levelSteps.filter(f => f.level === state.level && f.death && f.step > orchUpdatedStep).length;
-    const reframeThreshold = parsed.reframe_after_deaths ?? 2;
+    const reframeThreshold = parsed.reframe_after_failures ?? parsed.reframe_after_deaths ?? 2;
     const inReframe = deathsSinceOrch >= reframeThreshold || strategyBroken || state.stale_steps >= 16;
     const modelSnap = python.capabilitySnapshot?.()?.model as any;
     const hasWorkingModel = isCurrentLevelModelWorking(modelSnap, state.level);
@@ -598,6 +573,130 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const line = `ORCHESTRATION [${mode}]${label}: ${parsed.handoff ?? parsed.note ?? defaultHandoff}${batchPart}`;
     return { mode, orchItem, parsed, deathsOnLevel, inReframe, line };
   }
+  function deriveLoopSpec(live: Component[]): LoopSpec {
+    const orchItem = live.find(item => item.kind === "orchestration");
+    return effectiveLoopSpec(orchItem ? parseLoopSpec(orchItem.body) : undefined);
+  }
+
+  function computeLoopSignals(batch: ActionBatch | null, state: LayeredState) {
+    return arcEnvAdapter.loopSignals?.({ batch, state: state.state, budget_left: state.budget_left, level_budget_left: state.level_budget_left }) ?? {
+      executed: batch?.executed ?? 0,
+      new_states: batch?.steps?.filter(f => f.new).length ?? 0,
+      failures: batch?.steps?.filter(f => f.death).length ?? 0,
+      surprises: batch?.surprise ? 1 : 0,
+      completed: Boolean(batch?.level_changed) || state.state === "WIN",
+      budget_exhausted: state.budget_left === 0 || state.level_budget_left === 0,
+      time_exhausted: false,
+      facts: [],
+    };
+  }
+
+  function resetLoopCounters() {
+    loopPass = 0;
+    loopNoProgressStreak = 0;
+    lastCompletionProgress = undefined;
+    lastPassResult = undefined;
+    passActions = 0; passNewStates = 0; passFailures = 0; passSurprises = 0;
+    passFactsSnapshot = new Set();
+    loopBrakeAuditedLevel = -1;
+    loopGoalAuditedLevel = -1;
+  }
+
+  function collectPassFacts(): string[] {
+    if (!components || !python.memoryCheckStats) return [];
+    const facts: string[] = [];
+    for (const item of components.list("memory")) {
+      for (const [rule] of Object.entries(item.verify ?? {})) {
+        const id = `${item.name}/${rule}`;
+        const st = python.memoryCheckStats[id];
+        if (!st || !st.checked) continue;
+        const key = `${id}:${st.support}/${st.checked}/${st.counter}/${st.unscoped ? 1 : 0}`;
+        if (passFactsSnapshot.has(key)) continue;
+        passFactsSnapshot.add(key);
+        facts.push(`${id} ${st.unscoped ? "unscoped" : st.counter ? `contradicted (${st.counter})` : `held ${st.support}/${st.checked}`}`);
+      }
+    }
+    return facts.slice(0, 6);
+  }
+
+  async function closeLoopPass(state: LayeredState, ctx: any): Promise<void> {
+    if (!components) return;
+    const live = components.list().filter(item => item.status !== "dormant" && item.status !== "variant_broken");
+    const spec = deriveLoopSpec(live);
+    const explicitLoop = Boolean(spec.goal || spec.completion_check || spec.method);
+    const maxIter = spec.max_iterations ?? LOOP_LIMITS.max_iterations.default;
+    const envSignals = computeLoopSignals(null, state);
+    let completionResult: { done: boolean; progress?: number; detail?: string; error?: string } | undefined;
+    if (spec.completion_check && python.runCompletionCheck) {
+      completionResult = await python.runCompletionCheck(spec.completion_check);
+    }
+    const completed = completionResult ? completionResult.done === true : (envSignals.completed || endReason === "level_change");
+    let progressAdvanced = false;
+    if (completionResult !== undefined && typeof completionResult.progress === "number") {
+      progressAdvanced = completionResult.progress > (lastCompletionProgress ?? -Infinity);
+      lastCompletionProgress = completionResult.progress;
+    }
+    if (passActions === 0) {
+      // provider-timeout / observe-only pass: neither progress nor regress.
+    } else if (completed || passNewStates > 0 || progressAdvanced) {
+      loopNoProgressStreak = 0;
+    } else {
+      loopNoProgressStreak += 1;
+    }
+    const decision = evaluateLoopChecks({
+      pass: loopPass,
+      max_iterations: maxIter,
+      budget_exhausted: envSignals.budget_exhausted,
+      time_exhausted: envSignals.time_exhausted,
+      no_progress_streak: loopNoProgressStreak,
+      no_progress_after: spec.no_progress_after ?? LOOP_LIMITS.no_progress_after.default,
+      completed,
+    });
+    loopBrakeCount += decision.kind === "brake" ? 1 : 0;
+    loopCompletedCount += decision.kind === "completed" ? 1 : 0;
+    const passResult: PassResult = {
+      pass: loopPass,
+      max_iterations: maxIter,
+      executed: passActions,
+      new_states: passNewStates,
+      failures: passFailures,
+      surprises: passSurprises,
+      completed,
+      completion_done: completionResult ? completionResult.done : undefined,
+      completion_progress: completionResult?.progress,
+      no_progress: decision.kind === "brake" && decision.reason === "no_progress",
+      facts: collectPassFacts(),
+    };
+    lastPassResult = passResult;
+    log("loop_check", { pass: loopPass, level: state.level, step: state.step, decision: decision.kind,
+      reason: decision.kind === "brake" ? decision.reason : null, no_progress_streak: loopNoProgressStreak,
+      max_iterations: maxIter, completed });
+    if (completionResult) log("completion_check", { pass: loopPass, level: state.level, step: state.step,
+      check: spec.completion_check, done: completionResult.done,
+      progress: completionResult.progress ?? null, detail: completionResult.detail ?? null, error: completionResult.error ?? null });
+    log("pass_result", passResult);
+
+    if (explicitLoop && decision.kind === "brake" && loopBrakeAuditedLevel !== state.level && evolutionEnabled && ctx?.model && ctx?.modelRegistry?.streamSimple) {
+      if (correctiveAudits < 8 && state.state !== "WIN" && state.budget_left !== 0 && state.level_budget_left !== 0) {
+        loopBrakeAuditedLevel = state.level;
+        correctiveAudits += 1; lastAnyAuditStep = state.step;
+        const receipt = await runBoundaryEvolution("loop_brake", attemptSteps.length ? attemptSteps : levelSteps, state, state.level, ctx);
+        if (receipt) pendingLoopEvolutionReceipt = receipt;
+      }
+    } else if (explicitLoop && decision.kind === "completed" && spec.completion_check && loopGoalAuditedLevel !== state.level && evolutionEnabled && ctx?.model && ctx?.modelRegistry?.streamSimple) {
+      loopGoalAuditedLevel = state.level;
+      if (correctiveAudits < 8) {
+        correctiveAudits += 1; lastAnyAuditStep = state.step;
+        const receipt = await runBoundaryEvolution("loop_goal_completed", attemptSteps.length ? attemptSteps : levelSteps, state, state.level, ctx);
+        if (receipt) pendingLoopEvolutionReceipt = receipt;
+      }
+    }
+
+    const levelEnding = endReason === "level_change" || endReason === "win" || endReason === "budget" || endReason === "game_over";
+    if (!levelEnding) loopPass += 1;
+    passActions = 0; passNewStates = 0; passFailures = 0; passSurprises = 0;
+  }
+
   const ensureTraceBlock = (st?: LayeredState): DecisionTraceBlock => {
     if (!currentTraceBlock) {
       const s = st ?? safeState();
@@ -781,6 +880,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     } else if (evo.kind === "model") {
       const m = python.capabilitySnapshot?.()?.model as any;
       detail = m ? (m.error ? `error=${String(m.error).slice(0, 60)}, ` : `backtest=${m.correct ?? 0}/${m.tested ?? 0}, `) : "missing, ";
+    } else if (evo.kind === "orchestration") {
+      const before = evo.baseline ?? { unchecked: 0, repeats: 0, actions: 0 };
+      detail += `loop pass ${before.loopPass ?? 0}->${loopPass}, brakes ${before.loopBrakes ?? 0}->${loopBrakeCount}, completed ${before.loopCompleted ?? 0}->${loopCompletedCount}, `;
     }
     return `Last evolution (L${evo.level} s${evo.step}): ${label} -> ${detail}+${evo.newStatesSince} new states, ${evo.deathsSince} deaths over ${evo.actionsSince} actions`;
   }
@@ -824,7 +926,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
 
   function dualAudit(
-    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift" | "strategy_readiness",
+    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift" | "strategy_readiness" | "loop_brake" | "loop_goal_completed",
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
@@ -874,7 +976,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       if (structuralDelta) legibilityLines.push(`- Cross-Level Structural Delta: ${structuralDelta}`);
       const observations = decisionTrace.slice(-12).flatMap(turn => turn.pythonCalls).filter(call => !call.acted);
       legibilityLines.push(`- Observation scripts: ${observations.length}; repeated structures: ${JSON.stringify(observations.map(call => call.code.replace(/\b[0-9]+\b/g, "#").replace(/\s+/g, " ").slice(0, 120)))}`);
-      legibilityLines.push("- Diagnose ONE bottleneck: L1 perception, L2 state/frontier, L3 causal rule, L4 strategy/probe, L5 orchestration/pacing. Cross-level contradictions require refine preconditions vs demote/retire.");
+      legibilityLines.push("- Diagnose the primary bottleneck across scales: L1 observation/delta, L2 state/progress metric, L3 causal rule/constraint, L4 high-level strategy (4 unknowns, subgoal feasibility, controlled experiment, or cross-task Skill method), L5 outer loop spec (pass Goal, completion_check, gate bounds, or method binding). Cross-level contradictions require refine preconditions vs demote/retire.");
       const eff = effortProgressSummary();
       if (eff) legibilityLines.push(`- ${eff}`);
       const tail30 = levelSteps.slice(-30);
@@ -961,7 +1063,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     stuckAuditsThisLevel < STUCK_BACKOFF.length &&
     (lastStuckAuditStep < 0 || actionsUsed - lastStuckAuditStep >= STUCK_BACKOFF[stuckAuditsThisLevel]);
 
-  function content(batch: ActionBatch | null, nudge = false, evoOpts?: { evolutionReceipt?: string; boundaryHandled?: boolean }): Content {
+  function content(batch: ActionBatch | null, nudge = false, evoOpts?: { evolutionReceipt?: string; boundaryHandled?: boolean; loopLine?: string; methodLine?: string }): Content {
     const state = python.state(), events: string[] = [];
     const boundaryHandled = Boolean(evoOpts?.boundaryHandled);
     const isFreshBoard = !shownFrame || shownLevel !== state.level || Boolean(batch?.reset);
@@ -971,6 +1073,8 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       events.push(`LENGTH RECOVERY (${consecutiveLengthStops}/${maxLengthRecoveries}): the previous reply hit the output token limit before calling a tool. Output minimal reasoning and call python now.`);
     }
     if (evoOpts?.evolutionReceipt) events.push(evoOpts.evolutionReceipt);
+    if (evoOpts?.methodLine) events.push(evoOpts.methodLine);
+    if (evoOpts?.loopLine) events.push(evoOpts.loopLine);
     let inventoryShown = false;
     let dualAuditEmitted = boundaryHandled;
     const canStuckAudit = !boundaryHandled && canRunStuckAudit(state.actions_used);
@@ -1277,6 +1381,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         consecutiveObserveTurns = 0;
         idle = 0;
         segmentActions += batch.executed;
+        passActions += batch.executed;
+        passNewStates += batch.steps?.filter(f => f.new).length ?? 0;
+        passFailures += batch.steps?.filter(f => f.death).length ?? 0;
+        passSurprises += batch.surprise ? 1 : 0;
         trail.push(...batch.lines.slice(-3));
         trail = trail.slice(-12);
         endReason = batch.win ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget"
@@ -1417,7 +1525,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         const state = python.state(), used = consultsByLevel.get(state.level) ?? 0;
         if (used >= 2) return { details: {}, isError: true, content: [{ type: "text", text: "consult limit: two per level" }] };
         const role = params.name === "reframer"
-          ? "Give two mutually exclusive explanations and one discriminating next probe. Cite observed facts. Keep reasoning brief and answer in <= 200 words."
+          ? "Give two mutually exclusive explanations covering either the failed mechanism OR the missing win/progress criterion, plus one single-variable discriminating probe with branch outcomes. Cite observed facts and <= 200 words."
           : components.current("subagent", params.name)?.body;
         if (!role || !ctx.model) return { details: {}, isError: true, content: [{ type: "text", text: "unknown subagent or no model selected" }] };
         consultsByLevel.set(state.level, used + 1);
@@ -1499,6 +1607,14 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       } });
   }
   let cognitiveAudits = 0, correctiveAudits = 0, lastCognitiveStep = -Infinity, lastAnyAuditStep = -Infinity;
+  let loopPass = 0, loopNoProgressStreak = 0, loopLevel = -1, loopBrakeAuditedLevel = -1, loopGoalAuditedLevel = -1;
+  let loopBrakeCount = 0, loopCompletedCount = 0;
+  let lastCompletionProgress: number | undefined;
+  let lastPassResult: PassResult | undefined;
+  let currentLoopSpec: LoopSpec = effectiveLoopSpec(undefined);
+  let passActions = 0, passNewStates = 0, passFailures = 0, passSurprises = 0;
+  let passFactsSnapshot = new Set<string>();
+  let pendingLoopEvolutionReceipt: string | undefined;
   const promptRevisionsThisLevel = new Map<string, number>();
   const contradictionAudited = new Set<string>();
   const surpriseSteps: number[] = [];
@@ -1542,7 +1658,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     if (!["memory", "skill", "prompt", "subagent", "tool", "orchestration"].includes(params.kind)) return { ok: false, text: "invalid component kind" };
     const existing = components.current(params.kind as Kind, params.name);
     const strategyCard = params.kind === "memory" && (params.layer ?? existing?.layer) === "L4" && (params.scope ?? existing?.scope ?? "level") === "level";
-    if (strategyCard && params.body && params.body.length > 700) return { ok: false, text: "Strategy memory must be at most 700 characters." };
+    if (strategyCard && params.body && params.body.length > 900) return { ok: false, text: "Strategy memory must be at most 900 characters." };
     if (strategyCard && !["retire", "demote"].includes(params.op) && components.list("memory").some(item => item.name !== params.name && item.layer === "L4" && (item.scope ?? "level") === "level" && item.status !== "dormant" && item.status !== "variant_broken"))
       return { ok: false, text: "A level strategy memory already exists; revise it." };
     if (params.kind === "orchestration" && !["retire", "demote"].includes(params.op) && components.list("orchestration").some(item => item.name !== params.name && item.status !== "dormant" && item.status !== "variant_broken"))
@@ -1588,7 +1704,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         verify_rules: item.verify ? Object.keys(item.verify) : [], after_audit: lastAuditBoundary || null, source });
       lastEvolution = { kind: item.kind, name: item.name, version: item.version, level: st.level, step: st.step,
         actionsSince: 0, newStatesSince: 0, deathsSince: 0,
-        baseline: { unchecked: st.unchecked_batches ?? 0, repeats: levelSteps.filter(f => f.same).length, actions: st.actions_used } };
+        baseline: { unchecked: st.unchecked_batches ?? 0, repeats: levelSteps.filter(f => f.same).length, actions: st.actions_used,
+          loopPass, loopBrakes: loopBrakeCount, loopCompleted: loopCompletedCount } };
+      if (source === "evolution" && item.kind === "orchestration" && !item.retired) {
+        resetLoopCounters();
+        loopLevel = st.level;
+        loopPass = 0;
+      }
       let reply = `${item.kind}/${item.name} v${item.version} ${item.retired ? "retired" : "active"}`;
       if (item.kind === "memory") {
         if (python.syncMemoryChecks) {
@@ -1635,7 +1757,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
 
   async function runBoundaryEvolution(
-    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift" | "strategy_readiness",
+    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift" | "strategy_readiness" | "loop_brake" | "loop_goal_completed",
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
@@ -1670,7 +1792,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       : (options.outputTokens || (ctx.model as any).maxTokens || undefined);
     const evoMaxTokens = requestedEvoTokens && Math.min(requestedEvoTokens, ctx.model.maxTokens ?? requestedEvoTokens);
     const evoTools = [
-      { name: "reflect_component", description: "Add, revise, retire, restore, merge, promote or demote a versioned component (memory with optional verify, level-scoped L4 strategy memory <=700 chars, L5 prompt <=600 chars, L4 skill, subagent, L5 orchestration <=500 chars, or tool lifecycle) with scope=level|game and layer=L1..L5.", parameters: reflectSchema },
+      { name: "reflect_component", description: "Add, revise, retire, restore, merge, promote or demote a versioned component (memory with optional verify, level-scoped L4 strategy memory <=900 chars, L5 prompt <=600 chars, L4 skill, subagent, L5 orchestration <=800 chars, or tool lifecycle) with scope=level|game and layer=L1..L5.", parameters: reflectSchema },
       { name: "read_component", description: "Read an existing component body.", parameters: readSchema },
       { name: "python_inspect", description: "Run non-acting Python in the live kernel to inspect frames/transitions or author & test @tool helpers or work/model.py (submit_actions is disabled).",
         parameters: Type.Object({ code: Type.String({ description: "Non-acting Python code to run" }) }) },
@@ -1721,9 +1843,13 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const traceSlice = decisionTrace.slice(lastEvoTraceIndex);
       const decisionWindowText = renderDecisionWindow(traceSlice, windowBudget);
       const levelCompleteRule = boundary === "level_complete"
-        ? "Boundary rule (LEVEL_COMPLETE): use at most 1 python_inspect call (or 0 if dossier facts suffice), then compare the final pre-clear and post-action observations to identify a candidate observable win condition and progress measure. Record the evidence and uncertainty, and make the condition an early probe on the next level. Then CONSOLIDATE cross-level strategy — generalize verified mechanics into a coordinate-free scope='game' L3/L4 skill, memory rule, scoped @tool, orchestration policy, or (only when repeated prediction warrants it) work/model.py (retiring level-only hacks); choose no_change only if reusable game-scope capabilities already cover the supported win-condition and progress evidence as well as the solved mechanics, then call finish_evolution."
+        ? "Boundary rule (LEVEL_COMPLETE): use at most 1 python_inspect call (or 0 if dossier facts suffice), then compare the final pre-clear and post-action observations to identify a candidate observable win condition and progress measure. Record the evidence and uncertainty, and make the condition an early probe on the next level. Then CONSOLIDATE cross-level strategy — generalize verified mechanics into a coordinate-free scope='game' L3/L4 skill (bindable to orchestration.method), memory rule, scoped @tool, orchestration policy (LoopSpec goal/success criteria), or (only when repeated prediction warrants it) work/model.py (retiring level-only hacks); choose no_change only if reusable game-scope capabilities already cover the supported win-condition and progress evidence as well as the solved mechanics, then call finish_evolution."
         : boundary === "strategy_readiness"
-          ? "Boundary rule (STRATEGY_READINESS): enough informative transitions have been observed without a structured [STRATEGY] card, scoped L3/L4 decision @tool, or working current-level model. Prioritize maintaining a crisp L4 [STRATEGY] memory card (goal, hypotheses, next probe + falsifier) or a scoped local @tool (returning 'unknown'/None when uncertain) over reactive telemetry; author work/model.py only when repeated forward trajectory prediction on the current level clearly warrants it."
+          ? "Boundary rule (STRATEGY_READINESS): enough informative transitions have been observed without a structured [STRATEGY] card, scoped L3/L4 decision @tool, or working current-level model. Prioritize maintaining a structured L4 [STRATEGY] memory card (Unknowns / Goal & Progress / Subgoals & Feasibility / Experiment) plus a bounded LoopSpec (goal, max_actions_per_pass, optional completion_check) or a scoped local @tool (returning 'unknown'/None when uncertain) over reactive telemetry; author work/model.py only when repeated forward trajectory prediction on the current level clearly warrants it."
+        : boundary === "loop_brake"
+          ? "Boundary rule (LOOP_BRAKE): the outer loop hit no_progress or max_iterations. Step back and do NOT repeat the same framing that just braked — audit which unknown dimension is unconverged (especially goal/completion criteria and subgoal feasibility), then revise the LoopSpec subgoal/gates, restructure the [STRATEGY] frame, or consult reframer for competing explanations."
+          : boundary === "loop_goal_completed"
+          ? "Boundary rule (LOOP_GOAL_COMPLETED): a custom completion_check returned done. Summarize the facts this stage confirmed into scoped L3/L4, then update the orchestration LoopSpec to the next-stage goal and success criteria (or finish the level if the environment goal is met)."
           : "";
       const dossier = [
         headerPart,
@@ -2090,8 +2216,44 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         }
       }
     }
+    let loopLine: string | undefined;
+    let methodLine: string | undefined;
+    if (components) {
+      const state = python.state();
+      const live = components.list().filter(item => item.status !== "dormant" && item.status !== "variant_broken");
+      currentLoopSpec = deriveLoopSpec(live);
+      let passActionCap = options.maxActionsPerCall;
+      if (currentLoopSpec.max_batch !== undefined) passActionCap = Math.min(passActionCap, currentLoopSpec.max_batch);
+      python.setMaxActionsPerCall(passActionCap);
+      if (loopLevel !== state.level) {
+        loopLevel = state.level;
+        resetLoopCounters();
+      }
+      if (loopPass === 0) loopPass = 1;
+      const effective = currentLoopSpec;
+      if (effective.method) {
+        const skill = live.find(item => item.kind === "skill" && item.layer === "L4" && item.name === effective.method);
+        if (skill && skill.body) {
+          const body = skill.body.trim().slice(0, 400);
+          components.recordRead("skill", skill.name, state.level, state.step);
+          log("method_injected", { method: skill.name, version: skill.version, level: state.level, step: state.step, chars: body.length });
+          methodLine = `METHOD [${skill.name} v${skill.version}]: ${body}`;
+        }
+      }
+      const goalPart = effective.goal ? `Goal: ${effective.goal}` : "Goal: clear current level";
+      const methodPart = effective.method ? ` | Method: ${effective.method}` : "";
+      const checkPart = effective.completion_check ? ` | Completion: ${effective.completion_check}` : "";
+      const carried = lastPassResult ? ` | last pass: ${formatPassResult(lastPassResult).split(" | ").slice(1).join(" | ")}` : "";
+      loopLine = `LOOP PASS ${loopPass}/${effective.max_iterations ?? LOOP_LIMITS.max_iterations.default} | ${goalPart}${checkPart}${methodPart}${carried}`;
+      if (pendingLoopEvolutionReceipt) {
+        const receipt = pendingLoopEvolutionReceipt;
+        pendingLoopEvolutionReceipt = undefined;
+        evolutionReceipt = evolutionReceipt ? `${evolutionReceipt}\n${receipt}` : receipt;
+        boundaryHandled = true;
+      }
+    }
     currentTraceBlock = null;
-    return { systemPrompt: system, message: { customType: STATE_TYPE, content: content(batch, false, { evolutionReceipt, boundaryHandled }), display: false } };
+    return { systemPrompt: system, message: { customType: STATE_TYPE, content: content(batch, false, { evolutionReceipt, boundaryHandled, loopLine, methodLine }), display: false } };
   });
   pi.on("turn_start", () => { actedThisTurn = false; observeCallsThisTurn = 0; observeLimitHitThisTurn = false; toolBuildFreeUsedThisTurn = false; });
   pi.on("session_before_compact", () => ({ cancel: true }));
@@ -2209,7 +2371,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
         const customAgents = live.filter(item => item.kind === "subagent").map(item => `${item.name}: ${item.summary}`);
         const showConsults = orch.mode === "REFRAME" || state.stale_steps >= 16 || cognitiveAudits > 0;
         const builtInReframer = orch.mode === "REFRAME" && options.consult !== false && !live.some(item => item.kind === "subagent" && item.name === "reframer")
-          ? ["reframer: clean-context reframing — 2 mutually exclusive explanations + 1 discriminating probe"]
+          ? ["reframer: clean-context reframing — 2 mutually exclusive explanations (mechanism or missing win/progress) + 1 single-variable probe"]
           : [];
         const agents = showConsults ? [...builtInReframer, ...customAgents].join("; ") : "";
         let block = "## ACTIVE HARNESS";
@@ -2383,11 +2545,19 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     }
   });
 
-  pi.on("agent_before_settle", event => {
-    if (event.outcome !== "completed" || endReason || lastStop === "length" || lastStop === "error") return;
+  pi.on("agent_before_settle", async (event, ctx) => {
+    if (event.outcome !== "completed" || lastStop === "length" || lastStop === "error") return;
     const state: LayeredState = python.state();
-    endReason = state.state === "WIN" ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget" : softLimit();
+    const acted = segmentActions > 0;
+    if (!endReason) {
+      endReason = state.state === "WIN" ? "win" : state.budget_left === 0 || state.level_budget_left === 0 ? "budget" : softLimit();
+    }
     if (!endReason && idle >= options.idleContinuations) endReason = "idle";
+    if (acted) {
+      const cap = currentLoopSpec.max_actions_per_pass ?? LOOP_LIMITS.max_actions_per_pass.default;
+      const terminal = endReason === "win" || endReason === "budget" || endReason === "level_change" || endReason === "game_over";
+      if (passActions >= cap || terminal) await closeLoopPass(state, ctx);
+    }
     if (endReason) return;
     idle += 1;
     return { continue: true, entries: [...event.entries, { type: "custom_message", customType: STATE_TYPE,
