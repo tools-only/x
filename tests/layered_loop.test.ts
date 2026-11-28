@@ -36,6 +36,20 @@ test("parseLoopSpec keeps legacy text orchestration fields", () => {
   assert.equal(spec.reframe_after_failures, 1);
 });
 
+test("parseLoopSpec reads the six loop fields from text orchestration", () => {
+  const spec = parseLoopSpec(
+    "goal: reach the exit\ncompletion_check: exit_reached\nmethod: path_scan\n" +
+    "max_iterations: 5\nmax_actions_per_pass: 8\nno_progress_after: 3\nmax_batch: 6",
+  );
+  assert.equal(spec.goal, "reach the exit");
+  assert.equal(spec.completion_check, "exit_reached");
+  assert.equal(spec.method, "path_scan");
+  assert.equal(spec.max_iterations, 5);
+  assert.equal(spec.max_actions_per_pass, 8);
+  assert.equal(spec.no_progress_after, 3);
+  assert.equal(spec.max_batch, 6);
+});
+
 test("parseLoopSpec clamps max_batch to the global call cap", () => {
   const spec = parseLoopSpec(JSON.stringify({ max_batch: 99, max_actions_per_pass: 99 }));
   assert.equal(spec.max_batch, LOOP_LIMITS.max_batch.max);

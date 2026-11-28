@@ -64,11 +64,15 @@ test("explicit LoopSpec injects LOOP PASS and logs loop_check/pass_result", asyn
     goal: "prove the win condition", completion_check: "goal_reached", method: "controlled_probe",
     max_iterations: 3, max_actions_per_pass: 12, no_progress_after: 4,
   }), "", undefined, undefined, { layer: "L5", scope: "game" });
-  const { handlers, rows } = setup({ root, harnessProfile: true, noImage: true });
+  const { handlers, python, rows, call } = setup({ root, harnessProfile: true, noImage: true });
   const opened = await handlers.before_agent_start({});
   const text = textOf(opened.message.content);
   assert.match(text, /LOOP PASS 1\/3/);
   assert.match(text, /Goal: prove the win condition/);
+  handlers.turn_start();
+  python.next = batch({ executed: 12, actions: Array(12).fill("UP") });
+  await call();
+  await handlers.agent_before_settle({ ...settle });
   assert.ok(rows("loop_check").length >= 1);
   const passResult = rows("pass_result").at(-1);
   assert.equal(passResult?.completed, false);
@@ -92,7 +96,7 @@ test("LoopSpec max_batch and max_actions_per_pass clamp the per-call action cap"
   }), "", undefined, undefined, { layer: "L5", scope: "game" });
   const { handlers: hb, python: pb } = setup({ root: rootB, harnessProfile: true, noImage: true });
   await hb.before_agent_start({});
-  assert.equal(pb.lastMaxActions, 6);
+  assert.equal(pb.lastMaxActions, 16);
 });
 
 test("completion_check reads a read-only python check and drives the loop gate", async () => {
@@ -101,11 +105,15 @@ test("completion_check reads a read-only python check and drives the loop gate",
   store.reflect("add", "orchestration", "policy", JSON.stringify({
     goal: "prove the win condition", completion_check: "goal_reached", max_iterations: 3, no_progress_after: 4,
   }), "", undefined, undefined, { layer: "L5", scope: "game" });
-  const { handlers, python, rows } = setup({ root, harnessProfile: true, noImage: true });
+  const { handlers, python, rows, call } = setup({ root, harnessProfile: true, noImage: true });
   python.nextCompletion = { done: true, progress: 1 };
   const opened = await handlers.before_agent_start({});
   assert.match(textOf(opened.message.content), /LOOP PASS 1\/3/);
   assert.match(textOf(opened.message.content), /Completion: goal_reached/);
+  handlers.turn_start();
+  python.next = batch({ executed: 12, actions: Array(12).fill("UP") });
+  await call();
+  await handlers.agent_before_settle({ ...settle });
   const passResult = rows("pass_result").at(-1);
   assert.equal(passResult?.completed, true);
   assert.equal(passResult?.completion_done, true);
@@ -122,10 +130,14 @@ test("completion_check errors degrade to done=false without tripping completion"
   store.reflect("add", "orchestration", "policy", JSON.stringify({
     goal: "prove the win condition", completion_check: "goal_reached", max_iterations: 3, no_progress_after: 4,
   }), "", undefined, undefined, { layer: "L5", scope: "game" });
-  const { handlers, python, rows } = setup({ root, harnessProfile: true, noImage: true });
+  const { handlers, python, rows, call } = setup({ root, harnessProfile: true, noImage: true });
   python.nextCompletion = { done: false, error: "completion_check unavailable" };
   const opened = await handlers.before_agent_start({});
   assert.match(textOf(opened.message.content), /LOOP PASS 1\/3/);
+  handlers.turn_start();
+  python.next = batch({ executed: 12, actions: Array(12).fill("UP") });
+  await call();
+  await handlers.agent_before_settle({ ...settle });
   const passResult = rows("pass_result").at(-1);
   assert.equal(passResult?.completed, false);
   assert.equal(passResult?.completion_done, false);
@@ -203,7 +215,7 @@ test("environment failure terminates the segment without another nudge", async (
   python.run = async () => ({ text: "environment failed", truncated: false, acted: null, images: [], metrics: {}, environmentError: "EnvironmentReturnedNoFrame" });
   const result = await call();
   assert.equal(result.terminate, true);
-  assert.equal(handlers.agent_before_settle({ ...settle }), undefined);
+  assert.equal(await handlers.agent_before_settle({ ...settle }), undefined);
   handlers.agent_settled({});
   assert.equal(rows("segment_end")[0].reason, "environment_error");
 });
@@ -407,7 +419,7 @@ test("a level change ends the segment and the next segment opens with it", async
   game.levels_completed = 1; game.level = 2;
   assert.equal((await call()).terminate, true);
   assert.equal(sent.length, 0);
-  assert.equal(handlers.agent_before_settle(settle), undefined);
+  assert.equal(await handlers.agent_before_settle(settle), undefined);
   handlers.agent_settled();
   assert.equal(rows("segment_end")[0].reason, "level_change");
   const opened = await handlers.before_agent_start({});
@@ -505,29 +517,29 @@ test("continuation is bounded by idle count, action budget, soft limits, length 
   const idle = setup();
   await idle.handlers.before_agent_start({});
   for (let count = 0; count < 2; count += 1) {
-    const result = idle.handlers.agent_before_settle(settle);
+    const result = await idle.handlers.agent_before_settle(settle);
     assert.equal(result.continue, true);
     assert.match(textOf(result.entries[0].content), /^You stopped without taking an action[\s\S]*Level 1 of 3/);
   }
-  assert.equal(idle.handlers.agent_before_settle(settle), undefined);
+  assert.equal(await idle.handlers.agent_before_settle(settle), undefined);
   idle.handlers.agent_settled();
   assert.equal(idle.rows("segment_end")[0].reason, "idle");
   idle.python.next = batch();
   await idle.handlers.before_agent_start({});
   await idle.call();
-  assert.equal(idle.handlers.agent_before_settle(settle), undefined);
-  assert.equal(idle.handlers.agent_before_settle({ ...settle, outcome: "aborted" }), undefined);
+  assert.equal(await idle.handlers.agent_before_settle(settle), undefined);
+  assert.equal(await idle.handlers.agent_before_settle({ ...settle, outcome: "aborted" }), undefined);
   idle.handlers.message_end(say("cut", { stopReason: "length" }));
-  assert.equal(idle.handlers.agent_before_settle(settle), undefined);
+  assert.equal(await idle.handlers.agent_before_settle(settle), undefined);
 
   const spent = setup();
   await spent.handlers.before_agent_start({});
   spent.game.budget_left = 0;
-  assert.equal(spent.handlers.agent_before_settle(settle), undefined);
+  assert.equal(await spent.handlers.agent_before_settle(settle), undefined);
   const tokens = setup({ segmentTokens: 15 });
   await tokens.handlers.before_agent_start({});
   tokens.handlers.message_end(say("hi"));
-  assert.equal(tokens.handlers.agent_before_settle(settle), undefined);
+  assert.equal(await tokens.handlers.agent_before_settle(settle), undefined);
 });
 
 test("frames are scaled PNGs", () => {
@@ -679,7 +691,7 @@ test("pure-observation calls are capped per turn and nudge mentions observe limi
   assert.equal(third.terminate, true);
   assert.match(third.content[0].text, /Not run: observation limit reached/);
   assert.equal(rows("observe_limit").length, 1);
-  const settled = handlers.agent_before_settle(settle);
+  const settled = await handlers.agent_before_settle(settle);
   assert.equal(settled.continue, true);
   assert.match(textOf(settled.entries[0].content), /OBSERVE LIMIT: static inspection already ran 1 turn/);
 });
@@ -773,7 +785,7 @@ test("stall includes effort/progress line and length truncation performs bounded
   assert.match(stallText, /STALL: 12 steps/);
 
   handlers.message_end(say("thinking too long", { stopReason: "length" }));
-  assert.equal(handlers.agent_before_settle(settle), undefined);
+  assert.equal(await handlers.agent_before_settle(settle), undefined);
   handlers.agent_settled();
   assert.equal(rows("segment_end").at(-1).reason, "length");
 
