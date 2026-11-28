@@ -45,6 +45,7 @@ def test_classify_segment_activity_decouples_constructive_work_and_length():
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "consult", "ok": True}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "tool_published"}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "tool_decorated"}], 0, 0) == "constructive"
+    assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "model_published"}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "read_component"}], 0, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [], 1, 0) == "constructive"
     assert _classify_segment_activity({"actions": 0, "reason": "idle"}, [{"kind": "observe_limit"}], 0, 0) == "observe_limit"

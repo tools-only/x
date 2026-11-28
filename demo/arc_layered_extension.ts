@@ -117,27 +117,28 @@ export function renderDecisionWindow(blocks: DecisionTraceBlock[], maxChars: num
 const EVOLUTION_SYSTEM_PROMPT = [
   "You are running an isolated, clean-context meta-evolution audit between task turns. You cannot take environment actions (submit_actions is disabled).",
   "Your job is NOT merely to patch a single stuck step — it is to diagnose flaws in the solver's problem-solving method, strategy, and thinking process, and materialize the missing capability in the harness so future decisions are systematically more scientific.",
-  "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active components, Process profile, Component use, Last evolution feedback, prior reviews), and the current frame.",
+  "Start by reading the full dossier: Layer 1 (trajectory, recent decision window with Python code/outputs, board inventory), Layer 2 (active components, Epistemic status, Process profile, Component use, Last evolution feedback, prior reviews), and the current frame.",
   "Meta-evolution loop (anchor to ONE concrete decision point k or cross-level delta):",
-  "1. Critique the solver's method, strategy, and thinking at step k — identify the deepest root flaw:",
-  "   - Observation & modeling method (L1/L3): acting before reading key local changes/structure, repeating ad-hoc inspection scripts, or failing to maintain an explicit falsifiable cause-and-effect model.",
-  "   - Hypothesis & probing method (L3/L4): sending unchecked/vacuous-expect or oversized unverified batches instead of small discriminating probes that separate competing explanations, or ignoring SURPRISE / verify contradictions instead of revising beliefs.",
-  "   - Search & non-replay strategy (L2/L4): replaying known dead ends or post-RESET failures instead of tracking tried vs untried branches from transitions.",
-  "   - Planning & execution orchestration (L4/L5): stepping blindly when mechanics are already established, staying trapped in one framing, or failing to use mounted tools/skills.",
+  "1. Critique the solver's method, strategy, and thinking at step k — identify the deepest root flaw along the scientific ladder:",
+  "   - Observation & modeling method (L1/L3): acting before reading key local changes/structure, repeating ad-hoc inspection scripts, or lacking an executable world model (`work/model.py`) with measured back-test accuracy.",
+  "   - Hypothesis & probing method (L3/L4): sending unchecked/vacuous-expect or oversized unverified batches instead of small discriminating probes that separate competing explanations, or ignoring SURPRISE / verify contradictions / model `last_fail` instead of revising beliefs.",
+  "   - Search & offline planning strategy (L2/L4): stepping blindly or replaying dead ends instead of searching inside a verified `work/model.py` or a composable L4 planner / experiment-designer `@tool` that returns multi-step `plan: [...]`.",
+  "   - Planning & execution orchestration (L4/L5): staying trapped in one framing or failing to use mounted model/tools/skills.",
   "2. Carry the evolved method in the lightest effective harness component (0 or 1 targeted change; NEVER write vague pep-talks like 'be careful' or 'try harder'):",
-  "   - Executable analysis/strategy (`@tool` via python_inspect): read-only computation helper (observation/diff/progress metric, branch frontier checker, candidate scorer/planner). Include `# when:` and `# out/branch:` (and `branch_action` in the result dict when returning a discrete next action). Define `@tool def fn(): ...` and run `trial_at(k, fn)` in the SAME `python_inspect` script so tool authoring + no-lookahead verification finishes in 1 round.",
+  "   - Executable World Model (`work/model.py` via python_inspect): write `open('work/model.py', 'w')` defining `predict(frame, action) -> grid | sparse_dict` (and optional `state_key(frame)`, `is_fatal(frame, action)`). The host automatically back-tests it against all recorded transitions and surfaces accuracy + `last_fail`. Prefer authoring or repairing `work/model.py` whenever `Epistemic status` shows `world_model=none` or back-test mismatches after mechanics are observed.",
+  "   - Composable Strategy / Planner / Experiment-Designer `@tool` (L3/L4 via python_inspect): include `# layer: L1..L5`, `# scope: game|level`, `# when:`, `# out/branch:`. Functions may `import model` or previously mounted `@tool`s (including inside `trial_at(k, fn)` in prefix-safe read-only mode). Planners should output `{\"plan\": [...], ...}` (multi-step action sequence + expected result) or `{\"recommended_actions\": [...], ...}` (or `branch_action` for a single step). Define `@tool def fn(): ...` and run `trial_at(k, fn)` in the SAME `python_inspect` call.",
   "   - Falsifiable causal model & probe (`memory` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='memory', layer='L3', scope='level'|'game', name, body, verify?)): crisp Goal metric, Confirmed conditions, Eliminated branches, ONE Next controlled probe, and prefer structured `verify={'rule': {'when': '...', 'assert': '...'}}` whenever single-step testable so future contradictions trigger automatically.",
   "   - Reusable problem-solving method / workflow (`skill` via reflect_component(op=add/revise/retire/merge/promote/demote, kind='skill', layer='L4', scope='game'|'level', name, summary, body)): concrete multi-step procedure for modeling, controlled probing, branch search, or verification (read on demand via read_component).",
   "   - Execution discipline / thinking rule (`prompt` via reflect_component(op=add/revise/retire/promote/demote, kind='prompt', layer='L5', scope='game'|'level', name, body), <= 600 chars): enforceable operating rule fixing recurring Process profile failures (e.g., prediction coverage, probe size before batching, checking mounted helpers).",
   "   - Clean-context reframing (`subagent` via reflect_component(op=add/revise/retire, kind='subagent', layer='L5', scope='game'|'level', name, summary, body)): specialist role invoked via consult when stuck in a local framing.",
-  "3. Verify & curate: check Process profile and Last evolution feedback to see whether prior evolved methods actually changed behavior (unchecked_batches, large_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with an unfalsified probe or branch.",
-  "Kernel API (read-only + @tool publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
+  "3. Verify & curate: check Epistemic status, Process profile, and Last evolution feedback to see whether prior evolved methods actually changed behavior (world-model back-test, guided_recent, unchecked_batches, repeats, action_aligned); revise, merge, or retire ineffective ones. Choose decision='no_change' only when active capabilities already cover step k with a working model/planner or unfalsified discriminating probe.",
+  "Kernel API (read-only + @tool / model.py publishing): `current_frame`, `previous_frame` (.grid, .ascii(region=(r0,c0,r1,c1)), .segmentation, .level, .step, .state, .shape); `transitions` (items `t` have .action, .before_frame, .after_frame); `history`, `valid_actions`; helpers `diff(a,b)`, `frame_diff(a,b)`, `anim_summary(step=-1)`.",
   "Scope & trigger rules (strict):",
-  "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill), cross-level @tools, and level_complete-promoted causal Memory.",
-  "- Executable-first offloading (CRITICAL): when the solver repeats failed routes/edges, replays post-RESET deaths, or lacks state/goal/frontier visibility, ALWAYS prefer authoring a read-only `@tool` via `python_inspect` (offloading computation out of the solver) or a concrete `Memory + verify` rule over writing prose instructions. Do NOT write a Prompt telling the solver to manually track edges/frontiers in prose when a `@tool` can compute it directly from `transitions`/`current_frame`.",
-  "- Prompt & Skill anti-divergence circuit-breaker: maintain at most 1 core L5 Prompt (<= 600 chars) and 1-2 L4 Skills total, with ZERO level-specific coordinates. A Prompt may be revised AT MOST 2 times per level — if repeats or deaths persist after revising a Prompt, STOP rewriting Prompt prose and build an executable `@tool`, a falsifiable `Memory + verify`, or choose `no_change`. Avoid creating Skills when existing Skills have `reads=0` (prefer directly callable `@tool` or inline `Memory`).",
-  "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before updating components and calling finish_evolution.",
-  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool) together with finish_evolution once verified. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
+  "- scope='level' vs scope='game': use scope='level' ONLY for current-level layout, coordinates, eliminated branches, or next local probes (auto-archived on level change). Use scope='game' for coordinate-free solving methods/discipline (Prompt/Skill), cross-level `@tool`s/`work/model.py`, and level_complete-promoted causal Memory.",
+  "- Executable-first offloading (CRITICAL): when the solver repeats failed routes/edges, replays post-RESET deaths, or lacks state/goal/frontier visibility, ALWAYS prefer authoring `work/model.py` or a read-only L3/L4 `@tool` via `python_inspect` (offloading search/prediction/tracking out of the solver) or a concrete `Memory + verify` rule over writing prose instructions. Avoid piling up reactive telemetry-only guards when `Epistemic status` lacks a working world model or offline planner.",
+  "- Prompt & Skill anti-divergence circuit-breaker: maintain at most 1 core L5 Prompt (<= 600 chars) and 1-2 L4 Skills total, with ZERO level-specific coordinates. A Prompt may be revised AT MOST 2 times per level — if repeats or deaths persist after revising a Prompt, STOP rewriting Prompt prose and build `work/model.py`, an executable `@tool`, a falsifiable `Memory + verify`, or choose `no_change`. Avoid creating Skills when existing Skills have `reads=0` (prefer directly callable `@tool`, `work/model.py`, or inline `Memory`).",
+  "Contracts: set scope=level or game, layer=L1..L5, and when: on every component. merge requires sources plus a replacement body; promote marks a tested prior provisional. On cross-level failure choose refine preconditions versus demote/retire. A shown component is not evidence of use. On level_complete, use at most 1 python_inspect call before consolidating cross-level strategy and calling finish_evolution.",
+  "Round budget: shown in tool results. You may batch reflect_component (or python_inspect to publish @tool or work/model.py) together with finish_evolution once verified. Ground claims strictly in observed facts and end with finish_evolution(decision='evolved'|'no_change', note='one concise line').",
 ].join("\n");
 
 const prompt = (name: string) => readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8");
@@ -490,7 +491,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let lastFailedAttemptSteps: StepFact[] = [];
   const freshAttemptMetrics = (): AttemptMetrics => ({ py_calls: 0, py_errors: 0, truncated: 0, observe_limits: 0, errors: [] });
   let attemptMetrics: AttemptMetrics = freshAttemptMetrics();
-  type EvolutionRecord = { kind: Kind | "consult"; name: string; version?: number; level: number; step: number;
+  type EvolutionRecord = { kind: Kind | "consult" | "model"; name: string; version?: number; level: number; step: number;
     actionsSince: number; newStatesSince: number; deathsSince: number;
     baseline?: { unchecked: number; repeats: number; actions: number } };
   let lastEvolution: EvolutionRecord | null = null;
@@ -502,6 +503,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   let finishedLevelMetrics: AttemptMetrics | null = null;
   const staleNoticed = new Set<string>();
   let lastStuckAuditStep = -1, stuckAuditsThisLevel = 0, lastDeathAuditStep = -1, lastAuditBoundary = "";
+  let strategyReadinessAuditedLevel = -1;
   let started = false, segment = 0, segmentStart = 0, segmentTokens = 0, segmentActions = 0, idle = 0, decision = 0, extraBlocks = 0;
   let rawEstimate = 0, rollThreshold = 0, evictAnchorIndex = 0;
   let actedThisTurn = false, observeCallsThisTurn = 0, observeLimitHitThisTurn = false, consecutiveObserveTurns = 0;
@@ -699,6 +701,9 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const cur = components.current("memory", evo.name);
       const vs = cur ? formatVerifySummary(cur.name, cur.verify, python.memoryCheckStats).trim() : "";
       detail = vs ? `${vs}, ` : "verify=0 rules, ";
+    } else if (evo.kind === "model") {
+      const m = python.capabilitySnapshot?.()?.model as any;
+      detail = m ? (m.error ? `error=${String(m.error).slice(0, 60)}, ` : `backtest=${m.correct ?? 0}/${m.tested ?? 0}, `) : "missing, ";
     }
     return `Last evolution (L${evo.level} s${evo.step}): ${label} -> ${detail}+${evo.newStatesSince} new states, ${evo.deathsSince} deaths over ${evo.actionsSince} actions`;
   }
@@ -741,7 +746,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
 
   function dualAudit(
-    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift",
+    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift" | "strategy_readiness",
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
@@ -809,6 +814,28 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       );
       const toolUsesTotal = components ? components.list("tool").reduce((s, t) => s + (components.stats("tool", t.name)?.total.invocations ?? 0), 0) : 0;
       legibilityLines.push(`- Tooling gap: python_calls=${(opts?.metrics ?? attemptMetrics).py_calls}, active_tools=${components?.list("tool").length ?? 0}, tool_invocations=${toolUsesTotal}`);
+      const modelSnap = python.capabilitySnapshot?.()?.model as any;
+      let modelStr = "world_model=none";
+      if (modelSnap) {
+        if (modelSnap.error) {
+          modelStr = `world_model=error(${String(modelSnap.error).slice(0, 80)})`;
+        } else {
+          const curBucket = modelSnap.by_level?.[String(auditLevel)];
+          const lvlPart = curBucket ? ` (L${auditLevel}:${curBucket.correct}/${curBucket.tested})` : "";
+          const failPart = modelSnap.last_fail ? ` last_fail=s${modelSnap.last_fail.step} ${modelSnap.last_fail.action} off:${modelSnap.last_fail.off}` : "";
+          const rtPart = modelSnap.runtime_error ? ` runtime_err=${String(modelSnap.runtime_error).slice(0, 70)}` : "";
+          modelStr = `world_model=${(modelSnap.funcs ?? []).join("+") || "present"} backtest=${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}${lvlPart}${failPart}${rtPart}`;
+        }
+      }
+      const liveTools = components?.list("tool").filter(t => t.status !== "dormant" && t.status !== "variant_broken") ?? [];
+      const l12Tools = liveTools.filter(t => t.layer === "L1" || t.layer === "L2").length;
+      const l3Tools = liveTools.filter(t => t.layer === "L3").length;
+      const l4Tools = liveTools.filter(t => t.layer === "L4").length;
+      const otherTools = liveTools.length - l12Tools - l3Tools - l4Tools;
+      const informativeTransitions = levelSteps.filter(f => f.changed || f.new).length;
+      const recent12 = levelSteps.slice(-12);
+      const guidedRecent = recent12.filter(f => Boolean(f.source) || f.predict_off !== null).length;
+      legibilityLines.push(`- Epistemic status (L${auditLevel}): ${modelStr}; tools_by_layer=L1/L2:${l12Tools},L3:${l3Tools},L4:${l4Tools},other:${otherTools}; informative_transitions=${informativeTransitions}; guided_recent=${guidedRecent}/${recent12.length}`);
       if (boundaryReviewsThisLevel.length) {
         legibilityLines.push(`- Prior reviews on L${auditLevel}: ${boundaryReviewsThisLevel.map(r => `s${r.step} ${r.boundary}->${r.decision}(${r.exit_reason}${r.mutations.length ? `:${r.mutations.join(",")}` : ""}${r.note ? `:"${r.note}"` : ""})`).join("; ")}`);
       }
@@ -1497,7 +1524,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
   }
 
   async function runBoundaryEvolution(
-    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift",
+    boundary: "game_over" | "level_complete" | "stall" | "stuck" | "verify_contradiction" | "repeated_surprise" | "method_drift" | "strategy_readiness",
     steps: StepFact[],
     state: LayeredState,
     auditLevel: number,
@@ -1533,7 +1560,7 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
     const evoTools = [
       { name: "reflect_component", description: "Add, revise, retire, restore, merge, promote or demote a versioned component (memory with optional verify, L5 prompt <=600 chars, L4 skill, subagent, or tool lifecycle) with scope=level|game and layer=L1..L5.", parameters: reflectSchema },
       { name: "read_component", description: "Read an existing component body.", parameters: readSchema },
-      { name: "python_inspect", description: "Run non-acting Python in the live kernel to inspect frames/transitions or author & test @tool helpers (submit_actions is disabled).",
+      { name: "python_inspect", description: "Run non-acting Python in the live kernel to inspect frames/transitions or author & test @tool helpers or work/model.py (submit_actions is disabled).",
         parameters: Type.Object({ code: Type.String({ description: "Non-acting Python code to run" }) }) },
       { name: "finish_evolution", description: "Finish this evolution review and return control to task play.",
         parameters: Type.Object({ decision: Type.Union([Type.Literal("evolved"), Type.Literal("no_change")]), note: Type.String() }) },
@@ -1544,25 +1571,35 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       });
       const allLive = components.list();
       const nonDormant = allLive.filter(item => item.status !== "dormant" && item.status !== "variant_broken");
-      const slotLine = `Harness slots (active): prompt=${nonDormant.filter(i => i.kind === "prompt").length}/1, skill=${nonDormant.filter(i => i.kind === "skill").length}/2, memory=${nonDormant.filter(i => i.kind === "memory").length}/6, tool=${nonDormant.filter(i => i.kind === "tool").length}, subagent=${nonDormant.filter(i => i.kind === "subagent").length}`;
+      const modelPath = join(options.root, "work", "model.py");
+      const hasModelFile = existsSync(modelPath);
+      const modelSnap = python.capabilitySnapshot?.()?.model as any;
+      const slotLine = `Harness slots (active): prompt=${nonDormant.filter(i => i.kind === "prompt").length}/1, skill=${nonDormant.filter(i => i.kind === "skill").length}/2, memory=${nonDormant.filter(i => i.kind === "memory").length}/6, tool=${nonDormant.filter(i => i.kind === "tool").length}, subagent=${nonDormant.filter(i => i.kind === "subagent").length}, model=${hasModelFile ? 1 : 0}`;
       const metaTag = (item: Component) => `[layer=${item.layer ?? "?"} scope=${item.scope ?? "level"} status=${item.status ?? "active"}${item.when ? ` when=${item.when}` : ""}]`;
-      const activeItems = allLive.map(item => {
+      const activeItems: string[] = [];
+      if (hasModelFile) {
+        let modelSrc = "";
+        try { modelSrc = readFileSync(modelPath, "utf8").trim().slice(0, 1200); } catch {}
+        const modelAcc = modelSnap ? (modelSnap.error ? `error: ${String(modelSnap.error).slice(0, 80)}` : `${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}`) : "untested";
+        activeItems.push(`MODEL work/model.py (${modelAcc}):\n${modelSrc}`);
+      }
+      for (const item of allLive) {
         const tag = metaTag(item);
         if (item.status === "dormant" || item.status === "variant_broken") {
-          return `${item.kind.toUpperCase()} ${item.name} v${item.version} ${tag} (not mounted in parent panel; summary: ${item.summary || item.body.slice(0, 80)})`;
-        }
-        if (item.kind === "tool") {
+          activeItems.push(`${item.kind.toUpperCase()} ${item.name} v${item.version} ${tag} (not mounted in parent panel; summary: ${item.summary || item.body.slice(0, 80)})`);
+        } else if (item.kind === "tool") {
           let src = "";
           try { src = readFileSync(join(options.root, "work", "lib", `${item.name}.py`), "utf8").trim().slice(0, 1200); } catch {}
-          return `TOOL ${item.name} v${item.version} ${tag}:\n${src || item.body}`;
-        }
-        if (item.kind === "skill") {
+          activeItems.push(`TOOL ${item.name} v${item.version} ${tag}:\n${src || item.body}`);
+        } else if (item.kind === "skill") {
           const st = components.stats("skill", item.name);
-          return `SKILL ${item.name} v${item.version} ${tag} (reads=${st?.total.reads ?? 0}, summary=${item.summary}):\n${item.body}`;
+          activeItems.push(`SKILL ${item.name} v${item.version} ${tag} (reads=${st?.total.reads ?? 0}, summary=${item.summary}):\n${item.body}`);
+        } else if (item.kind === "subagent") {
+          activeItems.push(`SUBAGENT ${item.name} v${item.version} ${tag}:\n${item.body}`);
+        } else {
+          activeItems.push(`${tag} ${formatComponentLine(item)}`);
         }
-        if (item.kind === "subagent") return `SUBAGENT ${item.name} v${item.version} ${tag}:\n${item.body}`;
-        return `${tag} ${formatComponentLine(item)}`;
-      });
+      }
       const activeBudget = Math.min(14000, Math.floor(maxDossierChars * 0.25));
       const activeText = [slotLine, ...(activeItems.length ? activeItems : ["none"])].join("\n\n").slice(0, activeBudget);
       const headerPart = `Boundary: ${boundary.toUpperCase()} | level ${state.level}/${state.win_levels}, step ${state.step}, state=${state.state}` +
@@ -1572,8 +1609,10 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
       const traceSlice = decisionTrace.slice(lastEvoTraceIndex);
       const decisionWindowText = renderDecisionWindow(traceSlice, windowBudget);
       const levelCompleteRule = boundary === "level_complete"
-        ? "Boundary rule (LEVEL_COMPLETE): use at most 1 python_inspect call (or 0 if dossier facts suffice), then apply at most 1 component update (or no_change) and call finish_evolution immediately."
-        : "";
+        ? "Boundary rule (LEVEL_COMPLETE): use at most 1 python_inspect call (or 0 if dossier facts suffice), then CONSOLIDATE cross-level strategy — generalize verified dynamics into work/model.py or promote/author a coordinate-free scope='game' L3/L4 model, planner, or skill (retiring level-only hacks); choose no_change only if reusable game-scope capabilities already cover the solved mechanics, then call finish_evolution."
+        : boundary === "strategy_readiness"
+          ? "Boundary rule (STRATEGY_READINESS): enough informative transitions have been observed without a working world model or L3/L4 planner. Prioritize encoding an executable dynamics model in work/model.py (back-tested on history) or a composable L4 planner/experiment-designer @tool over reactive telemetry."
+          : "";
       const dossier = [
         headerPart,
         levelCompleteRule,
@@ -1663,12 +1702,18 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             const libDir = join(options.root, "work", "lib");
             const beforeLib = new Map((existsSync(libDir) ? readdirSync(libDir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name)) : [])
               .map(name => [name, readFileSync(join(libDir, name), "utf8")]));
+            const modelFilePath = join(options.root, "work", "model.py");
+            const hadModelBefore = existsSync(modelFilePath);
+            const beforeModel = hadModelBefore ? readFileSync(modelFilePath, "utf8") : undefined;
             writeFileSync(`${publicationJournal}.tmp`, JSON.stringify({ files: Object.fromEntries(beforeLib),
               heads: Object.fromEntries(components.list("tool").map(item => [item.name, item.version])) }), "utf8");
             renameSync(`${publicationJournal}.tmp`, publicationJournal);
             const outcome = await python.run(String(args.code ?? ""), controller.signal, {
               forbidActions: true, parentReadonlyTools: mutations.length > 0, singleToolWrite: true,
             });
+            const hasModelAfter = existsSync(modelFilePath);
+            const afterModel = hasModelAfter ? readFileSync(modelFilePath, "utf8") : undefined;
+            const modelChanged = hadModelBefore !== hasModelAfter || beforeModel !== afterModel;
             const pub = mutations.length || outcome.error
               ? { published: [], failed: [] }
               : publishTools(new Set(outcome.decoratedTools ?? []));
@@ -1683,13 +1728,41 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             }
             for (const p of pub.published) text += `\n[tool mounted: ${p.name} v${p.version} — callable directly as ${p.name}() or bound tool]`;
             for (const f of pub.failed) text += `\n[tool publish failed: work/lib/${f.name}.py — ${f.error}]`;
-            isError = Boolean(outcome.error) || pub.failed.length > 0;
+            let modelBlocked = false;
+            if (modelChanged) {
+              if (mutations.length > 0 || pub.published.length > 0) {
+                modelBlocked = true;
+                text += "\n[model publish blocked: at most one component or model may be updated per audit]";
+              } else if (!outcome.error && pub.failed.length === 0) {
+                const m = python.capabilitySnapshot?.()?.model as any;
+                if (!m || m.error || !(m.funcs?.length)) {
+                  modelBlocked = true;
+                  text += `\n[model publish failed: work/model.py — ${m?.error ?? "must define at least one of predict, state_key, is_fatal"}]`;
+                } else {
+                  const acc = m.tested ? ` (${m.correct ?? 0}/${m.tested})` : "";
+                  mutations.push(`model/world_model${acc}`);
+                  log("model_published", {
+                    funcs: m.funcs, tested: m.tested ?? 0, correct: m.correct ?? 0, by_level: m.by_level ?? {},
+                    level: state.level, step: state.step, after_audit: boundary, source: "evolution",
+                  });
+                  lastEvolution = { kind: "model", name: "world_model", level: state.level, step: state.step,
+                    actionsSince: 0, newStatesSince: 0, deathsSince: 0 };
+                  text += `\n[model mounted: work/model.py (${m.funcs.join(", ")})${m.tested ? ` — back-test ${m.correct ?? 0}/${m.tested}` : ""}]`;
+                }
+              }
+            }
+            isError = Boolean(outcome.error) || pub.failed.length > 0 || modelBlocked;
             if (isError && existsSync(libDir)) {
               for (const name of readdirSync(libDir).filter(name => /^[a-z][a-z0-9_]*\.py$/.test(name))) {
                 const previous = beforeLib.get(name);
                 if (previous === undefined) unlinkSync(join(libDir, name));
                 else if (readFileSync(join(libDir, name), "utf8") !== previous) writeFileSync(join(libDir, name), previous, "utf8");
               }
+            }
+            if (isError && modelChanged) {
+              if (hadModelBefore && beforeModel !== undefined) writeFileSync(modelFilePath, beforeModel, "utf8");
+              else if (existsSync(modelFilePath)) unlinkSync(modelFilePath);
+              if (python.syncMemoryChecks) await python.syncMemoryChecks(collectMemoryChecks());
             }
             unlinkSync(publicationJournal);
           } else if (call.name === "finish_evolution") {
@@ -1856,18 +1929,39 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
           evolutionReceipt = await runBoundaryEvolution("game_over", failSteps, state, state.level, ctx);
           boundaryHandled = true;
         } else {
-          const canStuckAudit = canRunStuckAudit(state.actions_used);
-          const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || (fact.same_death !== null && fact.same_death !== undefined && fact.same_death !== false));
-          const stallThreshold = options.harnessProfile ? Math.max(16, options.stuckAfter) : 12;
-          const stalled = options.consult !== false && (state.stale_steps >= stallThreshold || regionStall);
-          const stuck = options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter;
-          if (correctiveAudits < 8 && canStuckAudit && (stalled || stuck) && state.state !== "GAME_OVER") {
-            lastStuckAuditStep = state.actions_used;
-            stuckAuditsThisLevel += 1;
+          const informativeTransitions = levelSteps.filter(f => f.changed || f.new).length;
+          const modelSnap = python.capabilitySnapshot?.()?.model as any;
+          const hasWorkingModel = Boolean(
+            modelSnap && !modelSnap.error && (modelSnap.tested ?? 0) > 0 && ((modelSnap.correct ?? 0) / Math.max(1, modelSnap.tested ?? 0)) >= 0.7,
+          );
+          const hasStrategyTool = components.list("tool").some(item => item.layer === "L3" || item.layer === "L4");
+          const readinessDue = correctiveAudits < 8
+            && strategyReadinessAuditedLevel !== state.level
+            && state.state !== "GAME_OVER"
+            && informativeTransitions >= 6
+            && state.step - lastAnyAuditStep >= 4
+            && !hasWorkingModel
+            && !hasStrategyTool;
+          if (readinessDue) {
+            strategyReadinessAuditedLevel = state.level;
             correctiveAudits += 1; lastAnyAuditStep = state.step;
-            evolutionReceipt = await runBoundaryEvolution(stalled ? "stall" : "stuck",
+            evolutionReceipt = await runBoundaryEvolution("strategy_readiness",
               attemptSteps.length ? attemptSteps : levelSteps, state, state.level, ctx);
             boundaryHandled = true;
+          } else {
+            const canStuckAudit = canRunStuckAudit(state.actions_used);
+            const regionStall = batch?.steps?.some(fact => (fact.region_tries ?? 0) >= 4 || (fact.same_death !== null && fact.same_death !== undefined && fact.same_death !== false));
+            const stallThreshold = options.harnessProfile ? Math.max(16, options.stuckAfter) : 12;
+            const stalled = options.consult !== false && (state.stale_steps >= stallThreshold || regionStall);
+            const stuck = options.stuckAfter > 0 && state.stale_steps >= options.stuckAfter;
+            if (correctiveAudits < 8 && canStuckAudit && (stalled || stuck) && state.state !== "GAME_OVER") {
+              lastStuckAuditStep = state.actions_used;
+              stuckAuditsThisLevel += 1;
+              correctiveAudits += 1; lastAnyAuditStep = state.step;
+              evolutionReceipt = await runBoundaryEvolution(stalled ? "stall" : "stuck",
+                attemptSteps.length ? attemptSteps : levelSteps, state, state.level, ctx);
+              boundaryHandled = true;
+            }
           }
         }
       }
@@ -1985,7 +2079,21 @@ export function installLayered(pi: ExtensionAPI, python: Python, options: Layere
             shownTurns.set(bucket, turns);
           }
         }
+        const modelSnap = python.capabilitySnapshot?.()?.model as any;
+        const modelLine = modelSnap
+          ? (modelSnap.error
+              ? `MODEL work/model.py [ERROR]: ${String(modelSnap.error).slice(0, 100)}`
+              : (() => {
+                  const cur = modelSnap.by_level?.[String(state.level)];
+                  return `MODEL work/model.py (${(modelSnap.funcs ?? []).join("+") || "present"}): backtest ${modelSnap.correct ?? 0}/${modelSnap.tested ?? 0}${cur ? ` (L${state.level}: ${cur.correct}/${cur.tested})` : ""}${modelSnap.runtime_error ? ` [runtime_err: ${String(modelSnap.runtime_error).slice(0, 60)}]` : ""}`;
+                })())
+          : "";
         const agents = live.filter(item => item.kind === "subagent" && (python.state().stale_steps >= 16 || cognitiveAudits > 0)).map(item => `${item.name}: ${item.summary}`).join("; ");
+        if (modelLine && block.length + modelLine.length + 1 <= 2500) {
+          block = lastEvolution?.kind === "model" && lastEvolution.level === state.level
+            ? `## ACTIVE HARNESS\n[NEW] ${modelLine}${block.slice("## ACTIVE HARNESS".length)}`
+            : `${block}\n${modelLine}`;
+        }
         if (agents && block.length + agents.length + 21 <= 2500) block += `\nSUBAGENTS (consult): ${agents}`;
         if (skills && block.length + skills.length + 9 <= 2500) block += `\nSKILLS: ${skills}`;
         if (block !== "## ACTIVE HARNESS" && !current.includes(block)) {

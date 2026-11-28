@@ -78,7 +78,15 @@ export class LayeredPython {
   private seenSequences = new Set<string>();
   private repeatedSequences = 0;
   private surprises = 0;
-  private modelReport: { tested: number; correct: number; error?: string } | null = null;
+  private modelReport: {
+    funcs?: string[];
+    tested: number;
+    correct: number;
+    by_level?: Record<string, { tested: number; correct: number }>;
+    last_fail?: { step: number; action: string; off: number; level: number } | null;
+    runtime_error?: string | null;
+    error?: string;
+  } | null = null;
   private claimStats: Record<string, { support: number; counter: number; checked: number; levels: number[];
     by_level: Record<string, { support: number; counter: number; checked: number }>; last_fail?: number | null; witness?: string }> = {};
   private unchecked = 0;
@@ -234,6 +242,7 @@ export class LayeredPython {
     const result = await this.kernel.run(request, async req => this.file(req));
     this.sent = this.history.length;
     if (result.result.type_card) this.runtimeTypeCard = result.result.type_card;
+    if ("model" in result.result) this.modelReport = result.result.model ?? null;
     this.memoryCheckStats = result.result.memory_checks ?? {};
     return this.memoryCheckStats;
   }
@@ -389,8 +398,7 @@ export class LayeredPython {
         this.failedFileEdits.set(match[1], count);
         if (count === 3) failedEditNote = match[1];
       }
-      const modelReport = (run.result as any).model;
-      if (modelReport) this.modelReport = modelReport;
+      if ("model" in (run.result as any)) this.modelReport = (run.result as any).model ?? null;
       for (const name of (run.result as any).claims?.reset ?? []) delete this.claimStats[name];
       const claimReport = (run.result as any).claims?.counts ?? {};
       for (const [name, counts] of Object.entries<any>(claimReport)) {

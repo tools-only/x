@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -1064,6 +1064,101 @@ test("trial_at allows safe pure stdlib imports inside @tool and module top-level
       "trial_at(1, bad_import)",
     ].join("\n"), undefined, { forbidActions: true });
     assert.match(blockedRes.error ?? "", /ImportError/);
+  } finally {
+    python.close();
+  }
+});
+
+test("work/model.py surfaces last_fail witness and runtime_error with introspective hint, and clears when removed", async () => {
+  const workDir = join(mkdtempSync(join(tmpdir(), "layered-model-witness-")), "work");
+  const { python } = await session({ workDir });
+  try {
+    await python.run("submit_actions(['UP', 'DOWN'], stop_on_noop=False)");
+    await python.run([
+      "with open('work/model.py', 'w') as f:",
+      "    f.write('def predict(frame, action):\\n    return frame.grid if action == \"DOWN\" else {(0, 0): 9}\\n')",
+    ].join("\n"));
+    const snap = python.capabilitySnapshot().model as any;
+    assert.ok(snap);
+    assert.equal(snap.tested, 2);
+    assert.ok(snap.last_fail && snap.last_fail.action === "UP" && snap.last_fail.step === 1 && snap.last_fail.off > 0);
+
+    await python.run([
+      "with open('work/model.py', 'w') as f:",
+      "    f.write('def predict(frame, action):\\n    return frame.missing_attr\\n')",
+    ].join("\n"));
+    const errSnap = python.capabilitySnapshot().model as any;
+    assert.match(errSnap.runtime_error ?? "", /AttributeError.*hint: Frame has no 'missing_attr'/);
+
+    unlinkSync(join(workDir, "model.py"));
+    const removed = await python.run("print('removed')");
+    assert.match(removed.text, /removed/);
+    assert.equal(python.capabilitySnapshot().model, null);
+  } finally {
+    python.close();
+  }
+});
+
+test("composable trial_at supports importing mounted @tool and model.py without lookahead or side effects", async () => {
+  const workDir = join(mkdtempSync(join(tmpdir(), "layered-composable-trial-")), "work");
+  const { python } = await session({ workDir });
+  try {
+    await python.run("submit_actions(['UP', 'DOWN'], stop_on_noop=False)");
+    await python.run([
+      "with open('work/model.py', 'w') as f:",
+      "    f.write('def predict(frame, action):\\n    return frame.grid\\n')",
+    ].join("\n"));
+    const helperRes = await python.run([
+      "@tool",
+      "def obs_count():",
+      "    return len(transitions)",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.equal(helperRes.error, undefined);
+
+    const plannerRes = await python.run([
+      "@tool",
+      "def planner_probe():",
+      "    import obs_count, model",
+      "    pred = model.predict(current_frame, 'UP')",
+      "    return {'prefix_len': obs_count(), 'rows': len(pred), 'plan': ['DOWN', 'UP']}",
+      "print(trial_at(0, planner_probe))",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.equal(plannerRes.error, undefined);
+    assert.match(plannerRes.text, /'prefix_len': 0/);
+    assert.match(plannerRes.text, /'rows': 8/);
+
+    const sideEffectDep = await python.run([
+      "@tool",
+      "def leaky_helper():",
+      "    import os",
+      "    return os.getcwd()",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.equal(sideEffectDep.error, undefined);
+
+    const blockedCaller = await python.run([
+      "@tool",
+      "def caller_probe():",
+      "    import leaky_helper",
+      "    return leaky_helper()",
+      "trial_at(1, caller_probe)",
+    ].join("\n"), undefined, { forbidActions: true });
+    assert.match(blockedCaller.error ?? "", /ImportError/);
+  } finally {
+    python.close();
+  }
+});
+
+test("multi-step plan field from planner @tool is tracked in branch_handoff", async () => {
+  const { python } = await session();
+  try {
+    const created = await python.run('@tool\ndef route_planner():\n    return {"plan": ["DOWN", "UP"]}', undefined, { forbidActions: true });
+    assert.equal(created.error, undefined);
+    await python.run("route_planner()", undefined, { parentReadonlyTools: true });
+    const result = await python.run('submit_actions(["DOWN", "UP"], stop_on_noop=False)', undefined, { parentReadonlyTools: true });
+    assert.equal(result.steps?.[0]?.branch_handoff?.matched, true);
+    assert.equal(result.steps?.[0]?.branch_handoff?.plan_index, 0);
+    assert.equal(result.steps?.[1]?.branch_handoff?.matched, true);
+    assert.equal(result.steps?.[1]?.branch_handoff?.plan_index, 1);
   } finally {
     python.close();
   }

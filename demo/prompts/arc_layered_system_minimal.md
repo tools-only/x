@@ -90,6 +90,12 @@ the start of every call:
 {{/work}}
 - Output is cut at 4096 characters and a call times out after 30 seconds.
 
+## Scientific solving loop
+1. Hypothesize & probe: when dynamics or goals are uncertain, state competing hypotheses and spend 1–2 action discriminating probes with tight `expect=` to eliminate alternatives instead of repeating blind sequences.
+2. Build an executable model: once transitions reveal rules, encode `work/model.py` (`predict(frame, action)` returning predicted grid or sparse changed-cell dict; optional `state_key`/`is_fatal`). The host back-tests it against all recorded transitions and reports accuracy in `harness_state["model"]`.
+3. Plan offline before acting: when model accuracy is high, search/plan multi-step sequences offline in Python (or via mounted planner tools) and execute with `expect=`. Any `SURPRISE` or model mismatch sends you back to step 1–2 before spending more actions.
+4. Consolidate across levels: treat rules from prior levels as priors to verify on the new layout, keeping mechanics separate from level-specific coordinates.
+
 ## ACTIVE HARNESS
 Boundary audits may refresh this read-only panel after a level change, failure or stall.
 - Consider [NEW] first when its trigger fits. Run an applicable tool on the current frame before choosing a branch.

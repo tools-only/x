@@ -197,7 +197,7 @@ def _classify_segment_activity(end: dict[str, Any], segment_rows: list[dict[str,
         return "acted"
     if end.get("reason") in ("length", "length_exhausted"):
         return str(end.get("reason"))
-    constructive_kinds = {"component_change", "tool_published", "tool_decorated", "read_component"}
+    constructive_kinds = {"component_change", "tool_published", "tool_decorated", "model_published", "read_component"}
     has_constructive = (work_changed > 0 and not work_errors) or any(
         row.get("kind") in constructive_kinds
         or (row.get("kind") == "consult" and row.get("ok") is True)
@@ -484,7 +484,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
     def _audits_followed_by_evolution(events: list[dict[str, Any]]) -> int:
         converted = 0
         pending_audit = False
-        evo_kinds = {"component_change", "tool_published", "tool_decorated"}
+        evo_kinds = {"component_change", "tool_published", "tool_decorated", "model_published"}
         for ev in events:
             k = ev.get("kind")
             if k == "dual_audit_shown":
@@ -519,6 +519,7 @@ def run_arc_layered_e2e(root: Path, *, game: str, arc_root: Path, pi_provider: s
             "memory_verify_syncs": sum(1 for r in rows if r.get("kind") == "memory_verify_sync"),
             "memory_verify_failures": sum(1 for r in rows if r.get("kind") == "memory_verify_failure"),
             "at_tool_published": sum(1 for r in rows if r.get("kind") == "tool_decorated"),
+            "models_published": sum(1 for r in rows if r.get("kind") == "model_published"),
             "dual_audits_shown": sum(1 for r in rows if r.get("kind") == "dual_audit_shown"),
             "dual_audits_by_boundary": dict(Counter(r.get("boundary") for r in rows if r.get("kind") == "dual_audit_shown" and r.get("boundary"))),
             "audits_followed_by_evolution": _audits_followed_by_evolution(rows),

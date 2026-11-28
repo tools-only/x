@@ -116,6 +116,8 @@ def _wrap_lib_module(lib_name, module):
                     value = fn(*args, **kwargs)
                     candidates = value.get("recommended_actions") if isinstance(value, dict) else None
                     if not isinstance(candidates, list) or not candidates:
+                        candidates = value.get("plan") if isinstance(value, dict) else None
+                    if not isinstance(candidates, list) or not candidates:
                         candidates = [value.get("branch_action")] if isinstance(value, dict) else []
                     labels = [_branch_label(item) for item in candidates]
                     action = labels[0] if labels else None
@@ -191,7 +193,7 @@ def _sync_work(req, rebuild=False):
     model = _S.setdefault("model", {"source": None})
     model_source = req.get("model_source")
     if model_source != model["source"] or libs_changed:
-        _S["model"] = model = {"source": model_source}
+        _S["model"] = model = {"source": model_source, "runtime_error": None, "last_fail": None}
         rebuild = True
         if model_source:
             try:
@@ -200,6 +202,7 @@ def _sync_work(req, rebuild=False):
                               if callable(getattr(mod, name, None))})
                 tested = correct = 0
                 by_level = {}
+                last_fail = None
                 if "predict" in model:
                     for transition in _T:
                         forecast = _forecast(transition["before"], transition["action"])
@@ -213,7 +216,15 @@ def _sync_work(req, rebuild=False):
                             row = by_level.setdefault(level, {"tested": 0, "correct": 0})
                             row["tested"] += 1
                             row["correct"] += off == 0
+                            if off > 0:
+                                last_fail = {
+                                    "step": transition["after"]["raw"]["step"],
+                                    "action": transition["action"],
+                                    "off": off,
+                                    "level": transition["before"]["raw"]["level"],
+                                }
                     model["tested"], model["correct"], model["by_level"] = tested, correct, by_level
+                    model["last_fail"] = last_fail
                 _note("loaded model.py (%s)%s" % (", ".join(name for name in ("state_key", "predict", "is_fatal") if name in model)
                      or "defines none of state_key, predict, is_fatal",
                      "; back-test on %d transitions: %d accurate" % (tested, correct) if "predict" in model else ""))
@@ -784,8 +795,13 @@ def _forecast(entry, label):
         if model.get(name):
             try:
                 out[name] = model[name](_frame(entry), label)
+                if name == "predict":
+                    model["runtime_error"] = None
             except BaseException as exc:
                 _note("model.%s raised %s: %s" % (name, type(exc).__name__, exc))
+                hint = _introspective_hint(exc)
+                msg = "%s: %s%s" % (type(exc).__name__, exc, (" | " + hint) if hint else "")
+                model["runtime_error"] = msg[:220]
     return out
 
 
@@ -909,6 +925,8 @@ def _observe(before, forecast, source):
         row = model.setdefault("by_level", {}).setdefault(str(fact["level"]), {"tested": 0, "correct": 0})
         row["tested"] += 1
         row["correct"] += fact["predict_off"] == 0
+        if fact["predict_off"] > 0:
+            model["last_fail"] = {"step": fact["step"], "action": fact["action"], "off": fact["predict_off"], "level": fact["level"]}
     for name, claim in sorted((_S.get("claims") or {}).items()):
         if claim.get("fn"):
             verdict = _judge_claim(name, claim, t)
@@ -1187,21 +1205,54 @@ def _run_readonly_trial(fn, prefix_globals):
     if fn.__closure__ or fn.__defaults__ or fn.__kwdefaults__:
         raise ValueError("trial function must not capture live values")
     safe_builtins = {name: value for name, value in vars(builtins).items() if not name.startswith("_") and name not in _TRIAL_BLOCKED_BUILTINS}
-    safe_builtins["__import__"] = _trial_import
     names = dict(__builtins__=safe_builtins, **prefix_globals)
-    for gname, gval in (getattr(fn, "__globals__", None) or {}).items():
-        if gname in names or gname == "__builtins__" or gname in _LIVE_KEYS:
-            continue
-        if isinstance(gval, types.ModuleType) and getattr(gval, "__name__", "").split(".")[0] not in _TRIAL_BLOCKED_MODULES and not isinstance(gval, _CallableToolModule):
-            names[gname] = gval
-        elif (isinstance(gval, type) or callable(gval)) and (module := (getattr(gval, "__module__", "") or "").split(".")[0]) and module not in _TRIAL_BLOCKED_MODULES:
-            names[gname] = gval
     def trial_frame_diff(a=None, b=None):
         a = a if a is not None else names["previous_frame"]
         return frame_diff(a, names["current_frame"] if b is None else b) if a is not None else {
             "changed_cells": 0, "note": "no previous frame"}
     if "current_frame" in names and "previous_frame" in names:
         names["frame_diff"] = trial_frame_diff
+    trial_mods = {}
+    def _load_trial_dep(dep_name):
+        if dep_name in trial_mods:
+            return trial_mods[dep_name]
+        if dep_name == "model":
+            entry = _S.get("model") or {}
+            mod = types.ModuleType("model")
+        elif dep_name in (_S.get("lib") or {}):
+            entry = _S["lib"][dep_name]
+            mod = _CallableToolModule(dep_name, dep_name)
+        else:
+            raise ImportError("module %r is blocked in read-only trial_at" % (dep_name,))
+        if not entry.get("source") or entry.get("error"):
+            raise ImportError("module %r is unavailable in read-only trial_at" % (dep_name,))
+        mod.__dict__.update(names)
+        mod.__dict__["__name__"] = dep_name
+        mod.__dict__["__builtins__"] = safe_builtins
+        trial_mods[dep_name] = mod
+        exec(compile(entry["source"], "trial/%s.py" % dep_name, "exec"), mod.__dict__)
+        return mod
+    def _scoped_trial_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if level == 0:
+            if name == "model" or name in (_S.get("lib") or {}):
+                return _load_trial_dep(name)
+            if name.startswith("work.lib."):
+                sub = name[len("work.lib."):]
+                if "." not in sub and sub in (_S.get("lib") or {}):
+                    return _load_trial_dep(sub)
+        return _trial_import(name, globals, locals, fromlist, level)
+    safe_builtins["__import__"] = _scoped_trial_import
+    for gname, gval in (getattr(fn, "__globals__", None) or {}).items():
+        if gname in names or gname == "__builtins__" or gname in _LIVE_KEYS:
+            continue
+        if isinstance(gval, _CallableToolModule) and gname in (_S.get("lib") or {}):
+            names[gname] = _load_trial_dep(gname)
+        elif gname == "model" and gval is _S.get("model_module") and (_S.get("model") or {}).get("source") and not (_S.get("model") or {}).get("error"):
+            names["model"] = _load_trial_dep("model")
+        elif isinstance(gval, types.ModuleType) and getattr(gval, "__name__", "").split(".")[0] not in _TRIAL_BLOCKED_MODULES and not isinstance(gval, _CallableToolModule):
+            names[gname] = gval
+        elif (isinstance(gval, type) or callable(gval)) and (module := (getattr(gval, "__module__", "") or "").split(".")[0]) and module not in _TRIAL_BLOCKED_MODULES:
+            names[gname] = gval
     return type(fn)(fn.__code__, names)()
 
 
@@ -1258,6 +1309,21 @@ _API = dict(open=_open, submit_actions=submit_actions, diff=diff, ascii=ascii, f
             tool=tool)
 
 
+def _model_summary():
+    model = _S.get("model") or {}
+    if not model.get("source"):
+        return None
+    return {
+        "funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],
+        "tested": model.get("tested"),
+        "correct": model.get("correct"),
+        "by_level": model.get("by_level", {}),
+        "last_fail": model.get("last_fail"),
+        "runtime_error": model.get("runtime_error"),
+        "error": model.get("error"),
+    }
+
+
 def _cell(req):
     _S.update(valid=req["valid_actions"], valid_raw=req["valid_actions_raw"],
               last_result=req["last_action_result"], numeric=req["numeric_grid"], images=[],
@@ -1311,7 +1377,8 @@ def _cell(req):
         return {"text": "", "error": None, "images": [], "last_result": dict(_S["last_result"]),
                 "steps": [], "notes": _S.pop("notes", []),
                 "memory_checks": {cid: dict(item["stats"]) for cid, item in (_S.get("memory_checks") or {}).items()},
-                "decorated_tools": [], "type_card": _build_type_card(ns)}
+                "decorated_tools": [], "type_card": _build_type_card(ns),
+                "model": _model_summary()}
     ns.pop("result", None)
     out, value, error = io.StringIO(), None, None
     startup_note = _S.pop("startup_error", None)
@@ -1373,10 +1440,7 @@ def _cell(req):
             "used_libs": sorted(_S.pop("used_libs", set())),
             "claims": {"counts": _S.pop("claim_outbox", {}), "reset": sorted(_S.pop("claim_reset", set())), "errors": claim_errors,
                        "docs": {name: c["doc"] for name, c in (_S.get("claims") or {}).items()}},
-            "model": {"funcs": [name for name in ("state_key", "predict", "is_fatal") if name in model],
-                      "tested": model.get("tested"), "correct": model.get("correct"),
-                      "by_level": model.get("by_level", {}),
-                      "error": model.get("error")} if model.get("source") else None,
+            "model": _model_summary(),
             "lib": {name: {"doc": e["doc"], "error": e["error"]} for name, e in libs.items()},
             "action_invariant": _action_invariant_summary(),
             "causal_briefing": _causal_briefing()}

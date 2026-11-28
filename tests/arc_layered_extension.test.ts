@@ -1529,3 +1529,176 @@ test("calibrated context overflow protection triggers earlier eviction/compactio
   const adapted = handlers.before_provider_request({ payload: {} }, modelCtx);
   assert.ok(adapted.max_tokens < 4096 && adapted.max_tokens >= 512, `expected clamped max_tokens < 4096, got ${adapted.max_tokens}`);
 });
+
+test("minimalBasePrompt includes Scientific solving loop and model.py guidance without legacy Working method", async () => {
+  const { handlers } = setup({ harnessProfile: true, minimalBasePrompt: true, evolution: true, noImage: true });
+  const opened = await handlers.before_agent_start({});
+  assert.match(opened.systemPrompt, /## Scientific solving loop/);
+  assert.match(opened.systemPrompt, /work\/model\.py/);
+  assert.doesNotMatch(opened.systemPrompt, /## Working method|small probe batches/);
+});
+
+test("boundary evolution can publish work/model.py, surface Epistemic status, and roll back invalid model.py", async () => {
+  const root = mkdtempSync(join(tmpdir(), "evo-model-"));
+  const { handlers, game, python, rows, call } = setup({ root, harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16 });
+  let currentModel: any = null;
+  python.capabilitySnapshot = () => ({ claims: {}, model: currentModel });
+  python.syncMemoryChecks = async () => ({});
+  let dossierText = "";
+  let round = 0;
+  let scenario: "invalid" | "valid" = "invalid";
+  const origRun = python.run.bind(python);
+  python.run = async (code: string) => {
+    if (code.includes("write_bad_model")) {
+      mkdirSync(join(root, "work"), { recursive: true });
+      writeFileSync(join(root, "work", "model.py"), "def helper():\n    return 1\n", "utf8");
+      currentModel = { funcs: [], tested: 0, correct: 0, by_level: {} };
+      return { text: "wrote bad model", truncated: false, acted: null, images: [], metrics: {} };
+    }
+    if (code.includes("write_good_model")) {
+      mkdirSync(join(root, "work"), { recursive: true });
+      writeFileSync(join(root, "work", "model.py"), "def predict(frame, action):\n    return frame.grid\n", "utf8");
+      currentModel = { funcs: ["predict"], tested: 6, correct: 5, by_level: { "1": { tested: 6, correct: 5 } }, last_fail: { step: 2, action: "UP", off: 2, level: 1 } };
+      return { text: "loaded model.py (predict); back-test on 6 transitions: 5 accurate", truncated: false, acted: null, images: [], metrics: {} };
+    }
+    return origRun(code);
+  };
+  const evoCtx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: (_m: any, input: any) => {
+        round += 1;
+        if (round === 1) dossierText = input.messages[0].content[0].text;
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 },
+          content: scenario === "invalid"
+            ? (round === 1
+                ? [{ type: "toolCall", id: "m1", name: "python_inspect", arguments: { code: "# write_bad_model" } }]
+                : [{ type: "toolCall", id: "m2", name: "finish_evolution", arguments: { decision: "no_change", note: "rolled back" } }])
+            : (round === 1
+                ? [{ type: "toolCall", id: "m3", name: "python_inspect", arguments: { code: "# write_good_model" } }]
+                : [{ type: "toolCall", id: "m4", name: "finish_evolution", arguments: { decision: "evolved", note: "published model" } }]),
+        }) };
+      },
+    },
+  };
+
+  await handlers.before_agent_start({});
+  game.state = "GAME_OVER";
+  game.step = 4;
+  python.next = batch({ executed: 1, actions: ["UP"], game_over: true });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  await handlers.before_agent_start({}, evoCtx);
+  assert.match(dossierText, /- Epistemic status \(L1\): world_model=none;/);
+  assert.equal(existsSync(join(root, "work", "model.py")), false, "invalid model.py must be rolled back");
+  assert.equal(rows("model_published").length, 0);
+
+  scenario = "valid";
+  round = 0;
+  game.state = "NOT_FINISHED";
+  game.step = 8;
+  game.stale_steps = 16;
+  game.actions_used = 16;
+  python.next = batch({ executed: 4, actions: ["UP", "UP", "UP", "UP"] });
+  handlers.turn_start();
+  await call();
+  python.next = null;
+  const started = await handlers.before_agent_start({}, evoCtx);
+  assert.equal(existsSync(join(root, "work", "model.py")), true);
+  assert.equal(rows("model_published").length, 1);
+  assert.match(started.message.content[0].text, /EVOLUTION \(.*\): evolved \[model\/world_model \(5\/6\)\]/);
+
+  const ctxOut = handlers.context({ messages: [{ role: "user", content: [{ type: "text", text: "state" }] }] }, { model: { contextWindow: 102400 } });
+  const panel = textOf(ctxOut.messages[0].content).split("## ACTIVE HARNESS").at(-1)!;
+  assert.match(panel, /\[NEW\] MODEL work\/model\.py \(predict\): backtest 5\/6 \(L1: 5\/6\)/);
+});
+
+test("strategy_readiness triggers once per level after >=6 informative transitions without working model or L3/L4 tool, and skips when covered", async () => {
+  const root = mkdtempSync(join(tmpdir(), "strategy-readiness-"));
+  const { handlers, game, python, rows, call } = setup({ root, harnessProfile: true, evolution: true, noImage: true, stuckAfter: 16 });
+  let currentModel: any = null;
+  python.capabilitySnapshot = () => ({ claims: {}, model: currentModel });
+  let calls = 0;
+  const ctx: any = {
+    model: { id: "same", maxTokens: 4096 },
+    modelRegistry: {
+      streamSimple: () => {
+        calls += 1;
+        return { result: async () => ({
+          role: "assistant", stopReason: "toolUse", usage: { input: 20, output: 10, totalTokens: 30 },
+          content: [{ type: "toolCall", id: `s${calls}`, name: "finish_evolution", arguments: { decision: "no_change", note: "checked" } }],
+        }) };
+      },
+    },
+  };
+
+  await handlers.before_agent_start({});
+  const origRun = python.run.bind(python);
+  python.run = async () => ({ ...(await origRun()), steps: python.next?.steps ?? [] });
+  const makeSteps = (n: number, level = 1) => Array.from({ length: n }, (_, i) => ({
+    step: game.step + i + 1, action: "UP", tries: 0, same: false, last_try: null, new: true, level,
+    changed: true, death: false, level_up: false, source: null, fatal: false, claims_failed: [], claims_held: [],
+    predict_off: null, same_death: false,
+  }));
+
+  game.step = 6;
+  game.actions_used = 6;
+  python.next = batch({ executed: 6, actions: Array(6).fill("UP"), steps: makeSteps(6, 1) });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness").length, 1);
+
+  // Additional informative transitions on the same level must NOT re-trigger strategy_readiness
+  game.step = 12;
+  game.actions_used = 12;
+  python.next = batch({ executed: 6, actions: Array(6).fill("DOWN"), steps: makeSteps(6, 1) });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness").length, 1);
+
+  // Level transition with a working >=70% world model must NOT trigger strategy_readiness on level 2
+  currentModel = { funcs: ["predict"], tested: 10, correct: 8, by_level: { "2": { tested: 4, correct: 4 } } };
+  game.level = 2;
+  game.step = 13;
+  python.next = batch({ executed: 1, actions: ["UP"], level_changed: true, steps: [{
+    step: 13, action: "UP", tries: 0, same: false, last_try: null, new: true, level: 1,
+    changed: true, death: false, level_up: true, source: null, fatal: false, claims_failed: [], claims_held: [],
+    predict_off: null, same_death: false,
+  }] });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+
+  game.step = 20;
+  game.actions_used = 20;
+  python.next = batch({ executed: 7, actions: Array(7).fill("UP"), steps: makeSteps(7, 2) });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness").length, 1);
+
+  // If model degrades/breaks on level 3, strategy_readiness re-arms for level 3
+  currentModel = { funcs: ["predict"], tested: 10, correct: 3, by_level: { "3": { tested: 4, correct: 0 } } };
+  game.level = 3;
+  game.step = 21;
+  python.next = batch({ executed: 1, actions: ["UP"], level_changed: true, steps: [{
+    step: 21, action: "UP", tries: 0, same: false, last_try: null, new: true, level: 2,
+    changed: true, death: false, level_up: true, source: null, fatal: false, claims_failed: [], claims_held: [],
+    predict_off: null, same_death: false,
+  }] });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+
+  game.step = 28;
+  game.actions_used = 28;
+  python.next = batch({ executed: 7, actions: Array(7).fill("UP"), steps: makeSteps(7, 3) });
+  handlers.turn_start();
+  await call();
+  await handlers.before_agent_start({}, ctx);
+  assert.equal(rows("evolution_round").filter((r: any) => r.boundary === "strategy_readiness").length, 2);
+});
